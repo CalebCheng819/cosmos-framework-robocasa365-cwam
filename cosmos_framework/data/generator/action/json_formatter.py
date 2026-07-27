@@ -7,9 +7,9 @@ import math
 
 import torch
 
-from cosmos_framework.utils import log
 from cosmos_framework.data.generator.action.viewpoint_utils import DEFAULT_VIEWPOINT_TEMPLATES
 from cosmos_framework.data.generator.utils import VIDEO_RES_SIZE_INFO
+from cosmos_framework.utils import log
 
 
 def _should_append_idle_frame_info(mode: object) -> bool:
@@ -39,6 +39,7 @@ class ActionPromptJsonFormatter:
         total_frames_key: str = "idle_frames_total",
         action_key: str = "action",
         viewpoint_templates: dict[str, str] | None = None,
+        include_idle_frames: bool = True,
     ) -> None:
         self.caption_key: str = caption_key
         self.viewpoint_key: str = viewpoint_key
@@ -48,6 +49,7 @@ class ActionPromptJsonFormatter:
         self.idle_frames_key: str = idle_frames_key
         self.total_frames_key: str = total_frames_key
         self.action_key: str = action_key
+        self.include_idle_frames = bool(include_idle_frames)
         self.viewpoint_templates: dict[str, str] = (
             viewpoint_templates if viewpoint_templates is not None else DEFAULT_VIEWPOINT_TEMPLATES
         )
@@ -239,7 +241,7 @@ class ActionPromptJsonFormatter:
 
     def _get_idle_frame_info(self, data_dict: dict) -> str | None:
         """Build the idle-frame string for the action object."""
-        if not _should_append_idle_frame_info(data_dict.get("mode")):
+        if not self.include_idle_frames or not _should_append_idle_frame_info(data_dict.get("mode")):
             return None
 
         idle_frames = self._get_optional_scalar_int(data_dict.get(self.idle_frames_key), self.idle_frames_key)

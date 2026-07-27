@@ -3,6 +3,7 @@
 
 import functools
 import inspect
+import itertools
 import os
 import signal
 from typing import Any
@@ -11,9 +12,13 @@ import torch
 import torch.distributed as dist
 import torch.utils.data
 
-from cosmos_framework.utils.flags import INTERNAL
 from cosmos_framework.utils.context_managers import distributed_init
-from cosmos_framework.utils.profiling import maybe_enable_memory_snapshot, maybe_enable_nsys_profiling, maybe_enable_profiling
+from cosmos_framework.utils.flags import INTERNAL
+from cosmos_framework.utils.profiling import (
+    maybe_enable_memory_snapshot,
+    maybe_enable_nsys_profiling,
+    maybe_enable_profiling,
+)
 
 try:
     from megatron.core import parallel_state
@@ -23,12 +28,11 @@ except ImportError:
     USE_MEGATRON = False
 
 
-from cosmos_framework.utils.lazy_config import LazyConfig, instantiate
 from cosmos_framework.model._base import ImaginaireModel
 from cosmos_framework.utils import callback, distributed, ema, log, misc
 from cosmos_framework.utils.checkpointer import Checkpointer
+from cosmos_framework.utils.lazy_config import LazyConfig, instantiate
 from cosmos_framework.utils.misc import StragglerDetectorV2
-
 
 
 class ImaginaireTrainer:
@@ -426,12 +430,17 @@ class ImaginaireTrainer:
         self.callbacks.on_validation_start(model, dataloader_val, iteration=iteration)
         model.eval()
         # Evaluate on the full validation set.
-        with ema.ema_scope(model, enabled=model.config.ema.enabled):
-            for val_iter, data_batch in enumerate(dataloader_val):
-                if self.config.trainer.max_val_iter is not None and val_iter >= self.config.trainer.max_val_iter:
-                    break
+        with ema.ema_scope(model, enabled=model.config.ema.enabled, context="validation"):
+            validation_batches = iter(dataloader_val)
+            if self.config.trainer.max_val_iter is not None:
+                validation_batches = itertools.islice(validation_batches, self.config.trainer.max_val_iter)
+            for val_iter, data_batch in enumerate(validation_batches):
                 data_batch = misc.to(data_batch, device="cuda")
                 self.callbacks.on_validation_step_start(model, data_batch, iteration=iteration)
-                output_batch, loss = model.validation_step(data_batch, iteration)
+                output_batch, loss = model.validation_step(
+                    data_batch,
+                    iteration,
+                    validation_batch_index=val_iter,
+                )
                 self.callbacks.on_validation_step_end(model, data_batch, output_batch, loss, iteration=iteration)
         self.callbacks.on_validation_end(model, iteration=iteration)

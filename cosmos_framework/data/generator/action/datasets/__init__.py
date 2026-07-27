@@ -3,9 +3,9 @@
 
 """Action dataset wrappers for Cosmos Action.
 
-All concrete datasets inherit from :class:`ActionBaseDataset` and expose a
-``load_action_stats()`` classmethod for retrieving pre-computed normalization
-statistics without instantiating the dataset.
+LeRobot-backed datasets inherit from :class:`ActionBaseDataset`. Manifest-first
+views such as :class:`RoboCasa365SegmentDataset` implement the same map-style
+sample contract without requiring a duplicated LeRobot metadata tree.
 """
 
 from cosmos_framework.data.generator.action.datasets.agibotworld_beta_lerobot_dataset import (
@@ -17,6 +17,7 @@ from cosmos_framework.data.generator.action.datasets.droid_lerobot_dataset impor
 from cosmos_framework.data.generator.action.datasets.fractal_lerobot_dataset import FractalLeRobotDataset
 from cosmos_framework.data.generator.action.datasets.human_hand_pose_lerobot_dataset import HumanHandPoseLeRobotDataset
 from cosmos_framework.data.generator.action.datasets.libero_lerobot_dataset import LIBEROLeRobotDataset
+from cosmos_framework.data.generator.action.datasets.robocasa365_segment_dataset import RoboCasa365SegmentDataset
 from cosmos_framework.data.generator.action.datasets.robomind_franka_dataset import RoboMINDFrankaDataset
 from cosmos_framework.data.generator.action.datasets.robomind_ur_dataset import RoboMINDURDataset
 from cosmos_framework.data.generator.action.datasets.umi_lerobot_dataset import UMILeRobotDataset
@@ -29,6 +30,7 @@ __all__ = [
     "FractalLeRobotDataset",
     "HumanHandPoseLeRobotDataset",
     "LIBEROLeRobotDataset",
+    "RoboCasa365SegmentDataset",
     "RoboMINDFrankaDataset",
     "RoboMINDURDataset",
     "UMILeRobotDataset",

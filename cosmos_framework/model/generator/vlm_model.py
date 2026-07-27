@@ -25,17 +25,20 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-from cosmos_framework.utils.lazy_config import instantiate
-from cosmos_framework.model._base import ImaginaireModel
-from cosmos_framework.utils import log
-from cosmos_framework.model.generator.algorithm.loss.cross_entropy import cross_entropy_loss, weighted_cross_entropy_loss
 from cosmos_framework.configs.base.defaults.parallelism import PRECISION_TO_TORCH_DTYPE
 from cosmos_framework.configs.base.reasoner.defaults.policy_config import VLMModelConfig
+from cosmos_framework.model._base import ImaginaireModel
+from cosmos_framework.model.generator.algorithm.loss.cross_entropy import (
+    cross_entropy_loss,
+    weighted_cross_entropy_loss,
+)
 from cosmos_framework.model.generator.hf_model import HFModel
 from cosmos_framework.model.generator.parallelize_vlm import parallelize
+from cosmos_framework.utils import log
 from cosmos_framework.utils.generator.parallelism import ParallelDims
 from cosmos_framework.utils.generator.reasoner.constant import IGNORE_INDEX
 from cosmos_framework.utils.generator.reasoner.create_position_ids import get_position_ids
+from cosmos_framework.utils.lazy_config import instantiate
 
 # Model-type dispatch sets. Using hf_config.model_type (stable HF-defined string)
 # rather than backbone.model_name avoids the brittleness of substring-matching a local
@@ -531,9 +534,15 @@ class VLMModel(ImaginaireModel):
         return {"loss": loss, "loss_avg": loss_avg, "labels": labels}, loss
 
     @torch.no_grad()
-    def validation_step(self, data: dict, iteration: int) -> tuple[dict, torch.Tensor]:
+    def validation_step(
+        self,
+        data: dict,
+        iteration: int,
+        validation_batch_index: int = 0,
+    ) -> tuple[dict, torch.Tensor]:
         """Required: VLM experiments enable validation by default (pre_exp01x.py:607).
         ImaginaireTrainer.validate() calls this — must not raise NotImplementedError."""
+        del validation_batch_index
         position_ids = get_position_ids(
             self.hf_config,
             input_ids=data["input_ids"],

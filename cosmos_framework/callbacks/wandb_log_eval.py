@@ -17,6 +17,46 @@ from cosmos_framework.utils.callback import Callback
 from cosmos_framework.utils.easy_io import easy_io
 
 
+def _normalize_dataset_name(dataset_name: object) -> object:
+    """Collapse a packed batch's homogeneous dataset-name list to one key."""
+    if not isinstance(dataset_name, list):
+        return dataset_name
+    if not dataset_name:
+        raise ValueError("dataset_name must not be an empty list")
+    first = dataset_name[0]
+    if any(name != first for name in dataset_name[1:]):
+        raise ValueError(f"Packed validation batch contains mixed dataset names: {dataset_name!r}")
+    return first
+
+
+def _extract_url_keys(data_batch: dict) -> list[str]:
+    """Return every complete URL/key pair, or no coverage evidence if absent."""
+    if "__url__" not in data_batch or "__key__" not in data_batch:
+        return []
+    urls = data_batch["__url__"]
+    keys = data_batch["__key__"]
+    urls = urls if isinstance(urls, list) else [urls]
+    keys = keys if isinstance(keys, list) else [keys]
+    if len(urls) != len(keys):
+        raise ValueError(f"Validation URL/key cardinality mismatch: urls={len(urls)}, keys={len(keys)}")
+    return [f"{url}, {key}" for url, key in zip(urls, keys)]
+
+
+def _format_validation_summary(
+    *,
+    unique_count: int,
+    total_count: int,
+    average_loss: float,
+    unstable_count: int,
+    iteration: int,
+) -> str:
+    """Build the machine-parseable validation health record used by formal gates."""
+    return (
+        f"[val] number of unique url and key: {unique_count} / {total_count}; "
+        f"avg_final_loss: {average_loss}; unstable_count: {unstable_count}; iteration: {iteration}"
+    )
+
+
 @dataclass
 class _LossRecord:
     loss: float = 0
@@ -84,12 +124,7 @@ class WandbCallback(Callback):
             )
             self.unstable_count += 1
 
-        dataset_name = data_batch.get("dataset_name", "default")
-
-        # Handle case where dataset_name gets batched into a list
-        if isinstance(dataset_name, list):
-            assert len(dataset_name) == 1, "dataset_name should be a list of 1"
-            dataset_name = dataset_name[0]
+        dataset_name = _normalize_dataset_name(data_batch.get("dataset_name", "default"))
 
         if dataset_name not in self.final_loss_log_per_dataset:
             self.final_loss_log_per_dataset[dataset_name] = _LossRecord()
@@ -99,7 +134,7 @@ class WandbCallback(Callback):
         self.final_loss_log.loss += loss.detach().float()
         self.final_loss_log.iter_count += 1
 
-        self.url_key_list.append(f"{data_batch.get('__url__', [''])[0]}, {data_batch.get('__key__', [''])[0]}")
+        self.url_key_list.extend(_extract_url_keys(data_batch))
 
     def on_validation_end(self, model: ImaginaireModel, iteration: int = 0) -> None:
         avg_final_loss = self.final_loss_log.get_stat()
@@ -114,13 +149,20 @@ class WandbCallback(Callback):
         unique_url_key_list = list(set(url_key_list))
         if distributed.is_rank0():
             info = {}
+            unstable_count = int(self.unstable_count.item())
             log.info(
-                f"[val] number of unique url and key: {len(unique_url_key_list)} / {len(url_key_list)}; avg_final_loss: {avg_final_loss}"
+                _format_validation_summary(
+                    unique_count=len(unique_url_key_list),
+                    total_count=len(url_key_list),
+                    average_loss=avg_final_loss,
+                    unstable_count=unstable_count,
+                    iteration=iteration,
+                )
             )
             info.update(
                 {
                     f"val{self.wandb_extra_tag}/loss": avg_final_loss,
-                    f"val{self.wandb_extra_tag}/unstable_count": self.unstable_count.item(),
+                    f"val{self.wandb_extra_tag}/unstable_count": unstable_count,
                     "iteration": iteration,
                     f"val{self.wandb_extra_tag}/num_unique_url_key": len(unique_url_key_list),
                     f"val{self.wandb_extra_tag}/total_url_key": len(url_key_list),

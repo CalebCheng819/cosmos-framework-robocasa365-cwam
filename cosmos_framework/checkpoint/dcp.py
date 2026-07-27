@@ -619,6 +619,22 @@ def _copy_ema_weights_to_reg(state_dict: STATE_DICT_TYPE) -> None:
             state_dict[sd_key] = state_dict[key_ema]
 
 
+def _copy_reg_weights_to_ema(state_dict: STATE_DICT_TYPE) -> None:
+    """Reset EMA weights from regular weights after a regular-only warm start."""
+    for sd_key in list(state_dict.keys()):
+        if sd_key.startswith("net."):
+            key_ema = "net_ema." + sd_key.removeprefix("net.")
+            assert key_ema in state_dict, (
+                f"EMA key {key_ema} not found in state_dict. Ensure the model has net_ema submodule."
+            )
+            state_dict[key_ema] = state_dict[sd_key]
+
+
+def _state_dict_has_ema_tree(state_dict: STATE_DICT_TYPE) -> bool:
+    """Return whether the target model state includes an EMA parameter tree."""
+    return any(sd_key.startswith("net_ema.") for sd_key in state_dict)
+
+
 class CustomSavePlanner(dcp.DefaultSavePlanner):
     """
     Custom save planner that enables an override for cache_plans_key when
@@ -858,6 +874,23 @@ class DistributedCheckpointer(AbstractCheckpointer):
                         # optimizer state still tracks the pre-copy trajectory -- corrupting
                         # training in a way that depends on how often the job is preempted.
                         _copy_ema_weights_to_reg(_state_dict)
+                    elif warm_start and "net_ema." in keys_to_skip_loading:
+                        # Action-policy base warm starts intentionally skip the
+                        # checkpoint's EMA tree while loading the regular tree and
+                        # freshly initializing task-specific heads.  The target EMA
+                        # tree was copied from the pre-load random model during
+                        # construction, so leaving it untouched would make step-0
+                        # validation evaluate random weights.  Reset it from the
+                        # fully materialized regular tree.  This branch is warm-start
+                        # only; exact in-run resume restores both trees unchanged.
+                        # EMA may be disabled for a memory-bounded smoke gate. In
+                        # that case the skip pattern can still come from the base
+                        # recipe, but the target state has no EMA tree to reset.
+                        if _state_dict_has_ema_tree(_state_dict):
+                            log.info("Resetting EMA weights from regular weights after regular-only warm start.")
+                            _copy_reg_weights_to_ema(_state_dict)
+                        else:
+                            log.info("Skipping EMA reset because the target model has no EMA state tree.")
 
                     results = _model_wrapper.load_state_dict(_state_dict)
                     if len(results.missing_keys) > 0:

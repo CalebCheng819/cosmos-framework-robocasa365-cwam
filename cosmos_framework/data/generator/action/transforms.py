@@ -19,7 +19,6 @@ from __future__ import annotations
 import torch
 import torchvision.transforms.functional as transforms_F
 
-from cosmos_framework.utils import log
 from cosmos_framework.data.generator.action.action_processing import (
     ActionNormalizer,
     ActionProcessor,
@@ -30,8 +29,9 @@ from cosmos_framework.data.generator.augmentors.duration_fps_text_timestamps imp
 from cosmos_framework.data.generator.augmentors.idle_frames_text_info import IdleFramesTextInfo
 from cosmos_framework.data.generator.augmentors.resolution_text_info import ResolutionTextInfo
 from cosmos_framework.data.generator.augmentors.text_tokenizer import TextTokenizerTransform
-from cosmos_framework.data.generator.utils import VIDEO_RES_SIZE_INFO
 from cosmos_framework.data.generator.sequence_packing import SequencePlan
+from cosmos_framework.data.generator.utils import VIDEO_RES_SIZE_INFO
+from cosmos_framework.utils import log
 from cosmos_framework.utils.generator.data_utils import get_vision_data_resolution
 
 
@@ -535,7 +535,10 @@ class ActionTransformPipeline:
 
         self.prompt_json_formatter: ActionPromptJsonFormatter | None = None
         if format_prompt_as_json:
-            self.prompt_json_formatter = ActionPromptJsonFormatter(caption_key=caption_key)
+            self.prompt_json_formatter = ActionPromptJsonFormatter(
+                caption_key=caption_key,
+                include_idle_frames=append_idle_frames,
+            )
 
         # --- Viewpoint text augmentor (runs after ai_caption, before duration/FPS) ---
         self.viewpoint_augmentor: ViewpointTextInfo | None = None

@@ -133,6 +133,7 @@ def test_action_transform_pipeline_json_prompt_toggle() -> None:
     pipeline = ActionTransformPipeline(
         tokenizer_config=None,
         max_action_dim=4,
+        append_idle_frames=True,
         format_prompt_as_json=True,
     )
     video = torch.zeros(3, 17, 192, 320)  # [C,T,H,W]

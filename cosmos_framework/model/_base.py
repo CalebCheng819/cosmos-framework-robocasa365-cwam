@@ -59,13 +59,17 @@ class ImaginaireModel(torch.nn.Module):
 
     @torch.no_grad()
     def validation_step(
-        self, data_batch: dict[str, torch.Tensor], iteration: int
+        self,
+        data_batch: dict[str, torch.Tensor],
+        iteration: int,
+        validation_batch_index: int = 0,
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         """The validation step of the model, including the loss computation.
 
         Args:
             data (dict[str, torch.Tensor]): Data batch (dictionary of tensors).
             iteration (int): Current iteration number.
+            validation_batch_index (int): Stable index within this validation pass.
 
         Returns:
             output_batch (dict[str, torch.Tensor]): Auxiliary model output from the validation batch.

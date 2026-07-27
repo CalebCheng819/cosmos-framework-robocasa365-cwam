@@ -13,6 +13,40 @@ import torch
 from cosmos_framework.utils import distributed
 
 
+def test_set_device_cpu_affinity_intersects_with_process_cpuset(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_affinity = Mock()
+    device = SimpleNamespace(get_cpu_affinity=lambda: [0, 8, 9, 100])
+    monkeypatch.setattr(distributed.os, "sched_getaffinity", lambda _pid: {8, 9, 10})
+    monkeypatch.setattr(distributed.os, "sched_setaffinity", set_affinity)
+
+    distributed._set_device_cpu_affinity(device)
+
+    set_affinity.assert_called_once_with(0, {8, 9})
+
+
+def test_set_device_cpu_affinity_skips_disjoint_container_cpuset(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_affinity = Mock()
+    device = SimpleNamespace(get_cpu_affinity=lambda: [0, 1])
+    monkeypatch.setattr(distributed.os, "sched_getaffinity", lambda _pid: {8, 9})
+    monkeypatch.setattr(distributed.os, "sched_setaffinity", set_affinity)
+
+    distributed._set_device_cpu_affinity(device)
+
+    set_affinity.assert_not_called()
+
+
+def test_set_device_cpu_affinity_tolerates_runtime_restriction(monkeypatch: pytest.MonkeyPatch) -> None:
+    device = SimpleNamespace(get_cpu_affinity=lambda: [8])
+    monkeypatch.setattr(distributed.os, "sched_getaffinity", lambda _pid: {8})
+    monkeypatch.setattr(
+        distributed.os,
+        "sched_setaffinity",
+        Mock(side_effect=OSError(22, "Invalid argument")),
+    )
+
+    distributed._set_device_cpu_affinity(device)
+
+
 def test_init_uses_gloo_backend_for_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
     init_process_group = Mock()
     monkeypatch.setenv("COSMOS_DEVICE", "cpu")
@@ -28,6 +62,7 @@ def test_init_uses_gloo_backend_for_cpu(monkeypatch: pytest.MonkeyPatch) -> None
         "Device",
         lambda _local_rank: SimpleNamespace(get_cpu_affinity=lambda: [0]),
     )
+    monkeypatch.setattr(distributed.os, "sched_getaffinity", lambda _pid: {0})
     monkeypatch.setattr(distributed.os, "sched_setaffinity", lambda _pid, _affinity: None)
     monkeypatch.setattr(distributed.torch.cuda, "set_device", lambda _local_rank: None)
 

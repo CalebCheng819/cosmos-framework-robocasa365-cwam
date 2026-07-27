@@ -32,6 +32,22 @@ if TYPE_CHECKING:
     from cosmos_framework.utils.config import DDPConfig
 
 
+def _set_device_cpu_affinity(device: Device) -> None:
+    """Pin the process only to GPU-local CPUs allowed by its container cpuset."""
+    try:
+        requested_affinity = set(device.get_cpu_affinity())
+        allowed_affinity = set(os.sched_getaffinity(0))
+        effective_affinity = requested_affinity & allowed_affinity
+        if not effective_affinity:
+            log.warning("Skipping GPU CPU affinity because the NVML affinity has no overlap with the process cpuset.")
+            return
+        os.sched_setaffinity(0, effective_affinity)
+    except OSError as error:
+        # Container runtimes can further restrict affinity between querying and
+        # setting it. Affinity is an optimization, not a correctness condition.
+        log.warning(f"Failed to set GPU CPU affinity within the process cpuset: {error}")
+
+
 def init() -> int | None:
     """Initialize distributed training."""
     if dist.is_initialized():
@@ -42,7 +58,7 @@ def init() -> int | None:
     local_rank = int(os.getenv("LOCAL_RANK", 0))
     try:
         device = Device(local_rank)
-        os.sched_setaffinity(0, device.get_cpu_affinity())
+        _set_device_cpu_affinity(device)
     except pynvml.NVMLError as e:
         log.warning(f"Failed to set device affinity: {e}")
     # Set up distributed communication. CPU checkpoint conversion needs Gloo

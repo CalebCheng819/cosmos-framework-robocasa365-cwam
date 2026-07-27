@@ -16,18 +16,19 @@ from einops import rearrange
 from torch.distributed._composable.fsdp import FSDPModule
 from torch.nn.modules.module import _IncompatibleKeys
 
-from cosmos_framework.utils.flags import DEVICE, TRAINING, Device
-from cosmos_framework.utils.lazy_config import LazyDict
-from cosmos_framework.utils.lazy_config import instantiate as lazy_instantiate
-from cosmos_framework.model._base import ImaginaireModel
-from cosmos_framework.utils import log, misc
-from cosmos_framework.utils.count_params import count_params
-from cosmos_framework.utils.timer import Timer
-from cosmos_framework.model.generator.algorithm.loss.flow_matching import compute_flow_matching_loss
-from cosmos_framework.model.generator.algorithm.loss.load_balancing import compute_load_balancing_loss
 from cosmos_framework.configs.base.defaults.model_config import OmniMoTModelConfig
 from cosmos_framework.data.generator.action.action_processing import ActionProcessor, get_action_processing_records
+from cosmos_framework.data.generator.sequence_packing import (
+    PackedSequence,
+    SequencePlan,
+    build_sequence_plans_from_data_batch,
+    pack_input_sequence,
+)
+from cosmos_framework.data.generator.sequence_packing.modality import add_special_tokens
 from cosmos_framework.data.generator.utils import IMAGE_RES_SIZE_INFO, VIDEO_RES_SIZE_INFO
+from cosmos_framework.model._base import ImaginaireModel
+from cosmos_framework.model.generator.algorithm.loss.flow_matching import compute_flow_matching_loss
+from cosmos_framework.model.generator.algorithm.loss.load_balancing import compute_load_balancing_loss
 from cosmos_framework.model.generator.diffusion.rectified_flow import RectifiedFlow
 from cosmos_framework.model.generator.diffusion.samplers.edm import EDMSampler
 from cosmos_framework.model.generator.diffusion.samplers.fixed_step import FixedStepSampler
@@ -44,6 +45,8 @@ from cosmos_framework.model.generator.mot.inference_text_kv_memory import (
 from cosmos_framework.model.generator.mot.modeling_utils import has_noisy_tokens
 from cosmos_framework.model.generator.mot.parallelize_vfm_network import parallelize_vfm_network
 from cosmos_framework.model.generator.reasoner.qwen3_vl.utils import tokenize_caption
+from cosmos_framework.model.generator.tokenizers.interface import VideoTokenizerInterface
+from cosmos_framework.model.generator.upsampler.prompts import build_messages, clean_response
 from cosmos_framework.model.generator.utils.data_and_condition import (
     GenerationDataClean,
     GenerationDataNoised,
@@ -63,19 +66,16 @@ from cosmos_framework.model.generator.utils.moe_utils import (
 from cosmos_framework.model.generator.utils.safetensors_loader import (
     load_language_model as load_language_model_safetensors,
 )
-from cosmos_framework.data.generator.sequence_packing import (
-    PackedSequence,
-    SequencePlan,
-    build_sequence_plans_from_data_batch,
-    pack_input_sequence,
-)
-from cosmos_framework.data.generator.sequence_packing.modality import add_special_tokens
-from cosmos_framework.model.generator.tokenizers.interface import VideoTokenizerInterface
-from cosmos_framework.model.generator.upsampler.prompts import build_messages, clean_response
+from cosmos_framework.utils import log, misc
+from cosmos_framework.utils.count_params import count_params
+from cosmos_framework.utils.flags import DEVICE, TRAINING, Device
 from cosmos_framework.utils.generator.data_utils import get_vision_data_resolution, read_positive_int_metadata
 from cosmos_framework.utils.generator.dtensor_helper import DTensorFastEmaModelUpdater
 from cosmos_framework.utils.generator.model_weights_stats import WeightTrainingStat
 from cosmos_framework.utils.generator.parallelism import ParallelDims
+from cosmos_framework.utils.lazy_config import LazyDict
+from cosmos_framework.utils.lazy_config import instantiate as lazy_instantiate
+from cosmos_framework.utils.timer import Timer
 
 
 class OmniMoTModel(ImaginaireModel):
@@ -186,7 +186,6 @@ class OmniMoTModel(ImaginaireModel):
             log.info(f"Sound tokenizer initialized: {type(self.tokenizer_sound_gen).__name__}")
         else:
             self.tokenizer_sound_gen = None
-
 
     def build_net(self, dtype: torch.dtype, *, lora_enabled: bool | None = None) -> torch.nn.Module:
         # Build model network and parallelize it.
@@ -801,6 +800,17 @@ class OmniMoTModel(ImaginaireModel):
     def training_step(
         self, data_batch: dict[str, torch.Tensor], iteration: int
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Run the flow-matching objective for a training batch."""
+        return self._flow_matching_step(data_batch, iteration=iteration, update_train_stats=True)
+
+    def _flow_matching_step(
+        self,
+        data_batch: dict[str, torch.Tensor],
+        iteration: int,
+        *,
+        update_train_stats: bool,
+        sampling_iteration: int | None = None,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         """
         Performs a single training step for the rectified-flow (flow-matching) model.
 
@@ -822,8 +832,10 @@ class OmniMoTModel(ImaginaireModel):
                 - Tensor: The computed loss for the training step as a PyTorch Tensor.
 
         """
-        if self.parallel_dims is None or self.parallel_dims.cp_rank == 0:
+        if update_train_stats and (self.parallel_dims is None or self.parallel_dims.cp_rank == 0):
             self._update_train_stats(data_batch)
+
+        noise_iteration = iteration if sampling_iteration is None else sampling_iteration
 
         # Load, apply dropout, and tokenize input captions
         input_text_indexes = self._load_and_tokenize_text_data(data_batch, iteration)
@@ -871,7 +883,7 @@ class OmniMoTModel(ImaginaireModel):
             resolutions=data_resolutions,
             num_vision_latent_frames=num_vision_latent_frames,
             num_tokens=num_tokens_per_sample,
-            iteration=iteration,
+            iteration=noise_iteration,
         )  # [B, T_vis] each
 
         # Optional independent action schedule (sampled from rectified_flow_action with
@@ -888,7 +900,7 @@ class OmniMoTModel(ImaginaireModel):
         action_sample_indices = [i for i, plan in enumerate(sequence_plans) if plan.has_action]
         if rf_cfg.independent_action_schedule and action_sample_indices:
             ts_full, sg_full = self._get_train_noise_level_action(
-                batch_size=gen_data_clean.batch_size, iteration=iteration
+                batch_size=gen_data_clean.batch_size, iteration=noise_iteration
             )  # [B, 1] each
             idx = torch.tensor(action_sample_indices, dtype=torch.long)  # [n_action]
             timesteps_action = ts_full[idx]  # [n_action, 1]
@@ -1009,7 +1021,7 @@ class OmniMoTModel(ImaginaireModel):
             sigmas_vision,
             sigmas_action=sigmas_action,
             sigmas_sound=sigmas_sound,
-            iteration=iteration,
+            iteration=noise_iteration,
         )
         self._replace_clean_with_noised(packed_sequence, gen_data_noised)
 
@@ -3151,8 +3163,31 @@ class OmniMoTModel(ImaginaireModel):
         )
 
     @torch.no_grad()
-    def validation_step(self, data_batch: dict[str, torch.Tensor], iteration: int):
-        pass
+    def validation_step(
+        self,
+        data_batch: dict[str, torch.Tensor],
+        iteration: int,
+        validation_batch_index: int = 0,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Evaluate the training objective with a fixed, RNG-isolated noise draw.
+
+        Validation uses the same tokenization, noising, forward, and loss path as
+        training, but it deliberately does not update the training sample
+        counters.  A fixed sampling iteration plus forked CPU/current-CUDA RNG
+        states gives every validation pass common random numbers without
+        perturbing the subsequent training RNG stream.
+        """
+        cuda_devices = [torch.cuda.current_device()] if torch.cuda.is_available() else []
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.random.default_generator.manual_seed(validation_batch_index)
+            if cuda_devices:
+                torch.cuda.manual_seed(validation_batch_index)
+            return self._flow_matching_step(
+                data_batch,
+                iteration=iteration,
+                update_train_stats=False,
+                sampling_iteration=validation_batch_index,
+            )
 
     @torch.no_grad()
     def forward(self, xt, t):
@@ -3456,7 +3491,7 @@ class OmniMoTModel(ImaginaireModel):
 
         log_enc_time = False
         timer = None
-        if TRAINING:
+        if TRAINING and self.training:
             import wandb
 
             log_enc_time = iteration % self.log_enc_time_every_n == 0 and wandb.run
@@ -3532,7 +3567,7 @@ class OmniMoTModel(ImaginaireModel):
         else:
             fps_sound = None
 
-        if TRAINING and log_enc_time and timer is not None:
+        if TRAINING and self.training and log_enc_time and timer is not None:
             timer.end()
             elapsed = timer.get_cuda_time()
             h, w = raw_state_vision[0].shape[-2], raw_state_vision[0].shape[-1]
