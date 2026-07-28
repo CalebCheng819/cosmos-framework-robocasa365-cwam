@@ -25,8 +25,11 @@ from cosmos_framework.inference.common.init import init_script
 init_script()
 
 import base64
+import hashlib
 import io
 import json
+import os
+import re
 import socket
 from pathlib import Path
 from typing import Any, Literal
@@ -55,6 +58,7 @@ _CAMERA_KEYS = (
 _STATE_KEY = "observation/state"
 _RAW_ACTION_DIM = 10
 _ENV_ACTION_DIM = 7
+_LAUNCH_NONCE_RE = re.compile(r"^[0-9a-f]{64}$")
 _TRAINING_CAMERA_DESCRIPTION = (
     "The left half shows the left third-person agent view; "
     "the right half shows the wrist-mounted camera."
@@ -209,12 +213,16 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     """Width of each DeMiAn camera image after its client-side resize."""
     domain_name: str = "robocasa365"
     """Action domain ID used by the formal training recipe."""
+    launch_nonce: str
+    """Per-process 256-bit nonce used to bind receipts to this exact launch."""
 
 
 class RoboCasa365PolicyService(ActionModelService):
     """OpenPI-compatible service with strict RoboCasa365 pre/post processing."""
 
     def __init__(self, args: RoboCasa365ServerArgs) -> None:
+        if _LAUNCH_NONCE_RE.fullmatch(args.launch_nonce) is None:
+            raise ValueError("RoboCasa365 formal serving requires a 64-character lowercase hex launch nonce")
         if args.fps != 20:
             raise ValueError(f"RoboCasa365 formal serving requires fps=20, got {args.fps}")
         if args.action_chunk_size != 16:
@@ -243,6 +251,7 @@ class RoboCasa365PolicyService(ActionModelService):
         self.camera_height = int(args.camera_height)
         self.camera_width = int(args.camera_width)
         self.domain_name = args.domain_name
+        self.launch_nonce = args.launch_nonce
         super().__init__(args)
 
         if self.raw_action_dim != _RAW_ACTION_DIM:
@@ -323,11 +332,16 @@ class RoboCasa365PolicyService(ActionModelService):
 
     def metadata(self) -> dict[str, Any]:
         stats_path = Path(self.cfg.action_stats_path).expanduser().resolve()
+        source_module_path = Path(__file__).resolve()
         return {
             "schema_version": 1,
             "service": "cwam_cosmos3_robocasa365",
             "checkpoint": self.cfg.checkpoint_dir,
             "action_stats_path": str(stats_path),
+            "source_module_path": str(source_module_path),
+            "source_module_sha256": hashlib.sha256(source_module_path.read_bytes()).hexdigest(),
+            "server_pid": os.getpid(),
+            "launch_nonce": self.launch_nonce,
             "wire_inputs": [*_CAMERA_KEYS, _STATE_KEY, "prompt"],
             "conditioning_views": ["observation/agentview_left", "observation/eye_in_hand"],
             "state_conditioning": False,
@@ -337,6 +351,12 @@ class RoboCasa365PolicyService(ActionModelService):
             "fps": self.cfg.fps,
             "action_chunk_size": self.cfg.action_chunk_size,
             "format_prompt_as_json": True,
+            "sampler": str(self.setup_args.sampler),
+            "policy_seed": self.cfg.seed,
+            "guidance": self.cfg.guidance,
+            "num_steps": self.cfg.num_steps,
+            "reuse_policy_seed_per_request": True,
+            "use_ema_weights": bool(self.setup_args.use_ema_weights),
         }
 
 

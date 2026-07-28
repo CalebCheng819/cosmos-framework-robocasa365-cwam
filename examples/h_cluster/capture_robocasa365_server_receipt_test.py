@@ -19,6 +19,10 @@ def _metadata() -> dict:
         "service": "cwam_cosmos3_robocasa365",
         "checkpoint": "/checkpoint/model",
         "action_stats_path": "/data/stats.json",
+        "source_module_path": "/source/cosmos_framework/scripts/action_policy_server_robocasa365.py",
+        "source_module_sha256": "a" * 64,
+        "server_pid": 12345,
+        "launch_nonce": "b" * 64,
         "wire_inputs": [
             "observation/agentview_left",
             "observation/eye_in_hand",
@@ -37,6 +41,12 @@ def _metadata() -> dict:
         "fps": 20,
         "action_chunk_size": 16,
         "format_prompt_as_json": True,
+        "sampler": "unipc",
+        "policy_seed": 42,
+        "guidance": 1.0,
+        "num_steps": 30,
+        "reuse_policy_seed_per_request": True,
+        "use_ema_weights": True,
     }
 
 
@@ -54,6 +64,8 @@ def test_capture_persists_validated_runtime_binding(monkeypatch: pytest.MonkeyPa
         source_manifest_sha256="4" * 64,
         demian_commit="5" * 40,
         shard_index=0,
+        expected_launch_nonce="b" * 64,
+        expected_server_pid=12345,
     )
 
     assert value["service"] == "cwam_cosmos3_robocasa365"
@@ -77,6 +89,42 @@ def test_capture_rejects_metadata_drift(monkeypatch: pytest.MonkeyPatch, tmp_pat
             source_manifest_sha256="4" * 64,
             demian_commit="5" * 40,
             shard_index=0,
+            expected_launch_nonce="b" * 64,
+            expected_server_pid=12345,
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "match"),
+    [
+        ("launch_nonce", "c" * 64, "launch nonce"),
+        ("server_pid", 54321, "PID"),
+    ],
+)
+def test_capture_rejects_a_different_server_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    key: str,
+    value: object,
+    match: str,
+) -> None:
+    metadata = _metadata()
+    metadata[key] = value
+    monkeypatch.setattr(receipt, "_connect_once", lambda _uri, _timeout: metadata)
+
+    with pytest.raises(ValueError, match=match):
+        receipt.capture(
+            uri="ws://127.0.0.1:6000",
+            output=tmp_path / "receipt.json",
+            timeout_seconds=1.0,
+            checkpoint_manifest_sha256="1" * 64,
+            training_config_sha256="2" * 64,
+            action_stats_sha256="3" * 64,
+            source_manifest_sha256="4" * 64,
+            demian_commit="5" * 40,
+            shard_index=0,
+            expected_launch_nonce="b" * 64,
+            expected_server_pid=12345,
         )
 
 
@@ -99,4 +147,6 @@ def test_capture_never_overwrites_existing_receipt(
             source_manifest_sha256="4" * 64,
             demian_commit="5" * 40,
             shard_index=0,
+            expected_launch_nonce="b" * 64,
+            expected_server_pid=12345,
         )

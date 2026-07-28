@@ -257,6 +257,7 @@ def create_contract(
     logical_run_id: str,
     source_commit: str,
     source_manifest: Path,
+    cosmos_server_module: Path,
     checkpoint_path: Path,
     checkpoint_manifest: Path,
     training_config: Path,
@@ -266,6 +267,10 @@ def create_contract(
     demian_commit: str,
     demian_evaluator: Path,
     demian_task_registry: Path,
+    robocasa_repo: Path,
+    robocasa_commit: str,
+    robosuite_repo: Path,
+    robosuite_commit: str,
     stage: str,
     split: str,
     tasks: list[str] | None,
@@ -274,6 +279,10 @@ def create_contract(
     max_steps: int,
     open_loop_horizon: int,
     num_shards: int,
+    policy_sampler: str,
+    policy_seed: int,
+    policy_guidance: float,
+    policy_num_steps: int,
     results_dir: Path,
     run_name: str,
     minimum_mean_success_rate: float,
@@ -284,6 +293,7 @@ def create_contract(
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite existing eval contract: {output}")
     source_manifest = source_manifest.expanduser().resolve()
+    cosmos_server_module = cosmos_server_module.expanduser().resolve()
     checkpoint_path = checkpoint_path.expanduser().resolve()
     checkpoint_manifest = checkpoint_manifest.expanduser().resolve()
     training_config = training_config.expanduser().resolve()
@@ -292,11 +302,15 @@ def create_contract(
     demian_repo = demian_repo.expanduser().resolve()
     demian_evaluator = demian_evaluator.expanduser().resolve()
     demian_task_registry = demian_task_registry.expanduser().resolve()
+    robocasa_repo = robocasa_repo.expanduser().resolve()
+    robosuite_repo = robosuite_repo.expanduser().resolve()
     results_dir = results_dir.expanduser().resolve()
     if not checkpoint_path.is_dir():
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
     if not demian_repo.is_dir():
         raise FileNotFoundError(f"DeMiAn repository not found: {demian_repo}")
+    if not robocasa_repo.is_dir() or not robosuite_repo.is_dir():
+        raise FileNotFoundError("Pinned RoboCasa and robosuite repositories must both exist")
     task_pool = list(tasks) if tasks else list(_expected_formal_tasks(split))
     if len(server_runtime_receipts) != num_shards:
         raise ValueError(
@@ -308,6 +322,7 @@ def create_contract(
         return {"path": str(path), "sha256": _sha256(path)}
 
     source_artifact = artifact(source_manifest)
+    server_module_artifact = artifact(cosmos_server_module)
     evaluator_artifact = artifact(demian_evaluator)
     task_registry_artifact = artifact(demian_task_registry)
     contract = {
@@ -327,6 +342,13 @@ def create_contract(
             "evaluator_sha256": evaluator_artifact["sha256"],
             "task_registry_sha256": task_registry_artifact["sha256"],
         },
+        "simulator": {
+            "split": "target",
+            "robocasa_repo": str(robocasa_repo),
+            "robocasa_commit": robocasa_commit,
+            "robosuite_repo": str(robosuite_repo),
+            "robosuite_commit": robosuite_commit,
+        },
         "evaluation": {
             "stage": stage,
             "role": "primary" if split == "atomic" else "zero_shot_secondary",
@@ -337,8 +359,17 @@ def create_contract(
             "max_steps": max_steps,
             "open_loop_horizon": open_loop_horizon,
             "num_shards": num_shards,
+            "initialization_mode": "seeded_target_env",
             "seed_rule": "base_seed + within_shard_task_index * 10000 + episode_index",
             "causal_prompt_only": True,
+            "policy_sampling": {
+                "sampler": policy_sampler,
+                "seed": policy_seed,
+                "guidance": policy_guidance,
+                "num_steps": policy_num_steps,
+                "reuse_seed_per_request": True,
+                "use_ema_weights": True,
+            },
             "effect_thresholds": {
                 "minimum_mean_success_rate": minimum_mean_success_rate,
                 "minimum_successful_tasks": minimum_successful_tasks,
@@ -346,6 +377,7 @@ def create_contract(
         },
         "artifacts": {
             "source_manifest": source_artifact,
+            "cosmos_server_module": server_module_artifact,
             "checkpoint_manifest": artifact(checkpoint_manifest),
             "training_config": artifact(training_config),
             "action_stats": artifact(action_stats),
@@ -387,6 +419,19 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     _require_commit(demian.get("commit"), "contract.demian.commit")
     _require_sha256(demian.get("evaluator_sha256"), "contract.demian.evaluator_sha256")
     _require_sha256(demian.get("task_registry_sha256"), "contract.demian.task_registry_sha256")
+    demian_repo = Path(_require_nonempty_str(demian.get("repo"), "contract.demian.repo"))
+    if not demian_repo.is_absolute() or not demian_repo.is_dir():
+        raise ValueError(f"contract.demian.repo must be an existing absolute directory: {demian_repo}")
+
+    simulator = _require_dict(contract.get("simulator"), "contract.simulator")
+    if simulator.get("split") != "target":
+        raise ValueError("contract.simulator.split must be target")
+    _require_commit(simulator.get("robocasa_commit"), "contract.simulator.robocasa_commit")
+    _require_commit(simulator.get("robosuite_commit"), "contract.simulator.robosuite_commit")
+    for key in ("robocasa_repo", "robosuite_repo"):
+        repo = Path(_require_nonempty_str(simulator.get(key), f"contract.simulator.{key}"))
+        if not repo.is_absolute() or not repo.is_dir():
+            raise ValueError(f"contract.simulator.{key} must be an existing absolute directory: {repo}")
 
     evaluation = _require_dict(contract.get("evaluation"), "contract.evaluation")
     stage = evaluation.get("stage")
@@ -424,10 +469,29 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     num_shards = _require_int(evaluation.get("num_shards"), "num_shards", minimum=1)
     if num_shards > len(task_pool):
         raise ValueError("num_shards cannot exceed the number of tasks")
+    if stage == "formal" and num_shards != 8:
+        raise ValueError("formal evaluation requires exactly eight shards")
     if evaluation.get("seed_rule") != "base_seed + within_shard_task_index * 10000 + episode_index":
         raise ValueError("contract.evaluation.seed_rule does not match the pinned DeMiAn evaluator")
     if evaluation.get("causal_prompt_only") is not True:
         raise ValueError("contract.evaluation.causal_prompt_only must be true")
+    if evaluation.get("initialization_mode") != "seeded_target_env":
+        raise ValueError("contract.evaluation.initialization_mode must be seeded_target_env")
+    sampling = _require_dict(evaluation.get("policy_sampling"), "policy_sampling")
+    if sampling.get("sampler") not in {"unipc", "edm"}:
+        raise ValueError("policy_sampling.sampler must be unipc or edm")
+    _require_int(sampling.get("seed"), "policy_sampling.seed", minimum=0)
+    guidance = sampling.get("guidance")
+    if (
+        isinstance(guidance, bool)
+        or not isinstance(guidance, (int, float))
+        or not math.isfinite(float(guidance))
+        or not 0.0 <= float(guidance) <= 7.0
+    ):
+        raise TypeError("policy_sampling.guidance must be a finite number in [0,7]")
+    _require_int(sampling.get("num_steps"), "policy_sampling.num_steps", minimum=1)
+    if sampling.get("reuse_seed_per_request") is not True or sampling.get("use_ema_weights") is not True:
+        raise ValueError("formal policy sampling must reuse its seed and load EMA weights")
 
     thresholds = _require_dict(evaluation.get("effect_thresholds"), "effect_thresholds")
     minimum_mean_sr = thresholds.get("minimum_mean_success_rate")
@@ -444,6 +508,7 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     verified: dict[str, Any] = {}
     for name in (
         "source_manifest",
+        "cosmos_server_module",
         "checkpoint_manifest",
         "training_config",
         "action_stats",
@@ -478,8 +543,19 @@ def _validate_server_receipt(contract: dict[str, Any]) -> None:
         "action_stats_sha256": artifacts["action_stats"]["sha256"],
         "source_manifest_sha256": contract["source_manifest_sha256"],
         "demian_commit": contract["demian"]["commit"],
+        "sampler": contract["evaluation"]["policy_sampling"]["sampler"],
+        "policy_seed": contract["evaluation"]["policy_sampling"]["seed"],
+        "guidance": contract["evaluation"]["policy_sampling"]["guidance"],
+        "num_steps": contract["evaluation"]["policy_sampling"]["num_steps"],
+        "reuse_policy_seed_per_request": True,
+        "use_ema_weights": True,
+        "model_action": "[dpos3,rot6d_columns6,gripper1]",
+        "output_action": "[dpos3,axisangle3,gripper1]",
+        "format_prompt_as_json": True,
+        "source_module_sha256": artifacts["cosmos_server_module"]["sha256"],
     }
     seen_shards: set[int] = set()
+    seen_nonces: set[str] = set()
     for expected_shard, receipt_descriptor in enumerate(artifacts["server_runtime_receipts"]):
         receipt_path = Path(receipt_descriptor["path"])
         receipt = _require_dict(_load_json(receipt_path), f"server_runtime_receipt[{expected_shard}]")
@@ -496,6 +572,26 @@ def _validate_server_receipt(contract: dict[str, Any]) -> None:
                 raise ValueError(
                     f"server runtime receipt {key} mismatch: expected={value!r}, actual={receipt.get(key)!r}"
                 )
+        source_module_path = Path(
+            _require_nonempty_str(
+                receipt.get("source_module_path"),
+                f"server_runtime_receipt[{expected_shard}].source_module_path",
+            )
+        ).expanduser().resolve()
+        if source_module_path != Path(artifacts["cosmos_server_module"]["path"]).resolve():
+            raise ValueError("server runtime receipt source_module_path does not match the eval contract")
+        _require_int(
+            receipt.get("server_pid"),
+            f"server_runtime_receipt[{expected_shard}].server_pid",
+            minimum=1,
+        )
+        launch_nonce = _require_sha256(
+            receipt.get("launch_nonce"),
+            f"server_runtime_receipt[{expected_shard}].launch_nonce",
+        )
+        if launch_nonce in seen_nonces:
+            raise ValueError("server runtime receipt launch nonces must be unique across shards")
+        seen_nonces.add(launch_nonce)
         if (
             Path(str(receipt.get("checkpoint", ""))).expanduser().resolve()
             != Path(contract["checkpoint_path"]).resolve()
@@ -551,10 +647,12 @@ def _validate_shard_args(
         "checkpoint": contract["checkpoint_path"],
         "run_name": contract["run_name"],
         "results_dir": str(Path(contract["results_dir"]).parent),
+        "eval_dataset": None,
         "headless": True,
+        "save_video": False,
     }
     for key, value in expected.items():
-        if args_json.get(key) != value:
+        if key not in args_json or args_json[key] != value:
             raise ValueError(
                 f"args shard {shard} {key} mismatch: expected={value!r}, actual={args_json.get(key)!r}"
             )
@@ -569,7 +667,15 @@ def _validate_shard_args(
 
     requested_tasks = args_json.get("tasks")
     if requested_tasks not in ([], None):
-        if requested_tasks != evaluation["tasks"]:
+        if not isinstance(requested_tasks, list) or not all(isinstance(task, str) for task in requested_tasks):
+            raise TypeError(f"args shard {shard} tasks must be a string list")
+        flattened_tasks = [
+            task
+            for value in requested_tasks
+            for task in (part.strip() for part in value.split(","))
+            if task
+        ]
+        if flattened_tasks != evaluation["tasks"]:
             raise ValueError(f"args shard {shard} explicit task pool does not match contract")
     elif args_json.get("split") != evaluation["split"]:
         raise ValueError(f"args shard {shard} split does not match contract")
@@ -618,19 +724,25 @@ def _validate_episode(
     }
 
 
-def _collect_rows(contract: dict[str, Any], results_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _collect_rows(
+    contract: dict[str, Any],
+    results_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     evaluation = contract["evaluation"]
     task_pool = evaluation["tasks"]
     artifacts = contract["_verified_artifacts"]
     episode_rows: list[dict[str, Any]] = []
     task_rows: list[dict[str, Any]] = []
+    raw_shard_artifacts: list[dict[str, Any]] = []
     observed_tasks: set[str] = set()
 
     for shard in range(evaluation["num_shards"]):
         args_path = _args_path(results_dir, shard, evaluation["num_shards"])
+        args_sha256_before = _sha256(args_path)
         args_json = _require_dict(_load_json(args_path), f"args shard {shard}")
         expected_tasks = _validate_shard_args(args_json, contract=contract, shard=shard)
         results_path = results_dir / f"results_shard{shard}.json"
+        results_sha256_before = _sha256(results_path)
         results = _require_dict(_load_json(results_path), f"results shard {shard}")
         if set(results) != set(expected_tasks):
             raise ValueError(
@@ -638,6 +750,17 @@ def _collect_rows(contract: dict[str, Any], results_dir: Path) -> tuple[list[dic
                 f"missing={sorted(set(expected_tasks) - set(results))}, "
                 f"unexpected={sorted(set(results) - set(expected_tasks))}"
             )
+        args_sha256_after = _sha256(args_path)
+        results_sha256_after = _sha256(results_path)
+        if args_sha256_before != args_sha256_after or results_sha256_before != results_sha256_after:
+            raise RuntimeError(f"Evaluation shard {shard} changed while it was being validated")
+        raw_shard_artifacts.append(
+            {
+                "shard": shard,
+                "args": {"path": str(args_path), "sha256": args_sha256_after},
+                "results": {"path": str(results_path), "sha256": results_sha256_after},
+            }
+        )
 
         for within_shard_index, task in enumerate(expected_tasks):
             if task in observed_tasks:
@@ -725,7 +848,7 @@ def _collect_rows(contract: dict[str, Any], results_dir: Path) -> tuple[list[dic
         )
     episode_rows.sort(key=lambda row: (int(row["task_index"]), int(row["episode_index"])))
     task_rows.sort(key=lambda row: int(row["task_index"]))
-    return episode_rows, task_rows
+    return episode_rows, task_rows, raw_shard_artifacts
 
 
 def summarize(
@@ -745,7 +868,7 @@ def summarize(
     if results_dir != expected_results_dir:
         raise ValueError(f"results_dir mismatch: contract={expected_results_dir}, requested={results_dir}")
 
-    episode_rows, task_rows = _collect_rows(contract, results_dir)
+    episode_rows, task_rows, raw_shard_artifacts = _collect_rows(contract, results_dir)
     _atomic_write_csv(summary_csv, _CSV_EPISODE_FIELDS, episode_rows)
     _atomic_write_csv(task_success_rates_csv, _CSV_TASK_FIELDS, task_rows)
 
@@ -762,6 +885,9 @@ def summarize(
         "kind": _EVIDENCE_KIND,
         "experiment_id": contract["experiment_id"],
         "logical_run_id": contract["logical_run_id"],
+        "source_commit": contract["source_commit"],
+        "demian": contract["demian"],
+        "simulator": contract["simulator"],
         "contract_path": str(contract_path),
         "contract_sha256": contract["_contract_sha256"],
         "results_dir": str(results_dir),
@@ -784,10 +910,12 @@ def summarize(
                 "path": str(task_success_rates_csv),
                 "sha256": _sha256(task_success_rates_csv),
             },
+            "raw_shards": raw_shard_artifacts,
             **contract["_verified_artifacts"],
         },
         "seed_provenance": (
-            "Seeds are derived from verified DeMiAn shard args using "
+            "The pinned evaluator ran with eval_dataset=null, so target-environment "
+            "resets used the seeds derived from verified DeMiAn shard args: "
             "base_seed + within_shard_task_index * 10000 + episode_index; "
             "the pinned evaluator does not serialize seed per episode."
         ),
@@ -814,6 +942,7 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--logical-run-id", required=True)
     contract_parser.add_argument("--source-commit", required=True)
     contract_parser.add_argument("--source-manifest", type=Path, required=True)
+    contract_parser.add_argument("--cosmos-server-module", type=Path, required=True)
     contract_parser.add_argument("--checkpoint-path", type=Path, required=True)
     contract_parser.add_argument("--checkpoint-manifest", type=Path, required=True)
     contract_parser.add_argument("--training-config", type=Path, required=True)
@@ -823,6 +952,10 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--demian-commit", required=True)
     contract_parser.add_argument("--demian-evaluator", type=Path, required=True)
     contract_parser.add_argument("--demian-task-registry", type=Path, required=True)
+    contract_parser.add_argument("--robocasa-repo", type=Path, required=True)
+    contract_parser.add_argument("--robocasa-commit", required=True)
+    contract_parser.add_argument("--robosuite-repo", type=Path, required=True)
+    contract_parser.add_argument("--robosuite-commit", required=True)
     contract_parser.add_argument("--stage", choices=("one_episode_gate", "formal"), required=True)
     contract_parser.add_argument("--split", choices=("atomic", "composite"), required=True)
     contract_parser.add_argument("--tasks", nargs="*")
@@ -831,6 +964,10 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--max-steps", type=int, default=400)
     contract_parser.add_argument("--open-loop-horizon", type=int, default=12)
     contract_parser.add_argument("--num-shards", type=int, required=True)
+    contract_parser.add_argument("--policy-sampler", choices=("unipc", "edm"), default="unipc")
+    contract_parser.add_argument("--policy-seed", type=int, required=True)
+    contract_parser.add_argument("--policy-guidance", type=float, required=True)
+    contract_parser.add_argument("--policy-num-steps", type=int, required=True)
     contract_parser.add_argument("--results-dir", type=Path, required=True)
     contract_parser.add_argument("--run-name", required=True)
     contract_parser.add_argument("--minimum-mean-success-rate", type=float, required=True)
@@ -854,6 +991,7 @@ def main() -> None:
             logical_run_id=args.logical_run_id,
             source_commit=args.source_commit,
             source_manifest=args.source_manifest,
+            cosmos_server_module=args.cosmos_server_module,
             checkpoint_path=args.checkpoint_path,
             checkpoint_manifest=args.checkpoint_manifest,
             training_config=args.training_config,
@@ -863,6 +1001,10 @@ def main() -> None:
             demian_commit=args.demian_commit,
             demian_evaluator=args.demian_evaluator,
             demian_task_registry=args.demian_task_registry,
+            robocasa_repo=args.robocasa_repo,
+            robocasa_commit=args.robocasa_commit,
+            robosuite_repo=args.robosuite_repo,
+            robosuite_commit=args.robosuite_commit,
             stage=args.stage,
             split=args.split,
             tasks=args.tasks,
@@ -871,6 +1013,10 @@ def main() -> None:
             max_steps=args.max_steps,
             open_loop_horizon=args.open_loop_horizon,
             num_shards=args.num_shards,
+            policy_sampler=args.policy_sampler,
+            policy_seed=args.policy_seed,
+            policy_guidance=args.policy_guidance,
+            policy_num_steps=args.policy_num_steps,
             results_dir=args.results_dir,
             run_name=args.run_name,
             minimum_mean_success_rate=args.minimum_mean_success_rate,

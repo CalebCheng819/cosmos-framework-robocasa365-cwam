@@ -33,12 +33,18 @@ def _artifact(tmp_path: Path, name: str, content: object) -> dict[str, str]:
 def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     results_dir = tmp_path / "results" / "gate"
     results_dir.mkdir(parents=True)
+    demian_repo = tmp_path / "demian"
+    robocasa_repo = tmp_path / "robocasa"
+    robosuite_repo = tmp_path / "robosuite"
+    for repo in (demian_repo, robocasa_repo, robosuite_repo):
+        repo.mkdir()
     source_manifest = _artifact(tmp_path, "source-manifest", {"files": 1})
     checkpoint = _artifact(tmp_path, "checkpoint-manifest", {"iteration": 10000})
     config = _artifact(tmp_path, "training-config", {"recipe": "robocasa365"})
     stats = _artifact(tmp_path, "action-stats", {"global_raw": {}})
     demian_evaluator = _artifact(tmp_path, "demian-evaluator", {"source": "evaluator"})
     demian_task_registry = _artifact(tmp_path, "demian-task-registry", {"tasks": ["OpenDrawer"]})
+    cosmos_server_module = _artifact(tmp_path, "cosmos-server-module", {"source": "server"})
     source_manifest_sha = source_manifest["sha256"]
     demian_commit = "2" * 40
     receipt = {
@@ -52,6 +58,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "action_stats_sha256": stats["sha256"],
         "source_manifest_sha256": source_manifest_sha,
         "demian_commit": demian_commit,
+        "source_module_path": cosmos_server_module["path"],
+        "source_module_sha256": cosmos_server_module["sha256"],
+        "server_pid": 12345,
+        "launch_nonce": "6" * 64,
         "wire_inputs": [
             "observation/agentview_left",
             "observation/eye_in_hand",
@@ -64,9 +74,18 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "observation/eye_in_hand",
         ],
         "state_conditioning": False,
+        "model_action": "[dpos3,rot6d_columns6,gripper1]",
+        "output_action": "[dpos3,axisangle3,gripper1]",
         "gripper_transform": "identity",
         "fps": 20,
         "action_chunk_size": 16,
+        "format_prompt_as_json": True,
+        "sampler": "unipc",
+        "policy_seed": 42,
+        "guidance": 1.0,
+        "num_steps": 30,
+        "reuse_policy_seed_per_request": True,
+        "use_ema_weights": True,
     }
     receipt_artifact = _artifact(tmp_path, "server-runtime-receipt", receipt)
     contract = {
@@ -80,9 +99,17 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "run_name": "gate",
         "results_dir": str(results_dir.resolve()),
         "demian": {
+            "repo": str(demian_repo.resolve()),
             "commit": demian_commit,
             "evaluator_sha256": demian_evaluator["sha256"],
             "task_registry_sha256": demian_task_registry["sha256"],
+        },
+        "simulator": {
+            "split": "target",
+            "robocasa_repo": str(robocasa_repo.resolve()),
+            "robocasa_commit": "4" * 40,
+            "robosuite_repo": str(robosuite_repo.resolve()),
+            "robosuite_commit": "5" * 40,
         },
         "evaluation": {
             "stage": "one_episode_gate",
@@ -94,8 +121,17 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "max_steps": 400,
             "open_loop_horizon": 12,
             "num_shards": 1,
+            "initialization_mode": "seeded_target_env",
             "seed_rule": "base_seed + within_shard_task_index * 10000 + episode_index",
             "causal_prompt_only": True,
+            "policy_sampling": {
+                "sampler": "unipc",
+                "seed": 42,
+                "guidance": 1.0,
+                "num_steps": 30,
+                "reuse_seed_per_request": True,
+                "use_ema_weights": True,
+            },
             "effect_thresholds": {
                 "minimum_mean_success_rate": 0.0,
                 "minimum_successful_tasks": 0,
@@ -103,6 +139,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         },
         "artifacts": {
             "source_manifest": source_manifest,
+            "cosmos_server_module": cosmos_server_module,
             "checkpoint_manifest": checkpoint,
             "training_config": config,
             "action_stats": stats,
@@ -125,6 +162,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "checkpoint": "/checkpoints/iter_000010000",
         "results_dir": str((tmp_path / "results").resolve()),
         "run_name": "gate",
+        "eval_dataset": None,
         "save_video": False,
         "headless": True,
         "dynamic_instructions_file": None,
@@ -176,6 +214,13 @@ def test_summarize_writes_complete_episode_and_task_csvs(tmp_path: Path) -> None
 
     assert result["execution_complete"] is True
     assert result["effect_pass"] is True
+    assert result["artifacts"]["raw_shards"][0]["shard"] == 0
+    assert result["artifacts"]["raw_shards"][0]["args"]["sha256"] == _sha256(
+        results_dir / "args.json"
+    )
+    assert result["artifacts"]["raw_shards"][0]["results"]["sha256"] == _sha256(
+        results_dir / "results_shard0.json"
+    )
     with summary_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
