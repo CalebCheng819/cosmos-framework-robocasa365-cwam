@@ -1821,6 +1821,23 @@ def verify_formal(
         pod_names[0],
         "normalized expanded Replica pod hostname",
     )
+    if not isinstance(pod_names[0], str) or not pod_names[0].endswith("-0"):
+        raise EvidenceError("normalized expanded Replica pod hostname has the wrong replica suffix")
+    hostname_prefix = pod_names[0][:-2]
+    _require_equal(
+        replica.get("runtime_identity"),
+        {
+            "host_network": True,
+            "dns_policy": "ClusterFirstWithHostNet",
+            "hostname_prefix": hostname_prefix,
+            "node_name_field_path": "spec.nodeName",
+            "rjob_name": scheduler_rjob_name,
+            "rjob_uid": scheduler_rjob_uid,
+            "replica_name": replica_names[0],
+            "quota_group": _FORMAL_QUOTA_GROUP,
+        },
+        "normalized expanded Replica runtime identity",
+    )
     worker_spec = _require_mapping(
         replica.get("worker_spec"),
         "normalized expanded worker spec",
@@ -1919,13 +1936,21 @@ def verify_formal(
         "scheduler_rjob_uid": scheduler_rjob_uid,
         "scheduler_replica_name": replica_names[0],
         "scheduler_pod_name": pod_names[0],
-        "hostname": pod_names[0],
         "scheduler_receipt": str(scheduler_receipt_path),
         "scheduler_receipt_sha256": scheduler_receipt_sha256,
     }.items():
         _require_equal(owner.get(key), expected, f"attempt-owner {key}")
-    if not isinstance(owner.get("node_name"), str) or not owner["node_name"]:
+    owner_hostname = owner.get("hostname")
+    owner_node_name = owner.get("node_name")
+    if not isinstance(owner_hostname, str) or not owner_hostname:
+        raise EvidenceError("attempt-owner hostname must be non-empty")
+    if not isinstance(owner_node_name, str) or not owner_node_name:
         raise EvidenceError("attempt-owner node_name must be non-empty")
+    _require_equal(
+        owner_hostname,
+        owner_node_name,
+        "host-network attempt-owner hostname versus node_name",
+    )
     _require_equal(
         owner.get("container_image"),
         provenance.get("container_image"),

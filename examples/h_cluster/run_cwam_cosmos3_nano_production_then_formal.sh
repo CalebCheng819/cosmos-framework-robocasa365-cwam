@@ -426,6 +426,22 @@ if replica.get("replica_name") != replica_names[0]:
     raise SystemExit("normalized expanded Replica identity mismatch")
 if replica.get("pod_name") != pod_names[0] or replica.get("pod_hostname") != pod_names[0]:
     raise SystemExit("normalized expanded Replica pod identity mismatch")
+if not isinstance(pod_names[0], str) or not pod_names[0].endswith("-0"):
+    raise SystemExit("normalized expanded Replica pod hostname has the wrong replica suffix")
+hostname_prefix = pod_names[0][:-2]
+runtime_identity = replica.get("runtime_identity")
+expected_runtime_identity = {
+    "host_network": True,
+    "dns_policy": "ClusterFirstWithHostNet",
+    "hostname_prefix": hostname_prefix,
+    "node_name_field_path": "spec.nodeName",
+    "rjob_name": scheduler_rjob_name,
+    "rjob_uid": scheduler_rjob_uid,
+    "replica_name": replica_names[0],
+    "quota_group": sys.argv[14],
+}
+if runtime_identity != expected_runtime_identity:
+    raise SystemExit("normalized expanded Replica runtime identity mismatch")
 worker_spec = replica.get("worker_spec")
 if not isinstance(worker_spec, dict) or set(worker_spec) != {
     "image",
@@ -503,10 +519,15 @@ if worker_init_prefix not in audited_worker_init_prefixes:
 if worker_command != worker_init_prefix + template_command:
     raise SystemExit("normalized expanded worker command mismatch")
 actual_hostname = socket.gethostname()
-if pod_names[0] != actual_hostname:
+if os.environ.get("HOST_NETWORK") != "true":
+    raise SystemExit("HOST_NETWORK does not match the accepted host-network Replica")
+if os.environ.get("KUBEBRAIN_HOSTNAME_PREFIX") != hostname_prefix:
+    raise SystemExit("KUBEBRAIN_HOSTNAME_PREFIX does not match the accepted logical pod hostname")
+node_name = os.environ.get("KUBEBRAIN_NODE_NAME")
+if not node_name or actual_hostname != node_name:
     raise SystemExit(
-        f"current worker hostname is not owned by scheduler receipt: "
-        f"expected={pod_names[0]!r}, actual={actual_hostname!r}"
+        "current host-network worker hostname does not match its scheduler-injected node: "
+        f"node_name={node_name!r}, actual={actual_hostname!r}"
     )
 if os.environ.get("KUBEBRAIN_RJOB_NAME") != scheduler_rjob_name:
     raise SystemExit("KUBEBRAIN_RJOB_NAME does not match the accepted scheduler RJob")

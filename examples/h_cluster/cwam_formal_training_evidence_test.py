@@ -592,6 +592,7 @@ def test_formal_contract_binds_storage_reservation_and_provenance(tmp_path, monk
     scheduler_rjob_uid = "11111111-1111-1111-1111-111111111111"
     scheduler_replica_name = f"{scheduler_rjob_name}-abcde"
     scheduler_pod_name = "rjob-fixture-0"
+    scheduler_node_name = "gpu-lg-cmc-h-h200-fixture.host.h.pjlab.org.cn"
     snapshot_root = str(tmp_path / "snapshot")
     now = datetime.now(timezone.utc)
     created_at = now - timedelta(seconds=30)
@@ -611,8 +612,8 @@ def test_formal_contract_binds_storage_reservation_and_provenance(tmp_path, monk
         "scheduler_pod_name": scheduler_pod_name,
         "scheduler_receipt": "",
         "scheduler_receipt_sha256": "",
-        "hostname": scheduler_pod_name,
-        "node_name": "lg-cmc-h-h200-fixture.host.h.pjlab.org.cn",
+        "hostname": scheduler_node_name,
+        "node_name": scheduler_node_name,
         "shell_pid": 1234,
         "world_size": 8,
         "container_image": container_image,
@@ -778,6 +779,16 @@ def test_formal_contract_binds_storage_reservation_and_provenance(tmp_path, monk
                 "replica_name": scheduler_replica_name,
                 "pod_name": scheduler_pod_name,
                 "pod_hostname": scheduler_pod_name,
+                "runtime_identity": {
+                    "host_network": True,
+                    "dns_policy": "ClusterFirstWithHostNet",
+                    "hostname_prefix": "rjob-fixture",
+                    "node_name_field_path": "spec.nodeName",
+                    "rjob_name": scheduler_rjob_name,
+                    "rjob_uid": scheduler_rjob_uid,
+                    "replica_name": scheduler_replica_name,
+                    "quota_group": "eailabagent_gpu",
+                },
                 "worker_spec": {
                     "image": container_image,
                     "resources": {

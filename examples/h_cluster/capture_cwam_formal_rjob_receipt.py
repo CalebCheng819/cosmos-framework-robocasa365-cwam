@@ -135,6 +135,47 @@ def _require_exact(observed: object, expected: object, label: str) -> None:
         raise ReceiptValidationError(f"{label} mismatch: expected={expected!r}, actual={observed!r}")
 
 
+def _require_container_env(
+    container: Mapping[str, Any],
+    *,
+    name: str,
+    expected_value: str | None = None,
+    expected_field_path: str | None = None,
+) -> str:
+    """Validate one scheduler-injected environment binding without trusting duplicates."""
+
+    env = _require_list(container.get("env"), "replica.spec.containers[0].env")
+    matches = [
+        _require_mapping(item, "replica.spec.containers[0].env[]")
+        for item in env
+        if isinstance(item, dict) and item.get("name") == name
+    ]
+    if len(matches) != 1:
+        raise ReceiptValidationError(
+            f"replica.spec.containers[0].env must contain exactly one {name!r} binding"
+        )
+    binding = matches[0]
+    label = f"replica.spec.containers[0].env[{name}]"
+    if expected_value is not None:
+        _require_exact(binding, {"name": name, "value": expected_value}, label)
+        return expected_value
+    if expected_field_path is None:
+        raise AssertionError("an expected environment value or field path is required")
+    _require_exact(
+        binding,
+        {
+            "name": name,
+            "valueFrom": {
+                "fieldRef": {
+                    "fieldPath": expected_field_path,
+                }
+            },
+        },
+        label,
+    )
+    return expected_field_path
+
+
 def _require_metadata_identity(metadata: Mapping[str, Any], label: str) -> dict[str, str]:
     name = _require_string(metadata.get("name"), f"{label}.name")
     uid = _require_string(metadata.get("uid"), f"{label}.uid")
@@ -513,6 +554,7 @@ def _normalize_replica(
     raw: object,
     expected: Mapping[str, Any],
     template_command: list[str],
+    rjob_uid: str,
 ) -> dict[str, Any]:
     replica = _require_mapping(raw, "replica")
     metadata = _require_mapping(replica.get("metadata"), "replica.metadata")
@@ -568,6 +610,52 @@ def _normalize_replica(
         template_command,
     )
     pod_hostname = _require_string(spec.get("hostname"), "replica.spec.hostname")
+    _require_exact(spec.get("hostNetwork"), True, "replica.spec.hostNetwork")
+    _require_exact(spec.get("dnsPolicy"), "ClusterFirstWithHostNet", "replica.spec.dnsPolicy")
+    hostname_suffix = f"-{replica_index}"
+    if not pod_hostname.endswith(hostname_suffix):
+        raise ReceiptValidationError(
+            "replica.spec.hostname does not end with its replica index: "
+            f"hostname={pod_hostname!r}, replica_index={replica_index!r}"
+        )
+    hostname_prefix = pod_hostname[: -len(hostname_suffix)]
+    if not hostname_prefix:
+        raise ReceiptValidationError("replica.spec.hostname has an empty hostname prefix")
+    _require_container_env(
+        replica_container,
+        name="HOST_NETWORK",
+        expected_value="true",
+    )
+    _require_container_env(
+        replica_container,
+        name="KUBEBRAIN_HOSTNAME_PREFIX",
+        expected_value=hostname_prefix,
+    )
+    node_name_field_path = _require_container_env(
+        replica_container,
+        name="KUBEBRAIN_NODE_NAME",
+        expected_field_path="spec.nodeName",
+    )
+    _require_container_env(
+        replica_container,
+        name="KUBEBRAIN_RJOB_NAME",
+        expected_value=expected["scheduler_rjob_name"],
+    )
+    _require_container_env(
+        replica_container,
+        name="KUBEBRAIN_RJOB_UID",
+        expected_value=rjob_uid,
+    )
+    _require_container_env(
+        replica_container,
+        name="KUBEBRAIN_REPLICA_NAME",
+        expected_value=identity["name"],
+    )
+    _require_container_env(
+        replica_container,
+        name="KUBEBRAIN_QUOTA_GROUP",
+        expected_value=expected["quota_group"],
+    )
     status = _require_mapping(replica.get("status"), "replica.status")
     phase = status.get("phase")
     if not isinstance(phase, str) or not phase:
@@ -582,6 +670,16 @@ def _normalize_replica(
         "creation_timestamp": identity["creation_timestamp"],
         "task_name": _TASK_NAME,
         "replica_index": 0,
+        "runtime_identity": {
+            "host_network": True,
+            "dns_policy": "ClusterFirstWithHostNet",
+            "hostname_prefix": hostname_prefix,
+            "node_name_field_path": node_name_field_path,
+            "rjob_name": expected["scheduler_rjob_name"],
+            "rjob_uid": rjob_uid,
+            "replica_name": identity["name"],
+            "quota_group": expected["quota_group"],
+        },
         "worker_spec": {
             "image": expected["image"],
             "resources": replica_resources,
@@ -672,6 +770,8 @@ def validate_and_normalize_receipt(
     _require_exact(observed_mounts, expected["mounts"], _GPFS_MOUNT_ANNOTATION)
 
     pod_spec = _require_mapping(template.get("spec"), f"rjob.spec.taskSpecs.{_TASK_NAME}.template.spec")
+    _require_exact(pod_spec.get("hostNetwork"), True, "template.spec.hostNetwork")
+    _require_exact(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet", "template.spec.dnsPolicy")
     _require_exact(pod_spec.get("restartPolicy"), expected["restart_policy"], "template.spec.restartPolicy")
     _require_exact(
         pod_spec.get("terminationGracePeriodSeconds"),
@@ -708,7 +808,10 @@ def validate_and_normalize_receipt(
             f"expected exactly {expected['replicas']} scheduler replica, got {len(replica_items)}"
         )
     normalized_replicas = sorted(
-        (_normalize_replica(item, expected, command) for item in replica_items),
+        (
+            _normalize_replica(item, expected, command, identity["uid"])
+            for item in replica_items
+        ),
         key=lambda item: (item["replica_index"], item["replica_name"]),
     )
 

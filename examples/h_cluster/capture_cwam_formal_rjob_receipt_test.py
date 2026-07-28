@@ -123,6 +123,8 @@ def _raw_rjob() -> dict[str, object]:
                             },
                         },
                         "spec": {
+                            "hostNetwork": True,
+                            "dnsPolicy": "ClusterFirstWithHostNet",
                             "restartPolicy": "Never",
                             "terminationGracePeriodSeconds": 60,
                             "containers": [
@@ -192,6 +194,8 @@ def _raw_replica(*, phase: str = "Pending") -> dict[str, object]:
         "spec": {
             "type": "t0",
             "hostname": "rjob-formal-hostname-0",
+            "hostNetwork": True,
+            "dnsPolicy": "ClusterFirstWithHostNet",
             "restartPolicy": "Never",
             "terminationGracePeriodSeconds": 60,
             "containers": [
@@ -207,7 +211,25 @@ def _raw_replica(*, phase: str = "Pending") -> dict[str, object]:
                         "-lc",
                         _formal_shell_script(),
                     ],
-                    "env": [{"name": "PLATFORM_INJECTED", "value": "1"}],
+                    "env": [
+                        {"name": "PLATFORM_INJECTED", "value": "1"},
+                        {"name": "HOST_NETWORK", "value": "true"},
+                        {
+                            "name": "KUBEBRAIN_HOSTNAME_PREFIX",
+                            "value": "rjob-formal-hostname",
+                        },
+                        {
+                            "name": "KUBEBRAIN_NODE_NAME",
+                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
+                        },
+                        {"name": "KUBEBRAIN_RJOB_NAME", "value": _SCHEDULER_NAME},
+                        {
+                            "name": "KUBEBRAIN_RJOB_UID",
+                            "value": "6d7d6919-2bff-44fa-8b8f-4d5ec49460e2",
+                        },
+                        {"name": "KUBEBRAIN_REPLICA_NAME", "value": replica_name},
+                        {"name": "KUBEBRAIN_QUOTA_GROUP", "value": "eailabagent_gpu"},
+                    ],
                     "resources": {
                         "requests": {
                             "cpu": "128",
@@ -292,6 +314,16 @@ def test_valid_receipt_normalizes_authoritative_fields_and_replica_identity() ->
     assert receipt["pod_names"] == ["rjob-formal-hostname-0"]
     assert receipt["replicas"][0]["pod_hostname"] == "rjob-formal-hostname-0"
     assert receipt["replicas"][0]["pod_name"] == "rjob-formal-hostname-0"
+    assert receipt["replicas"][0]["runtime_identity"] == {
+        "host_network": True,
+        "dns_policy": "ClusterFirstWithHostNet",
+        "hostname_prefix": "rjob-formal-hostname",
+        "node_name_field_path": "spec.nodeName",
+        "rjob_name": _SCHEDULER_NAME,
+        "rjob_uid": "6d7d6919-2bff-44fa-8b8f-4d5ec49460e2",
+        "replica_name": f"{_SCHEDULER_NAME}-abcde",
+        "quota_group": "eailabagent_gpu",
+    }
     assert receipt["replicas"][0]["worker_spec"]["resources"] == {
         "requests_equal_core_limits": True,
         "cpu": 128,
@@ -369,6 +401,14 @@ def test_valid_receipt_normalizes_authoritative_fields_and_replica_identity() ->
         (
             ("spec", "taskSpecs", "t0", "template", "spec", "restartPolicy"),
             "RestartJobOnFailure",
+        ),
+        (
+            ("spec", "taskSpecs", "t0", "template", "spec", "hostNetwork"),
+            False,
+        ),
+        (
+            ("spec", "taskSpecs", "t0", "template", "spec", "dnsPolicy"),
+            "ClusterFirst",
         ),
         (
             ("spec", "taskSpecs", "t0", "template", "spec", "terminationGracePeriodSeconds"),
@@ -469,6 +509,8 @@ def test_requests_must_equal_limits_and_have_no_unexpected_resources() -> None:
         (("metadata", "labels", "rjob.brainpp.cn/zs-task-type"), "rjob-idle"),
         (("spec", "restartPolicy"), "RestartJobOnFailure"),
         (("spec", "terminationGracePeriodSeconds"), 30),
+        (("spec", "hostNetwork"), False),
+        (("spec", "dnsPolicy"), "ClusterFirst"),
         (("spec", "containers", 0, "image"), "registry.example/model@sha256:" + "a" * 64),
         (("spec", "containers", 0, "resources", "requests", "cpu"), "127"),
         (("spec", "containers", 0, "resources", "limits", "cpu"), "127"),
@@ -477,6 +519,19 @@ def test_requests_must_equal_limits_and_have_no_unexpected_resources() -> None:
         (("spec", "containers", 0, "resources", "requests", "nvidia.com/gpu"), "6"),
         (("spec", "containers", 0, "resources", "limits", "nvidia.com/gpu"), "6"),
         (("spec", "containers", 0, "command", 0), "/tmp/untrusted-worker-init"),
+        (("spec", "containers", 0, "env", 1, "value"), "false"),
+        (
+            ("spec", "containers", 0, "env", 2, "value"),
+            "rjob-wrong-hostname",
+        ),
+        (
+            ("spec", "containers", 0, "env", 3, "valueFrom", "fieldRef", "fieldPath"),
+            "metadata.name",
+        ),
+        (("spec", "containers", 0, "env", 4, "value"), "wrong-rjob"),
+        (("spec", "containers", 0, "env", 5, "value"), "00000000-0000-0000-0000-000000000000"),
+        (("spec", "containers", 0, "env", 6, "value"), "wrong-replica"),
+        (("spec", "containers", 0, "env", 7, "value"), "wrong-quota"),
         (
             ("spec", "containers", 0, "command", 6),
             "\n".join(
@@ -535,6 +590,14 @@ def test_expanded_worker_allows_only_audited_platform_injections() -> None:
     worker = replicas["items"][0]["spec"]["containers"][0]
     worker["command"].insert(3, "--metrics-addr=127.0.0.1:9999")
     with pytest.raises(ReceiptValidationError, match="audited worker-init prefix"):
+        validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
+
+
+def test_expanded_worker_rejects_duplicate_runtime_identity_bindings() -> None:
+    replicas = _raw_replicas()
+    worker_env = replicas["items"][0]["spec"]["containers"][0]["env"]
+    worker_env.append({"name": "HOST_NETWORK", "value": "true"})
+    with pytest.raises(ReceiptValidationError, match="exactly one 'HOST_NETWORK' binding"):
         validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
 
 
