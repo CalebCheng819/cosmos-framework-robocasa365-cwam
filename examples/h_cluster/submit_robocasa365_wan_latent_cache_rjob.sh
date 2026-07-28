@@ -26,6 +26,9 @@ readonly RJOB_REPLICAS=1
 readonly NPROC_REQUIRED=8
 readonly RJOB_CPU=192
 readonly RJOB_MEMORY_MIB=1500000
+readonly SCHEDULER_RECEIPT_ATTEMPTS=86400
+readonly SCHEDULER_RECEIPT_RETRY_SECONDS=1
+readonly SCHEDULER_RECEIPT_TIMEOUT_SECONDS=90000
 readonly REALPATH_BIN="/usr/bin/realpath"
 readonly SHA256SUM_BIN="/usr/bin/sha256sum"
 readonly PYTHON3_BIN="/usr/bin/python3"
@@ -626,7 +629,9 @@ PY
 }
 
 set +e
-"$RJOB_BIN" "${SUBMIT_ARGS[@]}" -- "${WORKER_COMMAND[@]}" 2>&1 | "$TEE_BIN" "$SUBMISSION_LOG"
+"$TIMEOUT_BIN" --foreground --kill-after=10s 180s \
+  "$RJOB_BIN" "${SUBMIT_ARGS[@]}" -- "${WORKER_COMMAND[@]}" 2>&1 |
+  "$TEE_BIN" "$SUBMISSION_LOG"
 SUBMIT_PIPE_STATUS=("${PIPESTATUS[@]}")
 set -e
 if [[ "${SUBMIT_PIPE_STATUS[0]}" -ne 0 || "${SUBMIT_PIPE_STATUS[1]}" -ne 0 ]]; then
@@ -718,12 +723,14 @@ fi
 # replaces only its formal-training command grammar with this cache worker's
 # clean-env command grammar.
 set +e
-"$TIMEOUT_BIN" --foreground --kill-after=10s 90s \
+"$TIMEOUT_BIN" --foreground --kill-after=10s "${SCHEDULER_RECEIPT_TIMEOUT_SECONDS}s" \
   "$PYTHON3_BIN" - \
     "$SCHEDULER_CAPTURE_HELPER" \
     "$SCHEDULER_RJOB_NAME" \
     "$SCHEDULER_EXPECTED_CONTRACT" \
-    "$SCHEDULER_STRUCTURED_RECEIPT" >"$SCHEDULER_CAPTURE_LOG" 2>&1 <<'PY'
+    "$SCHEDULER_STRUCTURED_RECEIPT" \
+    "$SCHEDULER_RECEIPT_ATTEMPTS" \
+    "$SCHEDULER_RECEIPT_RETRY_SECONDS" >"$SCHEDULER_CAPTURE_LOG" 2>&1 <<'PY'
 import hashlib
 import importlib.util
 import pathlib
@@ -837,8 +844,8 @@ receipt, digest = module.run_capture(
     scheduler_rjob_name=sys.argv[2],
     expected_json=pathlib.Path(sys.argv[3]),
     output=pathlib.Path(sys.argv[4]),
-    attempts=30,
-    retry_seconds=1.0,
+    attempts=int(sys.argv[5]),
+    retry_seconds=float(sys.argv[6]),
 )
 print(
     "SCHEDULER_STRUCTURED_RECEIPT_VALID",

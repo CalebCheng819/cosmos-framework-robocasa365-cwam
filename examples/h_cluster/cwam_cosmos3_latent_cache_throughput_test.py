@@ -601,6 +601,9 @@ class ThroughputHelperTest(unittest.TestCase):
         self.assertNotIn("--store-host-nvme true", submitter)
         self.assertIn("--store-host-nvme", cache_submitter)
         self.assertNotIn("--store-host-nvme true", cache_submitter)
+        self.assertIn("readonly SCHEDULER_RECEIPT_ATTEMPTS=86400", cache_submitter)
+        self.assertIn("readonly SCHEDULER_RECEIPT_TIMEOUT_SECONDS=90000", cache_submitter)
+        self.assertIn("--foreground --kill-after=10s 180s", cache_submitter)
         self.assertIn("NVME_MOUNT_ROOT:=/nvme", submitter)
         self.assertIn("RJOB_PREDICT_ONLY", submitter)
 
