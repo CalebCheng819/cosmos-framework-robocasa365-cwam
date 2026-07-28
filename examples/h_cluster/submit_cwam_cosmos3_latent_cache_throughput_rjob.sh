@@ -194,7 +194,7 @@ SUBMIT_ARGS=(
     --gpu "$NPROC_REQUIRED"
     --memory "$RJOB_MEMORY_MIB"
     --negative-tags "$RJOB_EXCLUDED_NODE_TAG"
-    --store-host-nvme true
+    --store-host-nvme
     --mount
     "gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs"
     "gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public"

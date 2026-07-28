@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 HELPER_PATH = HERE / "cwam_cosmos3_latent_cache_throughput.py"
 RUNNER_PATH = HERE / "run_cwam_cosmos3_latent_cache_throughput_probe.sh"
 SUBMITTER_PATH = HERE / "submit_cwam_cosmos3_latent_cache_throughput_rjob.sh"
+CACHE_SUBMITTER_PATH = HERE / "submit_robocasa365_wan_latent_cache_rjob.sh"
 SPEC = importlib.util.spec_from_file_location("cwam_cosmos3_latent_cache_throughput", HELPER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 OPS = importlib.util.module_from_spec(SPEC)
@@ -561,6 +562,7 @@ class ThroughputHelperTest(unittest.TestCase):
     def test_runner_and_submitter_wire_the_complete_contract(self) -> None:
         runner = RUNNER_PATH.read_text()
         submitter = SUBMITTER_PATH.read_text()
+        cache_submitter = CACHE_SUBMITTER_PATH.read_text()
         helper = HELPER_PATH.read_text()
         required_runner_fragments = (
             "readonly WARMUP_STEPS=10",
@@ -596,6 +598,9 @@ class ThroughputHelperTest(unittest.TestCase):
         self.assertIn("text_token_ids", helper)
         self.assertIn("readonly RJOB_CPU=192", submitter)
         self.assertIn("--store-host-nvme", submitter)
+        self.assertNotIn("--store-host-nvme true", submitter)
+        self.assertIn("--store-host-nvme", cache_submitter)
+        self.assertNotIn("--store-host-nvme true", cache_submitter)
         self.assertIn("NVME_MOUNT_ROOT:=/nvme", submitter)
         self.assertIn("RJOB_PREDICT_ONLY", submitter)
 

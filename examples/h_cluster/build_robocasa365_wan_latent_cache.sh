@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: OpenMDW-1.1
 #
 # Run this *inside* an allocated H job. When NVMe staging is enabled, the rjob
-# submission must include the platform's `--store-host-nvme true` argument.
+# submission must include the platform's bare `--store-host-nvme` switch.
 
 set -Eeuo pipefail
 umask 022

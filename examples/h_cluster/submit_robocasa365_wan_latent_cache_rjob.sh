@@ -351,7 +351,7 @@ SUBMIT_ARGS=(
   --gpu "$NPROC_REQUIRED"
   --memory "$RJOB_MEMORY_MIB"
   --negative-tags "$RJOB_EXCLUDED_NODE_TAG"
-  --store-host-nvme true
+  --store-host-nvme
   --mount
   "$PERSONAL_GPFS_MOUNT"
   "$PUBLIC_GPFS_MOUNT"
