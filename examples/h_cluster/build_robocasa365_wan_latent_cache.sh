@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: OpenMDW-1.1
 #
 # Run this *inside* an allocated H job. When NVMe staging is enabled, the rjob
-# submission must include the platform's bare `--store-host-nvme` switch.
+# submission must include the platform's `--store-host-nvme true` option.
 
 set -Eeuo pipefail
 umask 022
@@ -18,6 +18,9 @@ readonly REALPATH_BIN="/usr/bin/realpath"
 readonly SHA256SUM_BIN="/usr/bin/sha256sum"
 readonly BASH_BIN="/usr/bin/bash"
 readonly FINDMNT_BIN="/usr/bin/findmnt"
+readonly H_NVIDIA_DRIVER_BIN="/usr/local/nvidia/bin"
+readonly H_NVIDIA_DRIVER_LIB="/usr/local/nvidia/lib"
+readonly H_NVIDIA_DRIVER_LIB64="/usr/local/nvidia/lib64"
 
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable Cosmos source snapshot.}"
 : "${COSMOS_ENV:?Set COSMOS_ENV to the exact runtime environment.}"
@@ -138,9 +141,19 @@ RUNTIME_PYTHON_REALPATH="$("$REALPATH_BIN" -e -- "$RUNTIME_PYTHON")"
 [[ -x "$RUNTIME_PYTHON" && "$RUNTIME_PYTHON_REALPATH" == "$EXPECTED_PYTHON_REALPATH" ]] ||
   { echo "ERROR: runtime Python realpath differs from the submission contract" >&2; exit 1; }
 
-export PATH="$COSMOS_ENV_REALPATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="$COSMOS_ENV_REALPATH/bin:$H_NVIDIA_DRIVER_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PYTHONPATH="$COSMOS_SOURCE_REALPATH"
-export LD_LIBRARY_PATH=""
+# Do not inherit arbitrary shell library paths, but preserve the two paths
+# injected by the H GPU runtime.  Clearing these paths hides libcuda.so.1 from
+# the pinned PyTorch wheel even when the scheduler has allocated all 8 GPUs.
+[[ -d "$H_NVIDIA_DRIVER_BIN" &&
+   -x "$H_NVIDIA_DRIVER_BIN/nvidia-smi" &&
+   -d "$H_NVIDIA_DRIVER_LIB" &&
+   -d "$H_NVIDIA_DRIVER_LIB64" ]] ||
+  { echo "ERROR: H NVIDIA driver library directories are unavailable" >&2; exit 1; }
+[[ -e "$H_NVIDIA_DRIVER_LIB64/libcuda.so.1" ]] ||
+  { echo "ERROR: H NVIDIA driver library libcuda.so.1 is unavailable" >&2; exit 1; }
+export LD_LIBRARY_PATH="$H_NVIDIA_DRIVER_LIB:$H_NVIDIA_DRIVER_LIB64"
 unset BASH_ENV ENV PYTHONHOME PYTHONOPTIMIZE
 PATH_PYTHON="$(type -P python || true)"
 [[ "$PATH_PYTHON" == "$RUNTIME_PYTHON" &&
@@ -214,6 +227,48 @@ NVME_MOUNT_TARGET="$("$REALPATH_BIN" -e -- "$NVME_MOUNT_TARGET")"
 # This authenticated snapshot helper creates a process-local FFmpeg-soname
 # directory and exports the exact LD_LIBRARY_PATH required by TorchCodec.
 source "$TORCHCODEC_RUNTIME_HELPER"
+
+"$H_NVIDIA_DRIVER_BIN/nvidia-smi" -L
+"$RUNTIME_PYTHON" - "$NUM_GPUS" <<'PY'
+import ctypes
+import os
+import sys
+
+import torch
+
+expected_device_count = int(sys.argv[1])
+expected_torch_version = "2.10.0+cu128"
+expected_torch_cuda = "12.8"
+ctypes.CDLL("libcuda.so.1")
+if torch.__version__ != expected_torch_version or torch.version.cuda != expected_torch_cuda:
+    raise SystemExit(
+        "CUDA runtime preflight failed: unexpected pinned Torch runtime "
+        f"torch={torch.__version__!r}, torch_cuda={torch.version.cuda!r}"
+    )
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA runtime preflight failed: torch.cuda.is_available() is false")
+device_count = torch.cuda.device_count()
+if device_count != expected_device_count:
+    raise SystemExit(
+        "CUDA runtime preflight failed: "
+        f"expected {expected_device_count} visible devices, got {device_count}"
+)
+device_properties = [torch.cuda.get_device_properties(index) for index in range(device_count)]
+device_names = [properties.name for properties in device_properties]
+if any("H200" not in name for name in device_names):
+    raise SystemExit(
+        "CUDA runtime preflight failed: expected only H200 devices, "
+        f"got {device_names!r}"
+    )
+print(
+    "CUDA_RUNTIME_READY",
+    f"torch={torch.__version__}",
+    f"torch_cuda={torch.version.cuda}",
+    f"device_count={device_count}",
+    f"devices={device_names!r}",
+    f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r}",
+)
+PY
 
 cd "$COSMOS_SOURCE_REALPATH"
 exec "$RUNTIME_PYTHON" -m torch.distributed.run \

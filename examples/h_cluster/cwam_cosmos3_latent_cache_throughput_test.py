@@ -597,14 +597,25 @@ class ThroughputHelperTest(unittest.TestCase):
             self.assertIn(fragment, runner)
         self.assertIn("text_token_ids", helper)
         self.assertIn("readonly RJOB_CPU=160", submitter)
-        self.assertIn("--store-host-nvme", submitter)
-        self.assertNotIn("--store-host-nvme true", submitter)
-        self.assertIn("--store-host-nvme", cache_submitter)
-        self.assertNotIn("--store-host-nvme true", cache_submitter)
+        self.assertIn("--store-host-nvme true", submitter)
+        self.assertIn("--store-host-nvme true", cache_submitter)
         self.assertIn("readonly RJOB_CPU=128", cache_submitter)
         self.assertIn("readonly SCHEDULER_RECEIPT_ATTEMPTS=86400", cache_submitter)
         self.assertIn("readonly SCHEDULER_RECEIPT_TIMEOUT_SECONDS=90000", cache_submitter)
         self.assertIn("--foreground --kill-after=10s 180s", cache_submitter)
+        cache_wrapper = (
+            Path(__file__).with_name("build_robocasa365_wan_latent_cache.sh").read_text()
+        )
+        self.assertIn(
+            'export LD_LIBRARY_PATH="$H_NVIDIA_DRIVER_LIB:$H_NVIDIA_DRIVER_LIB64"',
+            cache_wrapper,
+        )
+        self.assertIn('"$H_NVIDIA_DRIVER_BIN/nvidia-smi" -L', cache_wrapper)
+        self.assertIn('ctypes.CDLL("libcuda.so.1")', cache_wrapper)
+        self.assertIn('expected_torch_version = "2.10.0+cu128"', cache_wrapper)
+        self.assertIn('expected_torch_cuda = "12.8"', cache_wrapper)
+        self.assertIn("CUDA_RUNTIME_READY", cache_wrapper)
+        self.assertIn("expected_device_count", cache_wrapper)
         self.assertIn("NVME_MOUNT_ROOT:=/nvme", submitter)
         self.assertIn("RJOB_PREDICT_ONLY", submitter)
 
