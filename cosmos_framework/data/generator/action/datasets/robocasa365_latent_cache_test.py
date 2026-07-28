@@ -504,6 +504,46 @@ def test_builder_visual_only_dataset_does_not_load_dense_actions(
     assert dataset.get_visual_window_identity(1)["source_frame_index"] == 101
 
 
+def test_visual_identity_canonicalizes_overlapping_segment_timestamp_ulps(
+    dataset_view: tuple[Path, Path, str],
+) -> None:
+    root, source_root, _ = dataset_view
+    dataset = RoboCasa365SegmentDataset(
+        root=str(root),
+        source_root=str(source_root),
+        action_normalization=None,
+        load_actions=False,
+    )
+    first = dict(dataset._segments[0])
+    first.update(
+        {
+            "source_frame_offset": 0,
+            "valid_window_count": 89,
+            "robot0_agentview_left_from_timestamp": 11.7,
+            "robot0_eye_in_hand_from_timestamp": 11.7,
+        }
+    )
+    overlapping = dict(first)
+    overlapping.update(
+        {
+            "demian_episode_index": 8,
+            "source_frame_offset": 80,
+            "valid_window_count": 8,
+            "robot0_agentview_left_from_timestamp": 15.7,
+            "robot0_eye_in_hand_from_timestamp": 15.7,
+        }
+    )
+    dataset._segments = [first, overlapping]
+    dataset._valid_cum = np.asarray([89, 97], dtype=np.int64)
+
+    identity_from_first = dataset.get_visual_window_identity(87)
+    identity_from_overlap = dataset.get_visual_window_identity(96)
+
+    assert 11.7 + 87 / 20.0 != 15.7 + 7 / 20.0
+    assert identity_from_first == identity_from_overlap
+    assert identity_from_first["camera_effective_start_timestamps"] == [16.05, 16.05]
+
+
 def test_batched_overlapping_window_decode_is_pixel_exact(
     dataset_view: tuple[Path, Path, str],
     monkeypatch: pytest.MonkeyPatch,

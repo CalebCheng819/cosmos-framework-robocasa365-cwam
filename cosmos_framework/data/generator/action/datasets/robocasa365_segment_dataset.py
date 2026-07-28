@@ -99,6 +99,11 @@ _VIEWPOINT_BY_MODE = {
 }
 _ACTION_SPEC = build_action_spec(Pos(), Rot("rot6d"), Gripper())
 _STAT_KEYS = {"mean", "std", "min", "max", "q01", "q99"}
+# The converted timestamps are frame-grid values, but equivalent arithmetic
+# paths through overlapping DeMiAn segments can differ by a few binary64 ULPs.
+# Nine decimal places are 1e5 tighter than the production decoder tolerance
+# and canonicalize only that representation noise.
+_VISUAL_IDENTITY_TIMESTAMP_DECIMALS = 9
 
 
 def _sha256(path: Path) -> str:
@@ -464,7 +469,11 @@ class RoboCasa365SegmentDataset(Dataset):
         if any(not path for path in video_paths):
             raise ValueError("RoboCasa365 camera video paths must be non-empty for latent caching.")
         effective_start_timestamps = [
-            float(segment[f"{field}_from_timestamp"]) + float(window_offset) / self._fps for field in camera_fields
+            round(
+                float(segment[f"{field}_from_timestamp"]) + float(window_offset) / self._fps,
+                _VISUAL_IDENTITY_TIMESTAMP_DECIMALS,
+            )
+            for field in camera_fields
         ]
         if not np.isfinite(effective_start_timestamps).all():
             raise ValueError("RoboCasa365 effective camera timestamps must be finite for latent caching.")
