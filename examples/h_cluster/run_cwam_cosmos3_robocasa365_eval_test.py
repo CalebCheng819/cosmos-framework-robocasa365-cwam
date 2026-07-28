@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -91,12 +92,56 @@ def test_runner_captures_runtime_before_starting_policy_servers() -> None:
     assert '--experiment-id "$EVAL_EXPERIMENT_ID"' in script
     assert '--logical-run-id "$EVAL_LOGICAL_RUN_ID"' in script
     assert '--capture-nonce "$EVAL_RUNTIME_CAPTURE_NONCE"' in script
-    assert "secrets.token_hex(32)" in script
+    assert '--submitted-at-utc "$EVAL_SUBMITTED_AT_UTC"' in script
+    assert '--submission-verification-receipt "$SUBMISSION_VERIFICATION_RECEIPT"' in script
+    assert '--asset-verification-receipt "$ASSET_VERIFICATION_RECEIPT"' in script
+    assert 'EVAL_RUNTIME_CAPTURE_NONCE="$(' not in script
     runtime_helper = Path(__file__).with_name("capture_robocasa365_eval_runtime.py").read_text(encoding="utf-8")
     assert "EGLGLContext(max_width=64, max_height=64, device_id=shard_index)" in runtime_helper
     assert '"CUDA_VISIBLE_DEVICES": str(shard_index)' in runtime_helper
     assert '"MUJOCO_EGL_DEVICE_ID": str(shard_index)' in runtime_helper
     assert "robocasa_egl_contexts_created_per_shard" in runtime_helper
+
+
+def test_runner_verifies_submission_and_assets_before_egl_or_servers() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+
+    submission = script.index('"$COSMOS_PY" "$COSMOS_SOURCE/$SUBMISSION_VERIFY_HELPER_REL"')
+    assets = script.index('"$COSMOS_PY" "$COSMOS_SOURCE/$ASSET_VERIFY_HELPER_REL"')
+    runtime = script.index('"$COSMOS_PY" "$COSMOS_SOURCE/$RUNTIME_RECEIPT_HELPER_REL"')
+    policy_servers = script.index('server_log="$CONTROL_DIR/server-shard${shard}.log"')
+    assert submission < assets < runtime < policy_servers
+    for token in (
+        "EXPECTED_EVAL_SUBMISSION_PENDING_SHA256",
+        "EVAL_SCHEDULER_READBACK_RECEIPT",
+        "KUBEBRAIN_RJOB_NAME",
+        "KUBEBRAIN_RJOB_UID",
+        "cwam_robocasa_asset_manifest.py",
+        "asset-tree-verification.json",
+        "EXPECTED_ROBOCASA_ASSET_MANIFEST_SHA256",
+        "EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256",
+        "__EGL_VENDOR_LIBRARY_FILENAMES",
+        "__GLX_VENDOR_LIBRARY_NAME",
+        "LD_PRELOAD",
+        "LD_AUDIT",
+    ):
+        assert token in script
+
+
+def test_runner_reverifies_all_live_inputs_after_rollouts_before_summary() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+
+    assert "asset_verification_elapsed_seconds" in script
+    assert "checkpoint_verification_elapsed_seconds" in script
+    evaluators_reaped = script.index("EVALUATOR_PIDS=()")
+    servers_stopped = script.index('stop_child_pids "${SERVER_PIDS[@]}"', evaluators_reaped)
+    post_rollout = script.index("verify-post-rollout")
+    summary = script.index("SUMMARIZE_ARGS=(")
+    assert evaluators_reaped < servers_stopped < post_rollout < summary
+    assert '--contract "$CONTRACT_PATH"' in script[post_rollout:summary]
+    assert '--output "$POST_ROLLOUT_VERIFICATION_RECEIPT"' in script[post_rollout:summary]
+    assert '--post-rollout-verification-receipt "$POST_ROLLOUT_VERIFICATION_RECEIPT"' in script
+    assert '"$POST_ROLLOUT_VERIFICATION_RECEIPT" \\' in script
 
 
 def test_runner_hard_pins_episode_reset_demian_revision() -> None:
@@ -119,6 +164,8 @@ def test_runner_rejects_reused_outputs_and_non_nvme_scratch() -> None:
     script = RUNNER.read_text(encoding="utf-8")
 
     assert "Refusing to reuse EVAL_OUTPUT_ROOT" in script
+    assert "Refusing to reuse experiment output root" in script
+    assert 'mkdir -- "$EXPERIMENT_OUTPUT_ROOT"' in script
     assert "Refusing to reuse EVAL_NVME_ROOT" in script
     assert "EVAL_NVME_ROOT must be a strict child of /nvme" in script
     assert "/nvme is not backed by /dev/nvme1n1" in script
@@ -128,10 +175,34 @@ def test_runner_rejects_reused_outputs_and_non_nvme_scratch() -> None:
 def test_formal_mode_can_select_the_complete_split() -> None:
     script = RUNNER.read_text(encoding="utf-8")
 
-    assert ': "${EVAL_TASKS_CSV:=}"' in script
+    assert "[[ -v EVAL_TASKS_CSV ]]" in script
     assert ': "${EVAL_TASKS_CSV:=OpenDrawer}"' not in script
     assert "formal evaluation must use the complete canonical split" in script
     assert "formal evaluation requires NUM_SHARDS=8" in script
+
+
+def test_runner_has_no_hidden_phase_or_resource_defaults() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+
+    for name in (
+        "EVAL_STAGE",
+        "EVAL_SPLIT",
+        "EPISODES_PER_TASK",
+        "NUM_SHARDS",
+        "BASE_SEED",
+        "MAX_STEPS",
+        "OPEN_LOOP_HORIZON",
+        "POLICY_SAMPLER",
+        "POLICY_SEED",
+        "POLICY_GUIDANCE",
+        "POLICY_NUM_STEPS",
+        "BASE_PORT",
+        "SERVER_READY_TIMEOUT_SECONDS",
+        "ALLOWED_OUTPUT_PARENT",
+        "EVAL_NVME_ROOT",
+    ):
+        assert f"${{{name}:=" not in script
+        assert f"${{{name}:?" in script
 
 
 def test_signal_traps_cannot_report_success() -> None:
@@ -140,3 +211,15 @@ def test_signal_traps_cannot_report_success() -> None:
     assert "trap 'cleanup 130' INT" in script
     assert "trap 'cleanup 143' TERM" in script
     assert "trap cleanup EXIT INT TERM" not in script
+    assert "readonly CLEANUP_GRACE_SECONDS=30" in script
+    assert "deadline=$((SECONDS + CLEANUP_GRACE_SECONDS))" in script
+    assert 'kill -KILL "$pid"' in script
+
+
+def test_all_embedded_python_programs_compile() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+    programs = re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|\Z)", script, re.DOTALL)
+
+    assert len(programs) == 3
+    for index, program in enumerate(programs, start=1):
+        compile(program, f"{RUNNER.name}:heredoc-{index}", "exec")

@@ -29,9 +29,19 @@ import json
 import math
 import os
 import re
+import stat
+import subprocess
 import tempfile
-from pathlib import Path
+import time
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+
+try:
+    from . import cwam_formal_provenance, cwam_robocasa_asset_manifest, cwam_serving_checkpoint_manifest
+except ImportError:  # pragma: no cover - direct script execution
+    import cwam_formal_provenance
+    import cwam_robocasa_asset_manifest
+    import cwam_serving_checkpoint_manifest
 
 ATOMIC_TASKS = (
     "CloseBlenderLid",
@@ -90,11 +100,30 @@ COMPOSITE_TASKS = (
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _NORMALIZED_GPU_UUID_RE = re.compile(r"^[0-9a-f]{32}$")
 _NORMALIZE_DISTRIBUTION_NAME_RE = re.compile(r"[-_.]+")
 _CONTRACT_KIND = "cwam_robocasa365_formal_eval_contract"
 _EVIDENCE_KIND = "cwam_robocasa365_formal_eval_evidence"
 _EXPECTED_H_DRIVER_LIBRARY_PATH = "/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+_EXPECTED_EGL_VENDOR_JSON = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+_EXPECTED_FORBIDDEN_GRAPHICS_ENVIRONMENT = (
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "__EGL_VENDOR_LIBRARY_DIRS",
+    "LIBGL_ALWAYS_SOFTWARE",
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "LIBGL_DRIVERS_PATH",
+)
+_SUBMISSION_VERIFICATION_KIND = "cwam_robocasa365_eval_submission_verification"
+_ASSET_VERIFICATION_KIND = "cwam_robocasa_asset_tree_verification_receipt"
+_POST_ROLLOUT_VERIFICATION_KIND = "cwam_robocasa365_post_rollout_live_input_verification_receipt"
+_POST_ROLLOUT_SCOPE = "point_in_time_post_rollout_live_input_reverification"
+_POST_ROLLOUT_SNAPSHOT_ALLOWED_ROOT = Path("/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/run_snapshots")
+_GIT_EXECUTABLE = Path("/usr/bin/git")
+_GIT_COMMAND_TIMEOUT_SECONDS = 600
+_MAX_START_TO_CAPTURE_SECONDS = 2 * 60 * 60
+_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 _EXPECTED_DEMIAN_COMMIT = "2600ece5bf0eeacf010a95f084dcda2de6d30d59"
 _EXPECTED_DEMIAN_EVALUATOR_SHA256 = "c38ed1f4049d079b84c185cb572667a47eaf984c2c22b492efc8985401119836"
 _EXPECTED_DEMIAN_TASK_REGISTRY_SHA256 = "e902311cf435986859ae01920548aba169e085ad6d26187cad9fb0d1f9c315de"
@@ -143,6 +172,7 @@ _RUNTIME_RECEIPT_KEYS = frozenset(
         "schema_version",
         "kind",
         "status",
+        "capture_started_at_utc",
         "captured_at_utc",
         "driver_environment",
         "inputs",
@@ -150,6 +180,7 @@ _RUNTIME_RECEIPT_KEYS = frozenset(
         "cosmos_runtime",
         "robocasa_runtime",
         "robocasa_egl",
+        "graphics_userspace",
         "nvidia_smi",
         "validation",
     }
@@ -159,7 +190,10 @@ _RUNTIME_INPUT_KEYS = frozenset(
         "experiment_id",
         "logical_run_id",
         "capture_nonce",
+        "submitted_at_utc",
         "num_gpus",
+        "submission_verification_receipt",
+        "asset_verification_receipt",
         "interpreters",
         "environment_manifests",
         "sources",
@@ -204,6 +238,101 @@ _RUNTIME_VALIDATION_KEYS = frozenset(
         "torch_and_nvidia_smi_uuid_sets_match",
         "h_driver_library_path_is_exact",
         "robocasa_egl_contexts_created_per_shard",
+        "submission_identity_and_freshness_match",
+        "asset_tree_verification_is_bound",
+        "graphics_userspace_files_match_live_hashes",
+        "nvidia_gl_vendor_and_renderer_match",
+    }
+)
+_RUNTIME_BOUND_RECEIPT_DESCRIPTOR_KEYS = frozenset(
+    {
+        "path",
+        "size_bytes",
+        "sha256",
+        "expected_sha256",
+        "kind",
+        "schema_version",
+    }
+)
+_GRAPHICS_FILE_DESCRIPTOR_KEYS = frozenset(
+    {
+        "supplied_path",
+        "canonical_path",
+        "size_bytes",
+        "sha256",
+    }
+)
+_GRAPHICS_LIBRARY_DESCRIPTOR_KEYS = _GRAPHICS_FILE_DESCRIPTOR_KEYS | frozenset(
+    {
+        "name",
+        "requested_soname",
+        "symbol",
+        "evidence_class",
+        "was_mapped_after_egl_context",
+    }
+)
+_POST_FILE_DESCRIPTOR_KEYS = frozenset({"path", "size_bytes", "sha256"})
+_POST_CONTRACT_DESCRIPTOR_KEYS = _POST_FILE_DESCRIPTOR_KEYS | frozenset(
+    {
+        "kind",
+        "schema_version",
+    }
+)
+_POST_ROLLOUT_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "status",
+        "scope",
+        "verified_at_utc",
+        "contract",
+        "inputs",
+        "live_verification",
+        "semantic_matches",
+        "elapsed_seconds",
+        "validation",
+    }
+)
+_POST_ROLLOUT_INPUT_KEYS = frozenset(
+    {
+        "cosmos_snapshot_manifest",
+        "serving_checkpoint_manifest",
+        "pre_rollout_checkpoint_verification_receipt",
+        "pre_rollout_asset_verification_receipt",
+    }
+)
+_POST_ROLLOUT_LIVE_KEYS = frozenset(
+    {
+        "cosmos_snapshot",
+        "serving_checkpoint",
+        "robocasa_assets",
+        "source_repositories",
+    }
+)
+_POST_ROLLOUT_SEMANTIC_MATCH_KEYS = frozenset(
+    {
+        "checkpoint_pre_and_post",
+        "robocasa_assets_pre_and_post",
+    }
+)
+_POST_ROLLOUT_ELAPSED_KEYS = frozenset(
+    {
+        "cosmos_snapshot",
+        "serving_checkpoint",
+        "robocasa_assets",
+        "source_repositories",
+        "total",
+    }
+)
+_POST_ROLLOUT_VALIDATION_KEYS = frozenset(
+    {
+        "cosmos_snapshot_full_file_verification_passed",
+        "serving_checkpoint_full_file_verification_passed",
+        "robocasa_asset_full_tree_verification_passed",
+        "source_heads_match_and_are_clean",
+        "tracked_source_files_match_head_blobs",
+        "pre_and_post_checkpoint_receipts_semantically_match",
+        "pre_and_post_asset_receipts_semantically_match",
     }
 )
 _CSV_EPISODE_FIELDS = (
@@ -254,9 +383,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"JSON contains duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite(value: str) -> None:
+    raise ValueError(f"JSON contains forbidden non-finite value {value}")
+
+
 def _load_json(path: Path) -> Any:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_nonfinite,
+        )
     except FileNotFoundError:
         raise FileNotFoundError(f"Required evaluation artifact not found: {path}") from None
     except json.JSONDecodeError as exc:
@@ -307,6 +453,13 @@ def _require_commit(value: Any, label: str) -> str:
     return commit
 
 
+def _require_run_id(value: Any, label: str) -> str:
+    run_id = _require_nonempty_str(value, label)
+    if run_id in {".", ".."} or _RUN_ID_RE.fullmatch(run_id) is None:
+        raise ValueError(f"{label} must be 1-128 path-safe characters with alphanumeric endpoints")
+    return run_id
+
+
 def _normalized_gpu_uuid(value: Any, label: str) -> str:
     raw = _require_nonempty_str(value, label).lower()
     if raw.startswith("gpu-"):
@@ -341,6 +494,373 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+def _atomic_write_exclusive(
+    path: Path,
+    text: str,
+    *,
+    create_parent: bool = True,
+) -> None:
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.parent.is_dir() or path.parent.is_symlink():
+        raise ValueError(f"Artifact parent must be an existing non-symlink directory: {path.parent}")
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"Refusing to overwrite existing artifact: {path}")
+    encoded = text.encode("utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    published = False
+    try:
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o444)
+        os.link(temporary, path, follow_symlinks=False)
+        published = True
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        if published:
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _stable_file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(metadata.st_mode),
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+        int(metadata.st_ctime_ns),
+    )
+
+
+def _canonical_regular_file_descriptor(
+    path: Path,
+    label: str,
+    *,
+    expected_sha256: str | None = None,
+    expected_mode: int | None = None,
+) -> dict[str, Any]:
+    supplied = Path(os.path.abspath(path.expanduser()))
+    try:
+        canonical = supplied.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} does not resolve to an existing file: {supplied}") from error
+    try:
+        metadata = canonical.lstat()
+    except OSError as error:
+        raise ValueError(f"{label} cannot be inspected: {canonical}") from error
+    if supplied != canonical or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{label} must be a canonical regular non-symlink file: {supplied}")
+    if expected_mode is not None and stat.S_IMODE(metadata.st_mode) != expected_mode:
+        raise ValueError(
+            f"{label} mode mismatch: expected={oct(expected_mode)}, actual={oct(stat.S_IMODE(metadata.st_mode))}"
+        )
+    sha256 = _sha256(canonical)
+    after = canonical.lstat()
+    if _stable_file_identity(metadata) != _stable_file_identity(after):
+        raise RuntimeError(f"{label} changed while it was being described: {canonical}")
+    if expected_sha256 is not None and sha256 != _require_sha256(expected_sha256, f"{label} expected SHA256"):
+        raise ValueError(f"{label} SHA256 does not match the eval contract")
+    return {
+        "path": str(canonical),
+        "size_bytes": int(metadata.st_size),
+        "sha256": sha256,
+    }
+
+
+def _validate_post_file_descriptor(
+    value: Any,
+    *,
+    expected: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    descriptor = _require_dict(value, label)
+    _require_exact_keys(descriptor, _POST_FILE_DESCRIPTOR_KEYS, label)
+    path = _absolute_resolved_path(descriptor.get("path"), f"{label}.path")
+    if path != Path(expected["path"]):
+        raise ValueError(f"{label}.path does not match the exact contract-derived file")
+    size_bytes = _require_int(descriptor.get("size_bytes"), f"{label}.size_bytes", minimum=1)
+    sha256 = _require_sha256(descriptor.get("sha256"), f"{label}.sha256")
+    if size_bytes != expected["size_bytes"] or sha256 != expected["sha256"]:
+        raise ValueError(f"{label} does not match the exact live file descriptor")
+    current = _canonical_regular_file_descriptor(path, label)
+    if current != expected:
+        raise ValueError(f"{label} changed during post-rollout verification")
+    return dict(descriptor)
+
+
+def _canonical_git_root(root: Path, label: str) -> Path:
+    supplied = Path(os.path.abspath(root.expanduser()))
+    try:
+        canonical = supplied.resolve(strict=True)
+        metadata = canonical.lstat()
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} does not resolve to an existing repository: {supplied}") from error
+    if supplied != canonical or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} must be a canonical non-symlink directory: {supplied}")
+    return canonical
+
+
+def _run_git(
+    root: Path,
+    arguments: list[str],
+    *,
+    label: str,
+    input_bytes: bytes | None = None,
+) -> bytes:
+    git = _GIT_EXECUTABLE.resolve(strict=True)
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    command = [
+        str(git),
+        "--no-optional-locks",
+        "-c",
+        f"safe.directory={root}",
+        "-C",
+        str(root),
+        *arguments,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            input=input_bytes,
+            capture_output=True,
+            check=False,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"{label} could not execute safely: {error}") from error
+    if result.returncode != 0:
+        diagnostics = (result.stderr or result.stdout)[-4000:].decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"{label} failed with exit code {result.returncode}: {diagnostics or 'no diagnostics'}")
+    if len(result.stdout) > 256 * 1024 * 1024 or len(result.stderr) > 1024 * 1024:
+        raise RuntimeError(f"{label} produced an unexpectedly large response")
+    return result.stdout
+
+
+def _single_git_line(root: Path, arguments: list[str], *, label: str) -> str:
+    try:
+        text = _run_git(root, arguments, label=label).decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} did not emit valid UTF-8") from error
+    lines = text.splitlines()
+    if len(lines) != 1 or lines[0] != lines[0].strip():
+        raise ValueError(f"{label} must emit exactly one trimmed line")
+    return lines[0]
+
+
+def _git_status_clean(root: Path, label: str) -> None:
+    status = _run_git(
+        root,
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        label=f"{label} git status",
+    )
+    if status:
+        detail = status[:2000].decode("utf-8", errors="replace")
+        raise ValueError(f"{label} source checkout is dirty: {detail}")
+
+
+def _verify_tracked_regular_files(root: Path, label: str) -> dict[str, Any]:
+    object_format = _single_git_line(
+        root,
+        ["rev-parse", "--show-object-format"],
+        label=f"{label} git object format",
+    )
+    if object_format not in {"sha1", "sha256"}:
+        raise ValueError(f"{label} uses an unsupported Git object format: {object_format!r}")
+    oid_length = 40 if object_format == "sha1" else 64
+    tree_oid = _single_git_line(
+        root,
+        ["rev-parse", "--verify", "HEAD^{tree}"],
+        label=f"{label} HEAD tree",
+    )
+    if re.fullmatch(rf"[0-9a-f]{{{oid_length}}}", tree_oid) is None:
+        raise ValueError(f"{label} HEAD tree did not produce a canonical object ID")
+
+    tree_payload = _run_git(
+        root,
+        ["ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+        label=f"{label} tracked tree",
+    )
+    raw_entries = tree_payload.split(b"\0")
+    if raw_entries[-1:] != [b""]:
+        raise ValueError(f"{label} tracked tree output is not NUL terminated")
+    tracked_entry_count = 0
+    non_regular_entry_count = 0
+    regular_entries: list[tuple[str, str, str, os.stat_result]] = []
+    seen_paths: set[str] = set()
+    for raw_entry in raw_entries[:-1]:
+        tracked_entry_count += 1
+        try:
+            header, raw_path = raw_entry.split(b"\t", maxsplit=1)
+            mode, object_type, object_id = header.decode("ascii", errors="strict").split(" ")
+            relative_path = raw_path.decode("utf-8", errors="strict")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ValueError(f"{label} tracked tree entry is malformed") from error
+        if (
+            not relative_path
+            or "\n" in relative_path
+            or "\r" in relative_path
+            or "\x00" in relative_path
+            or PurePosixPath(relative_path).is_absolute()
+            or any(component in {"", ".", ".."} for component in PurePosixPath(relative_path).parts)
+            or PurePosixPath(relative_path).as_posix() != relative_path
+            or relative_path in seen_paths
+        ):
+            raise ValueError(f"{label} contains a non-canonical tracked path: {relative_path!r}")
+        seen_paths.add(relative_path)
+        if re.fullmatch(rf"[0-9a-f]{{{oid_length}}}", object_id) is None:
+            raise ValueError(f"{label} tracked entry has an invalid object ID: {relative_path!r}")
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            non_regular_entry_count += 1
+            continue
+        live_path = root.joinpath(*PurePosixPath(relative_path).parts)
+        try:
+            metadata = live_path.lstat()
+        except OSError as error:
+            raise ValueError(f"{label} tracked regular file is missing: {relative_path!r}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{label} tracked regular file is not a live regular file: {relative_path!r}")
+        live_mode = stat.S_IMODE(metadata.st_mode)
+        executable = bool(live_mode & 0o111)
+        expected_executable = mode == "100755"
+        if executable is not expected_executable:
+            raise ValueError(
+                f"{label} tracked regular file executable-bit semantics differ from HEAD: "
+                f"path={relative_path!r}, git_mode={mode}, live_mode={oct(live_mode)}"
+            )
+        regular_entries.append((relative_path, mode, object_id, metadata))
+    if not regular_entries:
+        raise ValueError(f"{label} must contain at least one tracked regular file")
+
+    path_input = "".join(f"{relative_path}\n" for relative_path, *_ in regular_entries).encode("utf-8")
+    live_hashes_payload = _run_git(
+        root,
+        ["hash-object", "--no-filters", "--stdin-paths"],
+        label=f"{label} live tracked file hashing",
+        input_bytes=path_input,
+    )
+    try:
+        live_hashes = live_hashes_payload.decode("ascii", errors="strict").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} live tracked file hashes are not ASCII") from error
+    if len(live_hashes) != len(regular_entries):
+        raise ValueError(f"{label} live tracked file hash count differs from HEAD")
+
+    records: list[dict[str, Any]] = []
+    total_bytes = 0
+    for (relative_path, mode, expected_oid, before), actual_oid in zip(
+        regular_entries,
+        live_hashes,
+        strict=True,
+    ):
+        if actual_oid != expected_oid:
+            raise ValueError(
+                f"{label} tracked file content differs from HEAD: "
+                f"path={relative_path!r}, expected={expected_oid}, actual={actual_oid}"
+            )
+        live_path = root.joinpath(*PurePosixPath(relative_path).parts)
+        after = live_path.lstat()
+        if _stable_file_identity(before) != _stable_file_identity(after):
+            raise RuntimeError(f"{label} tracked file changed while hashing: {relative_path!r}")
+        total_bytes += int(after.st_size)
+        records.append(
+            {
+                "path": relative_path,
+                "git_mode": mode,
+                "head_blob_oid": expected_oid,
+                "live_mode": stat.S_IMODE(after.st_mode),
+                "size_bytes": int(after.st_size),
+            }
+        )
+    manifest_payload = json.dumps(
+        records,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "object_format": object_format,
+        "head_tree_oid": tree_oid,
+        "tracked_entry_count": tracked_entry_count,
+        "tracked_regular_file_count": len(records),
+        "tracked_non_regular_entry_count": non_regular_entry_count,
+        "tracked_regular_total_bytes": total_bytes,
+        "tracked_regular_manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+        "all_tracked_regular_files_match_head_blobs": True,
+    }
+
+
+def _verify_git_repository(
+    *,
+    name: str,
+    root: Path,
+    expected_commit: str,
+    verify_tracked_files: bool,
+) -> dict[str, Any]:
+    canonical = _canonical_git_root(root, f"{name} source root")
+    expected = _require_commit(expected_commit, f"{name} expected commit")
+    top_level = _single_git_line(
+        canonical,
+        ["rev-parse", "--show-toplevel"],
+        label=f"{name} Git top-level",
+    )
+    if Path(top_level).resolve(strict=True) != canonical:
+        raise ValueError(f"{name} Git top-level differs from the contract root")
+    actual = _single_git_line(
+        canonical,
+        ["rev-parse", "--verify", "HEAD"],
+        label=f"{name} Git HEAD",
+    )
+    if _require_commit(actual, f"{name} actual commit") != expected:
+        raise ValueError(f"{name} Git HEAD differs from the eval contract")
+    _git_status_clean(canonical, name)
+    tracked_files = (
+        _verify_tracked_regular_files(canonical, name)
+        if verify_tracked_files
+        else {
+            "verification_mode": "covered_by_full_cosmos_snapshot_verification",
+        }
+    )
+    if (
+        _single_git_line(
+            canonical,
+            ["rev-parse", "--verify", "HEAD"],
+            label=f"{name} final Git HEAD",
+        )
+        != expected
+    ):
+        raise RuntimeError(f"{name} Git HEAD changed during post-rollout verification")
+    _git_status_clean(canonical, f"{name} final")
+    return {
+        "root": str(canonical),
+        "expected_commit": expected,
+        "actual_commit": actual,
+        "clean": True,
+        "tracked_files": tracked_files,
+    }
+
+
 def _atomic_write_csv(path: Path, fieldnames: tuple[str, ...], rows: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -362,17 +882,28 @@ def _atomic_write_csv(path: Path, fieldnames: tuple[str, ...], rows: Iterable[di
 
 def _verify_file_artifact(artifacts: dict[str, Any], name: str) -> dict[str, str]:
     descriptor = _require_dict(artifacts.get(name), f"contract.artifacts.{name}")
+    _require_exact_keys(
+        descriptor,
+        frozenset({"path", "sha256"}),
+        f"contract.artifacts.{name}",
+    )
     path = Path(_require_nonempty_str(descriptor.get("path"), f"contract.artifacts.{name}.path"))
     if not path.is_absolute():
         raise ValueError(f"contract.artifacts.{name}.path must be absolute: {path}")
+    try:
+        resolved_path = path.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"contract.artifacts.{name}.path does not resolve") from error
+    if resolved_path != path or path.is_symlink() or not path.is_file():
+        raise ValueError(f"contract.artifacts.{name}.path must be a canonical regular non-symlink file")
     expected = _require_sha256(
         descriptor.get("sha256"),
         f"contract.artifacts.{name}.sha256",
     )
-    actual = _sha256(path)
+    actual = _sha256(resolved_path)
     if actual != expected:
         raise RuntimeError(f"{name} SHA256 mismatch: expected={expected}, actual={actual}, path={path}")
-    return {"path": str(path), "sha256": actual}
+    return {"path": str(resolved_path), "sha256": actual}
 
 
 def _absolute_resolved_path(value: Any, label: str) -> Path:
@@ -383,6 +914,174 @@ def _absolute_resolved_path(value: Any, label: str) -> Path:
         return path.expanduser().resolve(strict=True)
     except (FileNotFoundError, OSError, RuntimeError) as error:
         raise ValueError(f"{label} must resolve to an existing path: {path}") from error
+
+
+def _parse_utc(value: Any, label: str) -> dt.datetime:
+    text = _require_nonempty_str(value, label)
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{label} is not a valid ISO-8601 timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        raise ValueError(f"{label} must identify UTC")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _validate_bound_receipt_descriptor(
+    value: Any,
+    *,
+    artifact: dict[str, str],
+    expected_kind: str,
+    label: str,
+) -> dict[str, Any]:
+    descriptor = _require_dict(value, label)
+    _require_exact_keys(descriptor, _RUNTIME_BOUND_RECEIPT_DESCRIPTOR_KEYS, label)
+    artifact_path = Path(artifact["path"]).resolve(strict=True)
+    if _absolute_resolved_path(descriptor.get("path"), f"{label}.path") != artifact_path:
+        raise ValueError(f"{label}.path does not match the eval contract artifact")
+    size_bytes = _require_int(descriptor.get("size_bytes"), f"{label}.size_bytes", minimum=1)
+    if size_bytes != artifact_path.stat().st_size:
+        raise ValueError(f"{label}.size_bytes does not match the live receipt")
+    actual_sha256 = _sha256(artifact_path)
+    if (
+        _require_sha256(descriptor.get("sha256"), f"{label}.sha256") != artifact["sha256"]
+        or _require_sha256(
+            descriptor.get("expected_sha256"),
+            f"{label}.expected_sha256",
+        )
+        != artifact["sha256"]
+        or actual_sha256 != artifact["sha256"]
+    ):
+        raise ValueError(f"{label} does not bind the exact live receipt SHA256")
+    if descriptor.get("kind") != expected_kind or descriptor.get("schema_version") != 1:
+        raise ValueError(f"{label} has an unsupported schema/kind")
+    return dict(descriptor)
+
+
+def _validate_graphics_file_descriptor(
+    value: Any,
+    *,
+    label: str,
+    expected_keys: frozenset[str],
+) -> dict[str, Any]:
+    descriptor = _require_dict(value, label)
+    _require_exact_keys(descriptor, expected_keys, label)
+    supplied_path = Path(_require_nonempty_str(descriptor.get("supplied_path"), f"{label}.supplied_path"))
+    if not supplied_path.is_absolute():
+        raise ValueError(f"{label}.supplied_path must be absolute")
+    try:
+        canonical_path = supplied_path.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label}.supplied_path does not resolve to a live file") from error
+    if not canonical_path.is_file():
+        raise ValueError(f"{label}.supplied_path must resolve to a regular file")
+    recorded_canonical = Path(
+        _require_nonempty_str(
+            descriptor.get("canonical_path"),
+            f"{label}.canonical_path",
+        )
+    )
+    if not recorded_canonical.is_absolute() or recorded_canonical != canonical_path:
+        raise ValueError(f"{label}.canonical_path does not match the live resolution")
+    size_bytes = _require_int(descriptor.get("size_bytes"), f"{label}.size_bytes", minimum=1)
+    if canonical_path.stat().st_size != size_bytes:
+        raise ValueError(f"{label}.size_bytes does not match the live graphics file")
+    sha256 = _require_sha256(descriptor.get("sha256"), f"{label}.sha256")
+    if _sha256(canonical_path) != sha256:
+        raise ValueError(f"{label}.sha256 does not match the live graphics file")
+    return dict(descriptor)
+
+
+def _validate_graphics_userspace(value: Any, label: str) -> dict[str, Any]:
+    graphics = _require_dict(value, label)
+    _require_exact_keys(
+        graphics,
+        frozenset({"egl_vendor_json", "libraries", "gl_identity"}),
+        label,
+    )
+    vendor_json = _validate_graphics_file_descriptor(
+        graphics.get("egl_vendor_json"),
+        label=f"{label}.egl_vendor_json",
+        expected_keys=_GRAPHICS_FILE_DESCRIPTOR_KEYS | frozenset({"file_format_version", "icd_library_path"}),
+    )
+    if (
+        vendor_json["supplied_path"] != _EXPECTED_EGL_VENDOR_JSON
+        or vendor_json["file_format_version"] != "1.0.0"
+        or vendor_json["icd_library_path"] != "libEGL_nvidia.so.0"
+    ):
+        raise ValueError(f"{label}.egl_vendor_json does not match the pinned NVIDIA ICD")
+
+    expected_libraries = {
+        "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
+        "libEGL_nvidia": (
+            "libEGL_nvidia.so.0",
+            "eglQueryString",
+            "egl_context_mapped",
+            True,
+        ),
+        "libGL": (
+            "libGL.so.1",
+            "glGetString",
+            "resolved_and_dlopen_verified",
+            None,
+        ),
+        "libGLX": (
+            "libGLX.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            None,
+        ),
+        "libGLX_nvidia": (
+            "libGLX_nvidia.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            None,
+        ),
+    }
+    libraries = _require_dict(graphics.get("libraries"), f"{label}.libraries")
+    _require_exact_keys(libraries, frozenset(expected_libraries), f"{label}.libraries")
+    normalized_libraries: dict[str, Any] = {}
+    for name, (soname, symbol, evidence_class, required_mapped) in expected_libraries.items():
+        library_label = f"{label}.libraries.{name}"
+        record = _validate_graphics_file_descriptor(
+            libraries.get(name),
+            label=library_label,
+            expected_keys=_GRAPHICS_LIBRARY_DESCRIPTOR_KEYS,
+        )
+        expected = {
+            "name": name,
+            "requested_soname": soname,
+            "symbol": symbol,
+            "evidence_class": evidence_class,
+        }
+        for key, expected_value in expected.items():
+            if record.get(key) != expected_value:
+                raise ValueError(
+                    f"{library_label}.{key} mismatch: expected={expected_value!r}, actual={record.get(key)!r}"
+                )
+        mapped = record.get("was_mapped_after_egl_context")
+        if type(mapped) is not bool:
+            raise TypeError(f"{library_label}.was_mapped_after_egl_context must be boolean")
+        if required_mapped is True and mapped is not True:
+            raise ValueError(f"{library_label} was not mapped by the live EGL context")
+        normalized_libraries[name] = record
+
+    gl_identity = _require_dict(graphics.get("gl_identity"), f"{label}.gl_identity")
+    _require_exact_keys(gl_identity, frozenset({"vendor", "renderer"}), f"{label}.gl_identity")
+    vendor = _require_nonempty_str(gl_identity.get("vendor"), f"{label}.gl_identity.vendor")
+    renderer = _require_nonempty_str(
+        gl_identity.get("renderer"),
+        f"{label}.gl_identity.renderer",
+    )
+    if "NVIDIA" not in vendor.upper():
+        raise ValueError(f"{label}.gl_identity.vendor is not NVIDIA")
+    if "MESA" in renderer.upper() or "LLVMPIPE" in renderer.upper():
+        raise ValueError(f"{label}.gl_identity.renderer is software/Mesa")
+    return {
+        "egl_vendor_json": vendor_json,
+        "libraries": normalized_libraries,
+        "gl_identity": {"vendor": vendor, "renderer": renderer},
+    }
 
 
 def _validated_environment_manifest(
@@ -590,34 +1289,333 @@ def _validate_environment_runtime_binding(
         raise ValueError(f"{report_label} does not match the environment manifest")
 
 
+def _validate_external_execution_bindings(
+    *,
+    contract: dict[str, Any],
+    verified: dict[str, Any],
+    inputs: dict[str, Any],
+    capture_started: dt.datetime,
+    captured_at: dt.datetime,
+) -> dict[str, Any]:
+    submission_descriptor = _validate_bound_receipt_descriptor(
+        inputs.get("submission_verification_receipt"),
+        artifact=verified["submission_verification_receipt"],
+        expected_kind=_SUBMISSION_VERIFICATION_KIND,
+        label="eval_runtime_receipt.inputs.submission_verification_receipt",
+    )
+    asset_descriptor = _validate_bound_receipt_descriptor(
+        inputs.get("asset_verification_receipt"),
+        artifact=verified["asset_verification_receipt"],
+        expected_kind=_ASSET_VERIFICATION_KIND,
+        label="eval_runtime_receipt.inputs.asset_verification_receipt",
+    )
+
+    submission = _require_dict(
+        _load_json(Path(verified["submission_verification_receipt"]["path"])),
+        "submission_verification_receipt",
+    )
+    _require_exact_keys(
+        submission,
+        frozenset(
+            {
+                "schema_version",
+                "kind",
+                "status",
+                "verified_at_utc",
+                "identity",
+                "freshness",
+                "evaluation",
+                "scheduler",
+                "reservation",
+                "scheduler_readback_receipt",
+                "scheduler_artifacts",
+                "validation",
+            }
+        ),
+        "submission_verification_receipt",
+    )
+    if (
+        submission.get("schema_version") != 1
+        or submission.get("kind") != _SUBMISSION_VERIFICATION_KIND
+        or submission.get("status") != "passed"
+    ):
+        raise ValueError("submission_verification_receipt has an unsupported schema/kind/status")
+    identity = _require_dict(
+        submission.get("identity"),
+        "submission_verification_receipt.identity",
+    )
+    _require_exact_keys(
+        identity,
+        frozenset(
+            {
+                "experiment_id",
+                "logical_run_id",
+                "run_name",
+                "submission_nonce",
+                "submitted_at_utc",
+            }
+        ),
+        "submission_verification_receipt.identity",
+    )
+    expected_identity = {
+        "experiment_id": contract["experiment_id"],
+        "logical_run_id": contract["logical_run_id"],
+        "run_name": contract["run_name"],
+        "submission_nonce": inputs["capture_nonce"],
+        "submitted_at_utc": inputs["submitted_at_utc"],
+    }
+    if identity != expected_identity:
+        raise ValueError("submission_verification_receipt.identity does not match the eval contract")
+
+    freshness = _require_dict(
+        submission.get("freshness"),
+        "submission_verification_receipt.freshness",
+    )
+    _require_exact_keys(
+        freshness,
+        frozenset(
+            {
+                "age_seconds",
+                "expires_at_utc",
+                "max_age_seconds",
+                "max_future_skew_seconds",
+                "scheduler_started_at_utc",
+                "start_age_seconds",
+                "max_start_to_verification_seconds",
+            }
+        ),
+        "submission_verification_receipt.freshness",
+    )
+    if (
+        freshness.get("max_future_skew_seconds") != _MAX_FUTURE_SKEW_SECONDS
+        or freshness.get("max_start_to_verification_seconds") != _MAX_START_TO_CAPTURE_SECONDS
+    ):
+        raise ValueError("submission_verification_receipt freshness policy is not pinned")
+    submitted_at = _parse_utc(
+        inputs.get("submitted_at_utc"),
+        "eval_runtime_receipt.inputs.submitted_at_utc",
+    )
+    scheduler_started = _parse_utc(
+        freshness.get("scheduler_started_at_utc"),
+        "submission_verification_receipt.freshness.scheduler_started_at_utc",
+    )
+    verified_at = _parse_utc(
+        submission.get("verified_at_utc"),
+        "submission_verification_receipt.verified_at_utc",
+    )
+    skew = dt.timedelta(seconds=_MAX_FUTURE_SKEW_SECONDS)
+    if submitted_at > scheduler_started + skew:
+        raise ValueError("submission timestamp is after scheduler start")
+    if capture_started < scheduler_started - skew:
+        raise ValueError("runtime capture predates scheduler start")
+    if capture_started > scheduler_started + dt.timedelta(
+        seconds=_MAX_START_TO_CAPTURE_SECONDS
+    ) or captured_at > scheduler_started + dt.timedelta(seconds=_MAX_START_TO_CAPTURE_SECONDS):
+        raise ValueError("runtime capture is outside the scheduler-start freshness window")
+    if verified_at > capture_started + skew:
+        raise ValueError("submission verification timestamp is after runtime capture")
+
+    evaluation = _require_dict(
+        submission.get("evaluation"),
+        "submission_verification_receipt.evaluation",
+    )
+    _require_exact_keys(
+        evaluation,
+        frozenset(
+            {
+                "stage",
+                "split",
+                "tasks_csv",
+                "episodes_per_task",
+                "num_shards",
+                "base_seed",
+            }
+        ),
+        "submission_verification_receipt.evaluation",
+    )
+    contract_evaluation = contract["evaluation"]
+    expected_evaluation = {
+        "stage": contract_evaluation["stage"],
+        "split": contract_evaluation["split"],
+        "tasks_csv": (
+            ",".join(contract_evaluation["tasks"]) if contract_evaluation["stage"] == "one_episode_gate" else ""
+        ),
+        "episodes_per_task": contract_evaluation["episodes_per_task"],
+        "num_shards": contract_evaluation["num_shards"],
+        "base_seed": contract_evaluation["base_seed"],
+    }
+    if evaluation != expected_evaluation:
+        raise ValueError("submission_verification_receipt.evaluation differs from the eval contract")
+
+    scheduler = _require_dict(
+        submission.get("scheduler"),
+        "submission_verification_receipt.scheduler",
+    )
+    _require_exact_keys(
+        scheduler,
+        frozenset({"rjob_name", "rjob_uid", "showname", "worker_command_sha256", "expected"}),
+        "submission_verification_receipt.scheduler",
+    )
+    _require_nonempty_str(
+        scheduler.get("rjob_name"),
+        "submission_verification_receipt.scheduler.rjob_name",
+    )
+    _require_nonempty_str(
+        scheduler.get("rjob_uid"),
+        "submission_verification_receipt.scheduler.rjob_uid",
+    )
+    _require_sha256(
+        scheduler.get("worker_command_sha256"),
+        "submission_verification_receipt.scheduler.worker_command_sha256",
+    )
+    scheduler_expected = _require_dict(
+        scheduler.get("expected"),
+        "submission_verification_receipt.scheduler.expected",
+    )
+    expected_resources = (
+        {"cpu": 16, "memory_mib": 187_500, "gpu": 1}
+        if contract_evaluation["stage"] == "one_episode_gate"
+        else {"cpu": 128, "memory_mib": 1_500_000, "gpu": 8}
+    )
+    if any(scheduler_expected.get(key) != value for key, value in expected_resources.items()):
+        raise ValueError("submission scheduler resources do not match the evaluation phase")
+    submission_validation = _require_dict(
+        submission.get("validation"),
+        "submission_verification_receipt.validation",
+    )
+    if set(submission_validation) != {
+        "submit_identity_matches",
+        "freshness_window_passed",
+        "scheduler_readback_matches",
+        "scheduler_artifact_hashes_match",
+    } or any(value is not True for value in submission_validation.values()):
+        raise ValueError("submission_verification_receipt.validation is not an exact all-true verdict")
+
+    asset = _require_dict(
+        _load_json(Path(verified["asset_verification_receipt"]["path"])),
+        "asset_verification_receipt",
+    )
+    _require_exact_keys(
+        asset,
+        frozenset(
+            {
+                "schema_version",
+                "kind",
+                "status",
+                "asset_root",
+                "asset_root_mode",
+                "excluded_top_level_paths",
+                "manifest_path",
+                "manifest_size_bytes",
+                "manifest_sha256",
+                "publisher_receipt_path",
+                "publisher_receipt_size_bytes",
+                "publisher_receipt_sha256",
+                "publisher_generator_id",
+                "publisher_generated_at_utc",
+                "robocasa_git_commit",
+                "payload_directory_count",
+                "payload_file_count",
+                "payload_symlink_count",
+                "payload_total_bytes",
+                "source_archive_directory",
+                "source_sha256sums_sha256",
+                "source_sizes_sha256",
+            }
+        ),
+        "asset_verification_receipt",
+    )
+    if (
+        asset.get("schema_version") != 1
+        or asset.get("kind") != _ASSET_VERIFICATION_KIND
+        or asset.get("status") != "passed"
+    ):
+        raise ValueError("asset_verification_receipt has an unsupported schema/kind/status")
+    asset_root = _absolute_resolved_path(
+        asset.get("asset_root"),
+        "asset_verification_receipt.asset_root",
+    )
+    expected_asset_root = Path(contract["simulator"]["robocasa_repo"]).resolve(strict=True)
+    if asset_root != expected_asset_root or not asset_root.is_dir():
+        raise ValueError("asset_verification_receipt.asset_root differs from the RoboCasa checkout")
+    if asset.get("robocasa_git_commit") != contract["simulator"]["robocasa_commit"]:
+        raise ValueError("asset verification RoboCasa commit differs from the eval contract")
+    if asset.get("payload_symlink_count") != 0:
+        raise ValueError("asset verification must report zero payload symlinks")
+    for key in ("payload_directory_count", "payload_file_count", "payload_total_bytes"):
+        _require_int(asset.get(key), f"asset_verification_receipt.{key}", minimum=1)
+    manifest_path = _absolute_resolved_path(
+        asset.get("manifest_path"),
+        "asset_verification_receipt.manifest_path",
+    )
+    publisher_receipt_path = _absolute_resolved_path(
+        asset.get("publisher_receipt_path"),
+        "asset_verification_receipt.publisher_receipt_path",
+    )
+    if (
+        manifest_path.parent != asset_root / ".cwam_provenance"
+        or publisher_receipt_path.parent != asset_root / ".cwam_provenance"
+    ):
+        raise ValueError("asset provenance files are outside the exact RoboCasa checkout")
+    if _sha256(manifest_path) != _require_sha256(
+        asset.get("manifest_sha256"),
+        "asset_verification_receipt.manifest_sha256",
+    ) or _sha256(publisher_receipt_path) != _require_sha256(
+        asset.get("publisher_receipt_sha256"),
+        "asset_verification_receipt.publisher_receipt_sha256",
+    ):
+        raise ValueError("asset provenance SHA256 does not match the live files")
+
+    return {
+        "submission": {
+            "verification_receipt": submission_descriptor,
+            "submitted_at_utc": inputs["submitted_at_utc"],
+            "scheduler_started_at_utc": freshness["scheduler_started_at_utc"],
+            "scheduler_rjob_name": scheduler["rjob_name"],
+            "scheduler_rjob_uid": scheduler["rjob_uid"],
+        },
+        "assets": {
+            "verification_receipt": asset_descriptor,
+            "asset_root": str(asset_root),
+            "manifest_sha256": asset["manifest_sha256"],
+            "publisher_receipt_sha256": asset["publisher_receipt_sha256"],
+            "robocasa_git_commit": asset["robocasa_git_commit"],
+            "payload_directory_count": asset["payload_directory_count"],
+            "payload_file_count": asset["payload_file_count"],
+            "payload_symlink_count": asset["payload_symlink_count"],
+            "payload_total_bytes": asset["payload_total_bytes"],
+        },
+    }
+
+
 def _validate_eval_runtime_receipt(
     *,
     contract: dict[str, Any],
     verified: dict[str, Any],
     cosmos_environment_manifest: dict[str, Any],
     robocasa_environment_manifest: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     receipt = _require_dict(
         _load_json(Path(verified["eval_runtime_receipt"]["path"])),
         "eval_runtime_receipt",
     )
     _require_exact_keys(receipt, _RUNTIME_RECEIPT_KEYS, "eval_runtime_receipt")
     if (
-        receipt.get("schema_version") != 1
+        receipt.get("schema_version") != 2
         or receipt.get("kind") != "cwam_robocasa365_eval_runtime_receipt"
         or receipt.get("status") != "passed"
     ):
         raise ValueError("eval_runtime_receipt has an unsupported schema/kind/status")
-    captured_at_utc = _require_nonempty_str(
+    capture_started = _parse_utc(
+        receipt.get("capture_started_at_utc"),
+        "eval_runtime_receipt.capture_started_at_utc",
+    )
+    captured_at = _parse_utc(
         receipt.get("captured_at_utc"),
         "eval_runtime_receipt.captured_at_utc",
     )
-    try:
-        captured_at = dt.datetime.fromisoformat(captured_at_utc.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise ValueError("eval_runtime_receipt.captured_at_utc is not a valid ISO-8601 timestamp") from error
-    if captured_at.tzinfo is None or captured_at.utcoffset() != dt.timedelta(0):
-        raise ValueError("eval_runtime_receipt.captured_at_utc must identify UTC")
+    if captured_at < capture_started:
+        raise ValueError("eval_runtime_receipt completion predates capture start")
 
     driver_environment = _require_dict(
         receipt.get("driver_environment"),
@@ -625,17 +1623,24 @@ def _validate_eval_runtime_receipt(
     )
     _require_exact_keys(
         driver_environment,
-        frozenset({"ld_library_path", "egl_vendor_library_dirs"}),
+        frozenset(
+            {
+                "ld_library_path",
+                "egl_vendor_library_filenames",
+                "glx_vendor_library_name",
+                "forbidden_environment_cleared",
+            }
+        ),
         "eval_runtime_receipt.driver_environment",
     )
     if driver_environment.get("ld_library_path") != _EXPECTED_H_DRIVER_LIBRARY_PATH:
         raise ValueError("eval_runtime_receipt did not use the exact audited H driver library path")
-    egl_vendor_library_dirs = driver_environment.get("egl_vendor_library_dirs")
-    if egl_vendor_library_dirs is not None:
-        _require_nonempty_str(
-            egl_vendor_library_dirs,
-            "eval_runtime_receipt.driver_environment.egl_vendor_library_dirs",
-        )
+    if (
+        driver_environment.get("egl_vendor_library_filenames") != _EXPECTED_EGL_VENDOR_JSON
+        or driver_environment.get("glx_vendor_library_name") != "nvidia"
+        or driver_environment.get("forbidden_environment_cleared") != list(_EXPECTED_FORBIDDEN_GRAPHICS_ENVIRONMENT)
+    ):
+        raise ValueError("eval_runtime_receipt did not pin and scrub the audited NVIDIA GL environment")
 
     inputs = _require_dict(receipt.get("inputs"), "eval_runtime_receipt.inputs")
     _require_exact_keys(inputs, _RUNTIME_INPUT_KEYS, "eval_runtime_receipt.inputs")
@@ -656,6 +1661,10 @@ def _validate_eval_runtime_receipt(
         inputs.get("capture_nonce"),
         "eval_runtime_receipt.inputs.capture_nonce",
     )
+    _parse_utc(
+        inputs.get("submitted_at_utc"),
+        "eval_runtime_receipt.inputs.submitted_at_utc",
+    )
     num_gpus = _require_int(
         inputs.get("num_gpus"),
         "eval_runtime_receipt.inputs.num_gpus",
@@ -663,6 +1672,13 @@ def _validate_eval_runtime_receipt(
     )
     if num_gpus != contract["evaluation"]["num_shards"]:
         raise ValueError("eval runtime GPU count does not match the eval shard count")
+    execution_bindings = _validate_external_execution_bindings(
+        contract=contract,
+        verified=verified,
+        inputs=inputs,
+        capture_started=capture_started,
+        captured_at=captured_at,
+    )
 
     environment_descriptors = _require_dict(
         inputs.get("environment_manifests"),
@@ -1021,6 +2037,10 @@ def _validate_eval_runtime_receipt(
     robocasa_egl = receipt.get("robocasa_egl")
     if not isinstance(robocasa_egl, list) or len(robocasa_egl) != num_gpus:
         raise ValueError("eval_runtime_receipt.robocasa_egl must contain one record per shard")
+    graphics_userspace = _validate_graphics_userspace(
+        receipt.get("graphics_userspace"),
+        "eval_runtime_receipt.graphics_userspace",
+    )
     expected_robosuite_module = expected_source_modules["robosuite"]
     for expected_shard, raw_egl in enumerate(robocasa_egl):
         label = f"eval_runtime_receipt.robocasa_egl[{expected_shard}]"
@@ -1036,8 +2056,10 @@ def _validate_eval_runtime_receipt(
                     "mujoco_gl",
                     "pyopengl_platform",
                     "ld_library_path",
-                    "egl_vendor_library_dirs",
+                    "egl_vendor_library_filenames",
+                    "glx_vendor_library_name",
                     "robosuite_module_path",
+                    "graphics_userspace",
                 }
             ),
             label,
@@ -1051,9 +2073,12 @@ def _validate_eval_runtime_receipt(
             or egl.get("mujoco_gl") != "egl"
             or egl.get("pyopengl_platform") != "egl"
             or egl.get("ld_library_path") != _EXPECTED_H_DRIVER_LIBRARY_PATH
-            or egl.get("egl_vendor_library_dirs") != egl_vendor_library_dirs
+            or egl.get("egl_vendor_library_filenames") != _EXPECTED_EGL_VENDOR_JSON
+            or egl.get("glx_vendor_library_name") != "nvidia"
         ):
             raise ValueError(f"{label} does not bind the exact per-shard EGL environment")
+        if egl.get("graphics_userspace") != graphics_userspace:
+            raise ValueError(f"{label}.graphics_userspace differs from the cross-shard live binding")
         if (
             _absolute_resolved_path(
                 egl.get("robosuite_module_path"),
@@ -1124,6 +2149,12 @@ def _validate_eval_runtime_receipt(
     )
     if any(value is not True for value in validation.values()):
         raise ValueError("eval_runtime_receipt.validation must contain only true verdicts")
+    return {
+        **execution_bindings,
+        "graphics_userspace": graphics_userspace,
+        "capture_started_at_utc": receipt["capture_started_at_utc"],
+        "captured_at_utc": receipt["captured_at_utc"],
+    }
 
 
 def _expected_formal_tasks(split: str) -> tuple[str, ...]:
@@ -1150,6 +2181,8 @@ def create_contract(
     action_stats: Path,
     cosmos_environment_manifest: Path,
     robocasa_environment_manifest: Path,
+    submission_verification_receipt: Path,
+    asset_verification_receipt: Path,
     eval_runtime_receipt: Path,
     server_runtime_receipts: list[Path],
     demian_repo: Path,
@@ -1191,6 +2224,8 @@ def create_contract(
     action_stats = action_stats.expanduser().resolve()
     cosmos_environment_manifest = cosmos_environment_manifest.expanduser().resolve()
     robocasa_environment_manifest = robocasa_environment_manifest.expanduser().resolve()
+    submission_verification_receipt = submission_verification_receipt.expanduser().resolve()
+    asset_verification_receipt = asset_verification_receipt.expanduser().resolve()
     eval_runtime_receipt = eval_runtime_receipt.expanduser().resolve()
     server_runtime_receipts = [path.expanduser().resolve() for path in server_runtime_receipts]
     demian_repo = demian_repo.expanduser().resolve()
@@ -1281,13 +2316,15 @@ def create_contract(
             "action_stats": artifact(action_stats),
             "cosmos_environment_manifest": artifact(cosmos_environment_manifest),
             "robocasa_environment_manifest": artifact(robocasa_environment_manifest),
+            "submission_verification_receipt": artifact(submission_verification_receipt),
+            "asset_verification_receipt": artifact(asset_verification_receipt),
             "eval_runtime_receipt": artifact(eval_runtime_receipt),
             "demian_evaluator": evaluator_artifact,
             "demian_task_registry": task_registry_artifact,
             "server_runtime_receipts": [artifact(path) for path in server_runtime_receipts],
         },
     }
-    _atomic_write(output, json.dumps(contract, indent=2, sort_keys=True) + "\n")
+    _atomic_write_exclusive(output, json.dumps(contract, indent=2, sort_keys=True) + "\n")
     try:
         validated = _validate_contract(output)
     except Exception:
@@ -1298,12 +2335,38 @@ def create_contract(
 
 def _validate_contract(contract_path: Path) -> dict[str, Any]:
     contract = _require_dict(_load_json(contract_path), "contract")
+    _require_exact_keys(
+        contract,
+        frozenset(
+            {
+                "schema_version",
+                "kind",
+                "created_at",
+                "experiment_id",
+                "logical_run_id",
+                "source_commit",
+                "source_root",
+                "source_manifest_sha256",
+                "checkpoint_path",
+                "run_name",
+                "results_dir",
+                "demian",
+                "simulator",
+                "evaluation",
+                "artifacts",
+            }
+        ),
+        "contract",
+    )
     if contract.get("schema_version") != 1 or contract.get("kind") != _CONTRACT_KIND:
         raise ValueError(
             f"Unsupported eval contract schema/kind: {contract.get('schema_version')!r}/{contract.get('kind')!r}"
         )
-    _require_nonempty_str(contract.get("experiment_id"), "contract.experiment_id")
-    _require_nonempty_str(contract.get("logical_run_id"), "contract.logical_run_id")
+    contract_created_at = _parse_utc(contract.get("created_at"), "contract.created_at")
+    experiment_id = _require_run_id(contract.get("experiment_id"), "contract.experiment_id")
+    logical_run_id = _require_run_id(contract.get("logical_run_id"), "contract.logical_run_id")
+    if not logical_run_id.startswith(f"{experiment_id}-"):
+        raise ValueError("contract.logical_run_id must be namespaced below contract.experiment_id")
     _require_commit(contract.get("source_commit"), "contract.source_commit")
     source_root = Path(_require_nonempty_str(contract.get("source_root"), "contract.source_root"))
     if not source_root.is_absolute() or not source_root.is_dir():
@@ -1311,13 +2374,27 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     _require_sha256(contract.get("source_manifest_sha256"), "contract.source_manifest_sha256")
     checkpoint_path = Path(_require_nonempty_str(contract.get("checkpoint_path"), "contract.checkpoint_path"))
     results_dir = Path(_require_nonempty_str(contract.get("results_dir"), "contract.results_dir"))
-    run_name = _require_nonempty_str(contract.get("run_name"), "contract.run_name")
+    run_name = _require_run_id(contract.get("run_name"), "contract.run_name")
     if not checkpoint_path.is_absolute() or not results_dir.is_absolute():
         raise ValueError("contract checkpoint_path and results_dir must be absolute")
     if results_dir.name != run_name:
         raise ValueError(f"contract results_dir must end in run_name: results_dir={results_dir}, run_name={run_name!r}")
+    if run_name != logical_run_id:
+        raise ValueError("contract.run_name must equal contract.logical_run_id")
 
     demian = _require_dict(contract.get("demian"), "contract.demian")
+    _require_exact_keys(
+        demian,
+        frozenset(
+            {
+                "repo",
+                "commit",
+                "evaluator_sha256",
+                "task_registry_sha256",
+            }
+        ),
+        "contract.demian",
+    )
     demian_commit = _require_commit(demian.get("commit"), "contract.demian.commit")
     evaluator_sha256 = _require_sha256(
         demian.get("evaluator_sha256"),
@@ -1338,6 +2415,19 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         raise ValueError(f"contract.demian.repo must be an existing absolute directory: {demian_repo}")
 
     simulator = _require_dict(contract.get("simulator"), "contract.simulator")
+    _require_exact_keys(
+        simulator,
+        frozenset(
+            {
+                "split",
+                "robocasa_repo",
+                "robocasa_commit",
+                "robosuite_repo",
+                "robosuite_commit",
+            }
+        ),
+        "contract.simulator",
+    )
     if simulator.get("split") != "target":
         raise ValueError("contract.simulator.split must be target")
     _require_commit(simulator.get("robocasa_commit"), "contract.simulator.robocasa_commit")
@@ -1348,12 +2438,36 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
             raise ValueError(f"contract.simulator.{key} must be an existing absolute directory: {repo}")
 
     evaluation = _require_dict(contract.get("evaluation"), "contract.evaluation")
+    _require_exact_keys(
+        evaluation,
+        frozenset(
+            {
+                "stage",
+                "role",
+                "split",
+                "tasks",
+                "episodes_per_task",
+                "base_seed",
+                "max_steps",
+                "open_loop_horizon",
+                "num_shards",
+                "initialization_mode",
+                "seed_rule",
+                "causal_prompt_only",
+                "policy_sampling",
+                "effect_thresholds",
+            }
+        ),
+        "contract.evaluation",
+    )
     stage = evaluation.get("stage")
     if stage not in {"one_episode_gate", "formal"}:
         raise ValueError("contract.evaluation.stage must be one_episode_gate or formal")
     split = evaluation.get("split")
     if split not in {"atomic", "composite"}:
         raise ValueError("contract.evaluation.split must be atomic or composite")
+    if split != "atomic":
+        raise ValueError("this primary CWAM evaluation contract requires the atomic split")
     expected_role = "primary" if split == "atomic" else "zero_shot_secondary"
     if evaluation.get("role") != expected_role:
         raise ValueError(f"contract.evaluation.role must be {expected_role!r} for split={split!r}")
@@ -1372,17 +2486,22 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
             raise ValueError(f"formal {split} evaluation must use the canonical ordered task list")
         if episodes != 20:
             raise ValueError(f"formal {split} evaluation requires exactly 20 episodes per task")
-    elif episodes != 1:
-        raise ValueError("one_episode_gate requires exactly one episode per task")
+    elif episodes != 1 or len(task_pool) != 1:
+        raise ValueError("one_episode_gate requires exactly one canonical task and one episode")
 
-    _require_int(evaluation.get("base_seed"), "base_seed", minimum=0)
-    _require_int(evaluation.get("max_steps"), "max_steps", minimum=1)
-    _require_int(evaluation.get("open_loop_horizon"), "open_loop_horizon", minimum=1)
+    if _require_int(evaluation.get("base_seed"), "base_seed", minimum=0) != 42:
+        raise ValueError("base_seed must be exactly 42")
+    if _require_int(evaluation.get("max_steps"), "max_steps", minimum=1) != 400:
+        raise ValueError("max_steps must be exactly 400")
+    if _require_int(evaluation.get("open_loop_horizon"), "open_loop_horizon", minimum=1) != 12:
+        raise ValueError("open_loop_horizon must be exactly 12")
     num_shards = _require_int(evaluation.get("num_shards"), "num_shards", minimum=1)
     if num_shards > len(task_pool):
         raise ValueError("num_shards cannot exceed the number of tasks")
     if stage == "formal" and num_shards != 8:
         raise ValueError("formal evaluation requires exactly eight shards")
+    if stage == "one_episode_gate" and num_shards != 1:
+        raise ValueError("one_episode_gate requires exactly one shard")
     if evaluation.get("seed_rule") != "base_seed + within_shard_task_index * 10000 + episode_index":
         raise ValueError("contract.evaluation.seed_rule does not match the pinned DeMiAn evaluator")
     if evaluation.get("causal_prompt_only") is not True:
@@ -1390,22 +2509,48 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     if evaluation.get("initialization_mode") != "seeded_target_env":
         raise ValueError("contract.evaluation.initialization_mode must be seeded_target_env")
     sampling = _require_dict(evaluation.get("policy_sampling"), "policy_sampling")
-    if sampling.get("sampler") not in {"unipc", "edm"}:
-        raise ValueError("policy_sampling.sampler must be unipc or edm")
-    _require_int(sampling.get("seed"), "policy_sampling.seed", minimum=0)
+    _require_exact_keys(
+        sampling,
+        frozenset(
+            {
+                "sampler",
+                "seed",
+                "guidance",
+                "num_steps",
+                "reuse_seed_per_request",
+                "use_ema_weights",
+            }
+        ),
+        "policy_sampling",
+    )
+    if sampling.get("sampler") != "unipc":
+        raise ValueError("policy_sampling.sampler must be exactly unipc")
+    if _require_int(sampling.get("seed"), "policy_sampling.seed", minimum=0) != 42:
+        raise ValueError("policy_sampling.seed must be exactly 42")
     guidance = sampling.get("guidance")
     if (
         isinstance(guidance, bool)
         or not isinstance(guidance, (int, float))
         or not math.isfinite(float(guidance))
-        or not 0.0 <= float(guidance) <= 7.0
+        or float(guidance) != 1.0
     ):
-        raise TypeError("policy_sampling.guidance must be a finite number in [0,7]")
-    _require_int(sampling.get("num_steps"), "policy_sampling.num_steps", minimum=1)
+        raise TypeError("policy_sampling.guidance must be exactly 1.0")
+    if _require_int(sampling.get("num_steps"), "policy_sampling.num_steps", minimum=1) != 30:
+        raise ValueError("policy_sampling.num_steps must be exactly 30")
     if sampling.get("reuse_seed_per_request") is not True or sampling.get("use_ema_weights") is not True:
         raise ValueError("formal policy sampling must reuse its seed and load EMA weights")
 
     thresholds = _require_dict(evaluation.get("effect_thresholds"), "effect_thresholds")
+    _require_exact_keys(
+        thresholds,
+        frozenset(
+            {
+                "minimum_mean_success_rate",
+                "minimum_successful_tasks",
+            }
+        ),
+        "effect_thresholds",
+    )
     minimum_mean_sr = thresholds.get("minimum_mean_success_rate")
     minimum_successful_tasks = thresholds.get("minimum_successful_tasks")
     if isinstance(minimum_mean_sr, bool) or not isinstance(minimum_mean_sr, (int, float)):
@@ -1415,8 +2560,32 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     _require_int(minimum_successful_tasks, "minimum_successful_tasks", minimum=0)
     if minimum_successful_tasks > len(task_pool):
         raise ValueError("minimum_successful_tasks exceeds task count")
+    if stage == "one_episode_gate" and (float(minimum_mean_sr) != 0.0 or minimum_successful_tasks != 0):
+        raise ValueError("one_episode_gate effect thresholds must be exactly 0.0 and 0")
 
     artifacts = _require_dict(contract.get("artifacts"), "contract.artifacts")
+    _require_exact_keys(
+        artifacts,
+        frozenset(
+            {
+                "source_manifest",
+                "cosmos_server_module",
+                "checkpoint_manifest",
+                "checkpoint_verification_receipt",
+                "training_config",
+                "action_stats",
+                "cosmos_environment_manifest",
+                "robocasa_environment_manifest",
+                "submission_verification_receipt",
+                "asset_verification_receipt",
+                "eval_runtime_receipt",
+                "demian_evaluator",
+                "demian_task_registry",
+                "server_runtime_receipts",
+            }
+        ),
+        "contract.artifacts",
+    )
     verified: dict[str, Any] = {}
     for name in (
         "source_manifest",
@@ -1427,6 +2596,8 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         "action_stats",
         "cosmos_environment_manifest",
         "robocasa_environment_manifest",
+        "submission_verification_receipt",
+        "asset_verification_receipt",
         "eval_runtime_receipt",
         "demian_evaluator",
         "demian_task_registry",
@@ -1524,15 +2695,388 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         verified["robocasa_environment_manifest"],
         "robocasa_environment_manifest",
     )
-    _validate_eval_runtime_receipt(
+    runtime_bindings = _validate_eval_runtime_receipt(
         contract=contract,
         verified=verified,
         cosmos_environment_manifest=cosmos_environment_manifest,
         robocasa_environment_manifest=robocasa_environment_manifest,
     )
+    if contract_created_at < _parse_utc(
+        runtime_bindings["captured_at_utc"],
+        "eval_runtime_receipt.captured_at_utc",
+    ):
+        raise ValueError("contract.created_at predates runtime capture completion")
     contract["_verified_artifacts"] = verified
+    contract["_runtime_bindings"] = runtime_bindings
     contract["_contract_sha256"] = _sha256(contract_path)
     return contract
+
+
+def _post_rollout_input_descriptors(contract: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    verified = contract["_verified_artifacts"]
+    source_manifest_path = Path(verified["source_manifest"]["path"])
+    expected_source_manifest_path = Path(contract["source_root"]) / "SNAPSHOT_MANIFEST.json"
+    if source_manifest_path != expected_source_manifest_path.resolve(strict=True):
+        raise ValueError("contract source_manifest must be the exact Cosmos SNAPSHOT_MANIFEST.json")
+    return {
+        "cosmos_snapshot_manifest": _canonical_regular_file_descriptor(
+            source_manifest_path,
+            "Cosmos snapshot manifest",
+            expected_sha256=verified["source_manifest"]["sha256"],
+        ),
+        "serving_checkpoint_manifest": _canonical_regular_file_descriptor(
+            Path(verified["checkpoint_manifest"]["path"]),
+            "serving checkpoint manifest",
+            expected_sha256=verified["checkpoint_manifest"]["sha256"],
+        ),
+        "pre_rollout_checkpoint_verification_receipt": _canonical_regular_file_descriptor(
+            Path(verified["checkpoint_verification_receipt"]["path"]),
+            "pre-rollout checkpoint verification receipt",
+            expected_sha256=verified["checkpoint_verification_receipt"]["sha256"],
+        ),
+        "pre_rollout_asset_verification_receipt": _canonical_regular_file_descriptor(
+            Path(verified["asset_verification_receipt"]["path"]),
+            "pre-rollout asset verification receipt",
+            expected_sha256=verified["asset_verification_receipt"]["sha256"],
+        ),
+    }
+
+
+def _collect_post_rollout_live_verification(
+    *,
+    contract_path: Path,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-read every live input at one point after rollout.
+
+    This is a point-in-time attestation. It intentionally makes no general
+    filesystem TOCTOU guarantee outside the stable-read checks performed by the
+    individual verifiers.
+    """
+
+    started = time.perf_counter()
+    contract_descriptor = _canonical_regular_file_descriptor(
+        contract_path,
+        "eval contract",
+        expected_sha256=contract["_contract_sha256"],
+    )
+    contract_descriptor.update(
+        {
+            "kind": _CONTRACT_KIND,
+            "schema_version": 1,
+        }
+    )
+    input_descriptors = _post_rollout_input_descriptors(contract)
+
+    phase_started = time.perf_counter()
+    snapshot = cwam_formal_provenance.verify_snapshot(
+        snapshot_root=Path(contract["source_root"]),
+        allowed_root=_POST_ROLLOUT_SNAPSHOT_ALLOWED_ROOT,
+        expected_manifest_sha256=contract["source_manifest_sha256"],
+    )
+    snapshot_elapsed = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
+    checkpoint_manifest = cwam_serving_checkpoint_manifest.load_serving_checkpoint_manifest(
+        input_descriptors["serving_checkpoint_manifest"]["path"]
+    )
+    checkpoint = cwam_serving_checkpoint_manifest.verify_serving_checkpoint_manifest(
+        checkpoint_manifest,
+        contract["checkpoint_path"],
+    )
+    checkpoint_elapsed = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
+    assets = cwam_robocasa_asset_manifest.verify_robocasa_asset_tree(contract["simulator"]["robocasa_repo"])
+    assets_elapsed = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
+    source_repositories = {
+        "cosmos": _verify_git_repository(
+            name="Cosmos",
+            root=Path(contract["source_root"]),
+            expected_commit=contract["source_commit"],
+            verify_tracked_files=False,
+        ),
+        "demian": _verify_git_repository(
+            name="DeMiAn",
+            root=Path(contract["demian"]["repo"]),
+            expected_commit=contract["demian"]["commit"],
+            verify_tracked_files=True,
+        ),
+        "robocasa": _verify_git_repository(
+            name="RoboCasa",
+            root=Path(contract["simulator"]["robocasa_repo"]),
+            expected_commit=contract["simulator"]["robocasa_commit"],
+            verify_tracked_files=True,
+        ),
+        "robosuite": _verify_git_repository(
+            name="robosuite",
+            root=Path(contract["simulator"]["robosuite_repo"]),
+            expected_commit=contract["simulator"]["robosuite_commit"],
+            verify_tracked_files=True,
+        ),
+    }
+    source_elapsed = time.perf_counter() - phase_started
+
+    pre_checkpoint = _require_dict(
+        _load_json(Path(input_descriptors["pre_rollout_checkpoint_verification_receipt"]["path"])),
+        "pre_rollout_checkpoint_verification_receipt",
+    )
+    pre_assets = _require_dict(
+        _load_json(Path(input_descriptors["pre_rollout_asset_verification_receipt"]["path"])),
+        "pre_rollout_asset_verification_receipt",
+    )
+    if checkpoint != pre_checkpoint:
+        raise ValueError("post-rollout checkpoint verification does not exactly match the pre-rollout receipt")
+    if assets != pre_assets:
+        raise ValueError("post-rollout asset verification does not exactly match the pre-rollout receipt")
+
+    final_input_descriptors = _post_rollout_input_descriptors(contract)
+    if final_input_descriptors != input_descriptors:
+        raise RuntimeError("post-rollout input descriptors changed during live verification")
+    final_contract_descriptor = _canonical_regular_file_descriptor(
+        contract_path,
+        "eval contract",
+        expected_sha256=contract["_contract_sha256"],
+    )
+    if final_contract_descriptor != {key: contract_descriptor[key] for key in _POST_FILE_DESCRIPTOR_KEYS}:
+        raise RuntimeError("eval contract changed during post-rollout verification")
+
+    semantic_matches = {
+        "checkpoint_pre_and_post": True,
+        "robocasa_assets_pre_and_post": True,
+    }
+    validation = {
+        "cosmos_snapshot_full_file_verification_passed": True,
+        "serving_checkpoint_full_file_verification_passed": True,
+        "robocasa_asset_full_tree_verification_passed": True,
+        "source_heads_match_and_are_clean": True,
+        "tracked_source_files_match_head_blobs": True,
+        "pre_and_post_checkpoint_receipts_semantically_match": True,
+        "pre_and_post_asset_receipts_semantically_match": True,
+    }
+    return {
+        "schema_version": 1,
+        "kind": _POST_ROLLOUT_VERIFICATION_KIND,
+        "status": "passed",
+        "scope": _POST_ROLLOUT_SCOPE,
+        "verified_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "contract": contract_descriptor,
+        "inputs": input_descriptors,
+        "live_verification": {
+            "cosmos_snapshot": snapshot,
+            "serving_checkpoint": checkpoint,
+            "robocasa_assets": assets,
+            "source_repositories": source_repositories,
+        },
+        "semantic_matches": semantic_matches,
+        "elapsed_seconds": {
+            "cosmos_snapshot": snapshot_elapsed,
+            "serving_checkpoint": checkpoint_elapsed,
+            "robocasa_assets": assets_elapsed,
+            "source_repositories": source_elapsed,
+            "total": time.perf_counter() - started,
+        },
+        "validation": validation,
+    }
+
+
+def _validate_post_rollout_elapsed(value: Any, label: str) -> dict[str, float]:
+    elapsed = _require_dict(value, label)
+    _require_exact_keys(elapsed, _POST_ROLLOUT_ELAPSED_KEYS, label)
+    normalized: dict[str, float] = {}
+    for key in sorted(_POST_ROLLOUT_ELAPSED_KEYS):
+        duration = elapsed.get(key)
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            raise TypeError(f"{label}.{key} must be numeric")
+        normalized[key] = float(duration)
+        if not math.isfinite(normalized[key]) or normalized[key] < 0.0:
+            raise ValueError(f"{label}.{key} must be finite and non-negative")
+    component_total = sum(
+        normalized[key]
+        for key in (
+            "cosmos_snapshot",
+            "serving_checkpoint",
+            "robocasa_assets",
+            "source_repositories",
+        )
+    )
+    if normalized["total"] + 1e-9 < component_total:
+        raise ValueError(f"{label}.total is smaller than the measured component durations")
+    return normalized
+
+
+def verify_post_rollout(
+    *,
+    contract_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    contract_path = Path(os.path.abspath(contract_path.expanduser()))
+    output = Path(os.path.abspath(output.expanduser()))
+    try:
+        canonical_contract_parent = contract_path.parent.resolve(strict=True)
+        contract_parent_metadata = canonical_contract_parent.lstat()
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError("eval contract parent is not an existing canonical directory") from error
+    if (
+        contract_path.parent != canonical_contract_parent
+        or stat.S_ISLNK(contract_parent_metadata.st_mode)
+        or not stat.S_ISDIR(contract_parent_metadata.st_mode)
+    ):
+        raise ValueError("eval contract parent must be an existing canonical non-symlink directory")
+    if output.parent != canonical_contract_parent:
+        raise ValueError("post-rollout verification receipt must share the eval contract canonical parent")
+    if output.exists() or output.is_symlink():
+        raise FileExistsError(f"Refusing to overwrite post-rollout verification receipt: {output}")
+    contract = _validate_contract(contract_path)
+    payload = _collect_post_rollout_live_verification(
+        contract_path=contract_path,
+        contract=contract,
+    )
+    _atomic_write_exclusive(
+        output,
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        create_parent=False,
+    )
+    _canonical_regular_file_descriptor(
+        output,
+        "post-rollout verification receipt",
+        expected_mode=0o444,
+    )
+    return payload
+
+
+def _validate_post_rollout_verification_receipt(
+    *,
+    receipt_path: Path,
+    contract_path: Path,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    contract_path = Path(os.path.abspath(contract_path.expanduser()))
+    receipt_path = Path(os.path.abspath(receipt_path.expanduser()))
+    if receipt_path.parent != contract_path.parent:
+        raise ValueError("post-rollout verification receipt must share the eval contract canonical parent")
+    receipt_descriptor = _canonical_regular_file_descriptor(
+        receipt_path,
+        "post-rollout verification receipt",
+        expected_mode=0o444,
+    )
+    receipt = _require_dict(_load_json(receipt_path), "post_rollout_verification_receipt")
+    _require_exact_keys(
+        receipt,
+        _POST_ROLLOUT_RECEIPT_KEYS,
+        "post_rollout_verification_receipt",
+    )
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("kind") != _POST_ROLLOUT_VERIFICATION_KIND
+        or receipt.get("status") != "passed"
+        or receipt.get("scope") != _POST_ROLLOUT_SCOPE
+    ):
+        raise ValueError("post_rollout_verification_receipt has an unsupported schema/kind/status/scope")
+    verified_at = _parse_utc(
+        receipt.get("verified_at_utc"),
+        "post_rollout_verification_receipt.verified_at_utc",
+    )
+    if verified_at < _parse_utc(contract["created_at"], "contract.created_at"):
+        raise ValueError("post-rollout verification receipt predates the eval contract")
+    if verified_at > dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=_MAX_FUTURE_SKEW_SECONDS):
+        raise ValueError("post-rollout verification receipt is implausibly far in the future")
+
+    expected = _collect_post_rollout_live_verification(
+        contract_path=contract_path,
+        contract=contract,
+    )
+    contract_descriptor = _require_dict(
+        receipt.get("contract"),
+        "post_rollout_verification_receipt.contract",
+    )
+    _require_exact_keys(
+        contract_descriptor,
+        _POST_CONTRACT_DESCRIPTOR_KEYS,
+        "post_rollout_verification_receipt.contract",
+    )
+    if contract_descriptor != expected["contract"]:
+        raise ValueError("post-rollout verification receipt does not bind the exact live eval contract")
+
+    inputs = _require_dict(receipt.get("inputs"), "post_rollout_verification_receipt.inputs")
+    _require_exact_keys(inputs, _POST_ROLLOUT_INPUT_KEYS, "post_rollout_verification_receipt.inputs")
+    for name in sorted(_POST_ROLLOUT_INPUT_KEYS):
+        _validate_post_file_descriptor(
+            inputs.get(name),
+            expected=expected["inputs"][name],
+            label=f"post_rollout_verification_receipt.inputs.{name}",
+        )
+    if inputs != expected["inputs"]:
+        raise ValueError("post-rollout verification receipt input descriptors differ from live inputs")
+
+    live_verification = _require_dict(
+        receipt.get("live_verification"),
+        "post_rollout_verification_receipt.live_verification",
+    )
+    _require_exact_keys(
+        live_verification,
+        _POST_ROLLOUT_LIVE_KEYS,
+        "post_rollout_verification_receipt.live_verification",
+    )
+    if live_verification != expected["live_verification"]:
+        raise ValueError("post-rollout receipt conclusions differ from strict live re-verification")
+
+    semantic_matches = _require_dict(
+        receipt.get("semantic_matches"),
+        "post_rollout_verification_receipt.semantic_matches",
+    )
+    _require_exact_keys(
+        semantic_matches,
+        _POST_ROLLOUT_SEMANTIC_MATCH_KEYS,
+        "post_rollout_verification_receipt.semantic_matches",
+    )
+    if semantic_matches != expected["semantic_matches"] or any(
+        value is not True for value in semantic_matches.values()
+    ):
+        raise ValueError("post-rollout checkpoint/asset semantic match conclusions are not all true")
+
+    validation = _require_dict(
+        receipt.get("validation"),
+        "post_rollout_verification_receipt.validation",
+    )
+    _require_exact_keys(
+        validation,
+        _POST_ROLLOUT_VALIDATION_KEYS,
+        "post_rollout_verification_receipt.validation",
+    )
+    if validation != expected["validation"] or any(value is not True for value in validation.values()):
+        raise ValueError("post-rollout verification receipt validation is not an exact all-true verdict")
+    receipt_elapsed = _validate_post_rollout_elapsed(
+        receipt.get("elapsed_seconds"),
+        "post_rollout_verification_receipt.elapsed_seconds",
+    )
+    summary_elapsed = _validate_post_rollout_elapsed(
+        expected["elapsed_seconds"],
+        "post_rollout_live_reverification.elapsed_seconds",
+    )
+    final_receipt_descriptor = _canonical_regular_file_descriptor(
+        receipt_path,
+        "post-rollout verification receipt",
+        expected_mode=0o444,
+    )
+    if final_receipt_descriptor != receipt_descriptor:
+        raise RuntimeError("post-rollout verification receipt changed during strict live re-verification")
+    return {
+        "scope": _POST_ROLLOUT_SCOPE,
+        "receipt": {
+            **receipt_descriptor,
+            "kind": _POST_ROLLOUT_VERIFICATION_KIND,
+            "schema_version": 1,
+        },
+        "receipt_verified_at_utc": receipt["verified_at_utc"],
+        "receipt_elapsed_seconds": receipt_elapsed,
+        "summary_reverification_elapsed_seconds": summary_elapsed,
+        "semantic_matches": semantic_matches,
+        "validation": validation,
+        "live_verification": live_verification,
+    }
 
 
 def _validate_server_receipt(contract: dict[str, Any]) -> None:
@@ -1848,6 +3392,7 @@ def _collect_rows(
 def summarize(
     *,
     contract_path: Path,
+    post_rollout_verification_receipt: Path,
     results_dir: Path,
     summary_csv: Path,
     task_success_rates_csv: Path,
@@ -1858,6 +3403,11 @@ def summarize(
     results_dir = results_dir.expanduser().resolve()
     contract = _validate_contract(contract_path)
     _validate_server_receipt(contract)
+    post_rollout_binding = _validate_post_rollout_verification_receipt(
+        receipt_path=post_rollout_verification_receipt,
+        contract_path=contract_path,
+        contract=contract,
+    )
     expected_results_dir = Path(contract["results_dir"]).expanduser().resolve()
     if results_dir != expected_results_dir:
         raise ValueError(f"results_dir mismatch: contract={expected_results_dir}, requested={results_dir}")
@@ -1884,6 +3434,10 @@ def summarize(
         "contract_path": str(contract_path),
         "contract_sha256": contract["_contract_sha256"],
         "results_dir": str(results_dir),
+        "external_execution_binding": {
+            **contract["_runtime_bindings"],
+            "post_rollout_live_inputs": post_rollout_binding,
+        },
         "evaluation": {
             "stage": contract["evaluation"]["stage"],
             "role": contract["evaluation"]["role"],
@@ -1944,6 +3498,8 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--action-stats", type=Path, required=True)
     contract_parser.add_argument("--cosmos-environment-manifest", type=Path, required=True)
     contract_parser.add_argument("--robocasa-environment-manifest", type=Path, required=True)
+    contract_parser.add_argument("--submission-verification-receipt", type=Path, required=True)
+    contract_parser.add_argument("--asset-verification-receipt", type=Path, required=True)
     contract_parser.add_argument("--eval-runtime-receipt", type=Path, required=True)
     contract_parser.add_argument("--server-runtime-receipt", type=Path, action="append", required=True)
     contract_parser.add_argument("--demian-repo", type=Path, required=True)
@@ -1972,11 +3528,19 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--minimum-successful-tasks", type=int, required=True)
     summarize_parser = subparsers.add_parser("summarize")
     summarize_parser.add_argument("--contract", type=Path, required=True)
+    summarize_parser.add_argument(
+        "--post-rollout-verification-receipt",
+        type=Path,
+        required=True,
+    )
     summarize_parser.add_argument("--results-dir", type=Path, required=True)
     summarize_parser.add_argument("--summary-csv", type=Path, required=True)
     summarize_parser.add_argument("--task-success-rates-csv", type=Path, required=True)
     summarize_parser.add_argument("--evidence-json", type=Path, required=True)
     summarize_parser.add_argument("--require-effect-pass", action="store_true")
+    post_rollout_parser = subparsers.add_parser("verify-post-rollout")
+    post_rollout_parser.add_argument("--contract", type=Path, required=True)
+    post_rollout_parser.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -1998,6 +3562,8 @@ def main() -> None:
             action_stats=args.action_stats,
             cosmos_environment_manifest=args.cosmos_environment_manifest,
             robocasa_environment_manifest=args.robocasa_environment_manifest,
+            submission_verification_receipt=args.submission_verification_receipt,
+            asset_verification_receipt=args.asset_verification_receipt,
             eval_runtime_receipt=args.eval_runtime_receipt,
             server_runtime_receipts=args.server_runtime_receipt,
             demian_repo=args.demian_repo,
@@ -2030,6 +3596,7 @@ def main() -> None:
     if args.command == "summarize":
         evidence = summarize(
             contract_path=args.contract,
+            post_rollout_verification_receipt=args.post_rollout_verification_receipt,
             results_dir=args.results_dir,
             summary_csv=args.summary_csv,
             task_success_rates_csv=args.task_success_rates_csv,
@@ -2037,6 +3604,13 @@ def main() -> None:
             require_effect_pass=args.require_effect_pass,
         )
         print(json.dumps(evidence, indent=2, sort_keys=True))
+        return
+    if args.command == "verify-post-rollout":
+        receipt = verify_post_rollout(
+            contract_path=args.contract,
+            output=args.output,
+        )
+        print(json.dumps(receipt, indent=2, sort_keys=True))
         return
     raise AssertionError(f"Unhandled command: {args.command}")
 

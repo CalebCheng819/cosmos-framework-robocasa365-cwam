@@ -19,6 +19,11 @@ import pytest
 from examples.h_cluster import capture_robocasa365_eval_runtime as runtime_receipt
 
 
+def test_all_subprocess_probe_programs_compile() -> None:
+    for name in ("_COSMOS_PROBE", "_ROBOCASA_PROBE", "_ROBOCASA_EGL_PROBE"):
+        compile(getattr(runtime_receipt, name), f"{runtime_receipt.__file__}:{name}", "exec")
+
+
 def _write_executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -31,6 +36,17 @@ def _write_json(path: Path, value: object) -> tuple[Path, str]:
     payload = (json.dumps(value, sort_keys=True) + "\n").encode()
     path.write_bytes(payload)
     return path, hashlib.sha256(payload).hexdigest()
+
+
+def _file_descriptor(path: Path, **extra: object) -> dict[str, object]:
+    payload = path.read_bytes()
+    return {
+        "supplied_path": str(path),
+        "canonical_path": str(path.resolve(strict=True)),
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        **extra,
+    }
 
 
 def _uuid(index: int) -> str:
@@ -87,7 +103,7 @@ class FakeRunner:
             if argv[3] == runtime_receipt._COSMOS_PROBE:
                 return "cosmos-probe"
             if argv[3] == runtime_receipt._ROBOCASA_EGL_PROBE:
-                return f"robocasa-egl:{argv[-1]}"
+                return f"robocasa-egl:{argv[-2]}"
             return "robocasa-probe"
         if Path(argv[0]) == self.fixture["cosmos_python"]:
             return "cosmos-environment"
@@ -97,6 +113,69 @@ class FakeRunner:
 @pytest.fixture
 def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("LD_LIBRARY_PATH", runtime_receipt.H_DRIVER_LIBRARY_PATH)
+    for name in runtime_receipt.FORBIDDEN_GRAPHICS_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    graphics_root = tmp_path / "graphics"
+    graphics_root.mkdir()
+    vendor_json = graphics_root / "10_nvidia.json"
+    vendor_json.write_text(
+        '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime_receipt, "PINNED_EGL_VENDOR_JSON", str(vendor_json))
+    monkeypatch.setenv("__EGL_VENDOR_LIBRARY_FILENAMES", str(vendor_json))
+    monkeypatch.setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
+    library_specs = {
+        "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
+        "libEGL_nvidia": (
+            "libEGL_nvidia.so.0",
+            "eglQueryString",
+            "egl_context_mapped",
+            True,
+        ),
+        "libGL": (
+            "libGL.so.1",
+            "glGetString",
+            "resolved_and_dlopen_verified",
+            False,
+        ),
+        "libGLX": (
+            "libGLX.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            False,
+        ),
+        "libGLX_nvidia": (
+            "libGLX_nvidia.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            False,
+        ),
+    }
+    graphics_libraries = {}
+    for name, (soname, symbol, evidence_class, mapped) in library_specs.items():
+        library = graphics_root / soname
+        library.write_bytes(f"{name}-fixture".encode())
+        graphics_libraries[name] = _file_descriptor(
+            library,
+            name=name,
+            requested_soname=soname,
+            symbol=symbol,
+            evidence_class=evidence_class,
+            was_mapped_after_egl_context=mapped,
+        )
+    graphics_userspace = {
+        "egl_vendor_json": _file_descriptor(
+            vendor_json,
+            file_format_version="1.0.0",
+            icd_library_path="libEGL_nvidia.so.0",
+        ),
+        "libraries": graphics_libraries,
+        "gl_identity": {
+            "vendor": "NVIDIA Corporation",
+            "renderer": "NVIDIA H200",
+        },
+    }
     cosmos_python = _write_executable(tmp_path / "cosmos-env" / "bin" / "python")
     robocasa_python = _write_executable(tmp_path / "robocasa-env" / "bin" / "python")
     git = _write_executable(tmp_path / "tools" / "git")
@@ -128,6 +207,68 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     for path in module_paths.values():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
+
+    submitted_at = "2026-07-29T00:50:00Z"
+    submission_verification_value = {
+        "schema_version": 1,
+        "kind": runtime_receipt.SUBMISSION_VERIFICATION_KIND,
+        "status": "passed",
+        "verified_at_utc": "2026-07-29T01:01:00Z",
+        "identity": {
+            "experiment_id": "CWAM-E35-R12-GATE",
+            "logical_run_id": "CWAM-E35-R12-GATE-S42",
+            "run_name": "CWAM-E35-R12-GATE-S42",
+            "submission_nonce": "e" * 64,
+            "submitted_at_utc": submitted_at,
+        },
+        "freshness": {
+            "age_seconds": 660.0,
+            "expires_at_utc": "2026-08-01T00:50:00Z",
+            "max_age_seconds": 259200,
+            "max_future_skew_seconds": runtime_receipt.MAX_FUTURE_SKEW_SECONDS,
+            "scheduler_started_at_utc": "2026-07-29T01:00:00Z",
+            "start_age_seconds": 60.0,
+            "max_start_to_verification_seconds": (runtime_receipt.MAX_START_TO_CAPTURE_SECONDS),
+        },
+        "evaluation": {},
+        "scheduler": {},
+        "reservation": {},
+        "scheduler_readback_receipt": {},
+        "scheduler_artifacts": {},
+        "validation": {},
+    }
+    submission_verification, submission_verification_sha = _write_json(
+        tmp_path / "receipts" / "submission-verification.json",
+        submission_verification_value,
+    )
+    asset_verification_value = {
+        "schema_version": 1,
+        "kind": runtime_receipt.ASSET_VERIFICATION_KIND,
+        "status": "passed",
+        "asset_root": str(source_roots["robocasa"]),
+        "asset_root_mode": 0o755,
+        "excluded_top_level_paths": [".cwam_provenance", ".git"],
+        "manifest_path": str(source_roots["robocasa"] / ".cwam_provenance/asset-tree-manifest.jsonl"),
+        "manifest_size_bytes": 10,
+        "manifest_sha256": "1" * 64,
+        "publisher_receipt_path": str(source_roots["robocasa"] / ".cwam_provenance/asset-tree-receipt.json"),
+        "publisher_receipt_size_bytes": 10,
+        "publisher_receipt_sha256": "2" * 64,
+        "publisher_generator_id": "generator",
+        "publisher_generated_at_utc": "2026-07-28T18:09:13Z",
+        "robocasa_git_commit": "3" * 40,
+        "payload_directory_count": 1,
+        "payload_file_count": 1,
+        "payload_symlink_count": 0,
+        "payload_total_bytes": 1,
+        "source_archive_directory": "/source",
+        "source_sha256sums_sha256": "4" * 64,
+        "source_sizes_sha256": "5" * 64,
+    }
+    asset_verification, asset_verification_sha = _write_json(
+        tmp_path / "receipts" / "asset-verification.json",
+        asset_verification_value,
+    )
 
     manifest_value = {
         "schema_version": 1,
@@ -259,13 +400,22 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
                 "mujoco_gl": "egl",
                 "pyopengl_platform": "egl",
                 "ld_library_path": runtime_receipt.H_DRIVER_LIBRARY_PATH,
-                "egl_vendor_library_dirs": None,
+                "egl_vendor_library_filenames": str(vendor_json),
+                "glx_vendor_library_name": "nvidia",
                 "robosuite_module_path": str(module_paths["robosuite"]),
+                "graphics_userspace": graphics_userspace,
             }
             for index in range(2)
         ],
         "nvidia_smi": "\n".join(f"{index}, {_uuid(index)}, NVIDIA H200, 570.133.20" for index in range(2)) + "\n",
         "output": tmp_path / "output" / "runtime-receipt.json",
+        "vendor_json": vendor_json,
+        "graphics_userspace": graphics_userspace,
+        "submission_verification": submission_verification,
+        "submission_verification_sha": submission_verification_sha,
+        "asset_verification": asset_verification,
+        "asset_verification_sha": asset_verification_sha,
+        "submitted_at": submitted_at,
     }
 
 
@@ -291,8 +441,17 @@ def _capture_arguments(fixture: dict[str, Any]) -> dict[str, Any]:
         "experiment_id": "CWAM-E35-R12-GATE",
         "logical_run_id": "CWAM-E35-R12-GATE-S42",
         "capture_nonce": "e" * 64,
+        "submitted_at_utc": fixture["submitted_at"],
+        "submission_verification_receipt": fixture["submission_verification"],
+        "expected_submission_verification_receipt_sha256": fixture["submission_verification_sha"],
+        "asset_verification_receipt": fixture["asset_verification"],
+        "expected_asset_verification_receipt_sha256": fixture["asset_verification_sha"],
+        "egl_vendor_json": fixture["vendor_json"],
+        "max_start_to_capture_seconds": runtime_receipt.MAX_START_TO_CAPTURE_SECONDS,
+        "max_future_skew_seconds": runtime_receipt.MAX_FUTURE_SKEW_SECONDS,
         "num_gpus": 2,
         "output": fixture["output"],
+        "clock": lambda: datetime(2026, 7, 29, 1, 2, 3, tzinfo=timezone.utc),
     }
 
 
@@ -306,7 +465,6 @@ def _run_valid_capture(fixture: dict[str, Any]) -> tuple[dict[str, Any], str, Fa
         **_capture_arguments(fixture),
         runner=runner,
         executable_resolver=resolver,
-        clock=lambda: datetime(2026, 7, 29, 1, 2, 3, tzinfo=timezone.utc),
     )
     return receipt, digest, runner
 
@@ -322,14 +480,20 @@ def test_happy_path_publishes_read_only_receipt_and_uses_only_argv_subprocesses(
     assert stat.S_IMODE(output.stat().st_mode) == 0o444
     assert receipt["kind"] == runtime_receipt.RECEIPT_KIND
     assert receipt["status"] == "passed"
+    assert receipt["schema_version"] == 2
+    assert receipt["capture_started_at_utc"] == "2026-07-29T01:02:03Z"
     assert receipt["captured_at_utc"] == "2026-07-29T01:02:03Z"
     assert receipt["inputs"]["experiment_id"] == "CWAM-E35-R12-GATE"
     assert receipt["inputs"]["logical_run_id"] == "CWAM-E35-R12-GATE-S42"
     assert receipt["inputs"]["capture_nonce"] == "e" * 64
+    assert receipt["inputs"]["submitted_at_utc"] == "2026-07-29T00:50:00Z"
     assert receipt["driver_environment"] == {
         "ld_library_path": runtime_receipt.H_DRIVER_LIBRARY_PATH,
-        "egl_vendor_library_dirs": None,
+        "egl_vendor_library_filenames": str(valid_fixture["vendor_json"]),
+        "glx_vendor_library_name": "nvidia",
+        "forbidden_environment_cleared": list(runtime_receipt.FORBIDDEN_GRAPHICS_ENVIRONMENT),
     }
+    assert receipt["graphics_userspace"] == valid_fixture["graphics_userspace"]
     assert receipt["cosmos_runtime"]["torch"]["cuda_device_count"] == 2
     assert [record["shard_index"] for record in receipt["robocasa_egl"]] == [0, 1]
     assert receipt["nvidia_smi"]["driver_version"] == "570.133.20"
@@ -346,12 +510,14 @@ def test_happy_path_publishes_read_only_receipt_and_uses_only_argv_subprocesses(
         assert kwargs["text"] is True
         assert kwargs["check"] is False
         if argv[3:4] == [runtime_receipt._ROBOCASA_EGL_PROBE]:
-            shard = argv[-1]
+            shard = argv[-2]
             assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == shard
             assert kwargs["env"]["MUJOCO_EGL_DEVICE_ID"] == shard
             assert kwargs["env"]["MUJOCO_GL"] == "egl"
             assert kwargs["env"]["PYOPENGL_PLATFORM"] == "egl"
             assert kwargs["env"]["LD_LIBRARY_PATH"] == runtime_receipt.H_DRIVER_LIBRARY_PATH
+            assert kwargs["env"]["__EGL_VENDOR_LIBRARY_FILENAMES"] == str(valid_fixture["vendor_json"])
+            assert kwargs["env"]["__GLX_VENDOR_LIBRARY_NAME"] == "nvidia"
 
 
 def test_existing_output_is_rejected_before_any_subprocess(valid_fixture: dict[str, Any]) -> None:
@@ -674,6 +840,97 @@ def test_source_becoming_dirty_during_capture_is_rejected(valid_fixture: dict[st
         )
     assert runner.demian_status_calls == 2
     assert not valid_fixture["output"].exists()
+
+
+def test_external_submission_and_asset_receipts_are_identity_bound(
+    valid_fixture: dict[str, Any],
+) -> None:
+    submission_value = json.loads(valid_fixture["submission_verification"].read_text(encoding="utf-8"))
+    submission_value["identity"]["submission_nonce"] = "f" * 64
+    _, digest = _write_json(
+        valid_fixture["submission_verification"],
+        submission_value,
+    )
+    arguments = _capture_arguments(valid_fixture)
+    arguments["expected_submission_verification_receipt_sha256"] = digest
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="identity does not match",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=FakeRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+
+    submission_value["identity"]["submission_nonce"] = "e" * 64
+    _, restored_submission_digest = _write_json(
+        valid_fixture["submission_verification"],
+        submission_value,
+    )
+    asset_value = json.loads(valid_fixture["asset_verification"].read_text(encoding="utf-8"))
+    asset_value["payload_symlink_count"] = 1
+    _, asset_digest = _write_json(valid_fixture["asset_verification"], asset_value)
+    arguments = _capture_arguments(valid_fixture)
+    arguments["expected_submission_verification_receipt_sha256"] = restored_submission_digest
+    arguments["expected_asset_verification_receipt_sha256"] = asset_digest
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="zero symlinks",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=FakeRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+
+
+def test_graphics_userspace_is_nvidia_cross_shard_and_live_file_bound(
+    valid_fixture: dict[str, Any],
+) -> None:
+    valid_fixture["robocasa_egl_probes"][0]["graphics_userspace"]["gl_identity"]["vendor"] = "Mesa Project"
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="not NVIDIA"):
+        runtime_receipt.capture_runtime_receipt(
+            **_capture_arguments(valid_fixture),
+            runner=FakeRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+
+
+def test_graphics_file_drift_during_capture_is_rejected(
+    valid_fixture: dict[str, Any],
+) -> None:
+    library = Path(valid_fixture["graphics_userspace"]["libraries"]["libEGL"]["canonical_path"])
+
+    class GraphicsDriftingRunner(FakeRunner):
+        def __call__(
+            self,
+            argv: list[str],
+            **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            result = super().__call__(argv, **kwargs)
+            if self._label(argv) == "nvidia-smi":
+                payload = library.read_bytes()
+                library.write_bytes(b"X" * len(payload))
+            return result
+
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="does not match the live file",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **_capture_arguments(valid_fixture),
+            runner=GraphicsDriftingRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
 
 
 def test_atomic_writer_refuses_symlink_incomplete_and_overwrite_paths(tmp_path: Path) -> None:

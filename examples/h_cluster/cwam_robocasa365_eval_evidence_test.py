@@ -8,6 +8,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -119,7 +121,8 @@ def _mutate_contract_artifact(
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path]:
-    results_dir = tmp_path / "results" / "gate"
+    logical_run_id = "CWAM-E35-R12-GATE-S42"
+    results_dir = tmp_path / "results" / logical_run_id
     results_dir.mkdir(parents=True)
     cosmos_repo = tmp_path / "cosmos"
     demian_repo = tmp_path / "demian"
@@ -129,7 +132,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     base_prefix.mkdir()
     for repo in (cosmos_repo, demian_repo, robocasa_repo, robosuite_repo):
         repo.mkdir()
-    source_manifest = _artifact(tmp_path, "source-manifest", {"files": 1})
+    source_manifest = _path_artifact(
+        cosmos_repo / "SNAPSHOT_MANIFEST.json",
+        {"files": 1},
+    )
     checkpoint_path = "/checkpoints/iter_000010000"
     checkpoint_tree_sha = "7" * 64
     checkpoint = _artifact(
@@ -316,23 +322,214 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     nvidia_smi.parent.mkdir()
     nvidia_smi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     nvidia_smi.chmod(0o755)
+
+    submitted_at_utc = "2026-07-28T18:55:00Z"
+    capture_nonce = "e" * 64
+    submission_verification = _artifact(
+        tmp_path,
+        "submission-verification",
+        {
+            "schema_version": 1,
+            "kind": "cwam_robocasa365_eval_submission_verification",
+            "status": "passed",
+            "verified_at_utc": "2026-07-28T19:01:00Z",
+            "identity": {
+                "experiment_id": "CWAM-E35-R12-GATE",
+                "logical_run_id": logical_run_id,
+                "run_name": logical_run_id,
+                "submission_nonce": capture_nonce,
+                "submitted_at_utc": submitted_at_utc,
+            },
+            "freshness": {
+                "age_seconds": 360.0,
+                "expires_at_utc": "2026-07-31T18:55:00Z",
+                "max_age_seconds": 259200,
+                "max_future_skew_seconds": 300,
+                "scheduler_started_at_utc": "2026-07-28T19:00:00Z",
+                "start_age_seconds": 60.0,
+                "max_start_to_verification_seconds": 7200,
+            },
+            "evaluation": {
+                "stage": "one_episode_gate",
+                "split": "atomic",
+                "tasks_csv": "OpenDrawer",
+                "episodes_per_task": 1,
+                "num_shards": 1,
+                "base_seed": 42,
+            },
+            "scheduler": {
+                "rjob_name": "cwam-e35-r12-gate-abc123",
+                "rjob_uid": "12345678-1234-4123-8123-123456789abc",
+                "showname": "cwam-e35-r12-gate",
+                "worker_command_sha256": "a" * 64,
+                "expected": {
+                    "cpu": 16,
+                    "memory_mib": 187_500,
+                    "gpu": 1,
+                },
+            },
+            "reservation": {},
+            "scheduler_readback_receipt": {},
+            "scheduler_artifacts": {},
+            "validation": {
+                "submit_identity_matches": True,
+                "freshness_window_passed": True,
+                "scheduler_readback_matches": True,
+                "scheduler_artifact_hashes_match": True,
+            },
+        },
+    )
+
+    provenance_dir = robocasa_repo / ".cwam_provenance"
+    asset_manifest_path = _write_json(
+        provenance_dir / "asset-tree-manifest.jsonl",
+        {"payload": "manifest"},
+    )
+    publisher_receipt_path = _write_json(
+        provenance_dir / "asset-tree-receipt.json",
+        {"payload": "publisher-receipt"},
+    )
+    asset_verification = _artifact(
+        tmp_path,
+        "asset-verification",
+        {
+            "schema_version": 1,
+            "kind": "cwam_robocasa_asset_tree_verification_receipt",
+            "status": "passed",
+            "asset_root": str(robocasa_repo.resolve()),
+            "asset_root_mode": 0o755,
+            "excluded_top_level_paths": [".git", ".cwam_provenance"],
+            "manifest_path": str(asset_manifest_path.resolve()),
+            "manifest_size_bytes": asset_manifest_path.stat().st_size,
+            "manifest_sha256": _sha256(asset_manifest_path),
+            "publisher_receipt_path": str(publisher_receipt_path.resolve()),
+            "publisher_receipt_size_bytes": publisher_receipt_path.stat().st_size,
+            "publisher_receipt_sha256": _sha256(publisher_receipt_path),
+            "publisher_generator_id": "fixture",
+            "publisher_generated_at_utc": "2026-07-27T00:00:00Z",
+            "robocasa_git_commit": robocasa_commit,
+            "payload_directory_count": 1,
+            "payload_file_count": 1,
+            "payload_symlink_count": 0,
+            "payload_total_bytes": 1,
+            "source_archive_directory": "/source/archive",
+            "source_sha256sums_sha256": "b" * 64,
+            "source_sizes_sha256": "c" * 64,
+        },
+    )
+
+    def bound_receipt_descriptor(
+        artifact: dict[str, str],
+        kind: str,
+    ) -> dict[str, object]:
+        return {
+            "path": artifact["path"],
+            "size_bytes": Path(artifact["path"]).stat().st_size,
+            "sha256": artifact["sha256"],
+            "expected_sha256": artifact["sha256"],
+            "kind": kind,
+            "schema_version": 1,
+        }
+
+    graphics_root = tmp_path / "graphics"
+    vendor_json_path = _write_json(
+        graphics_root / "10_nvidia.json",
+        {
+            "file_format_version": "1.0.0",
+            "ICD": {"library_path": "libEGL_nvidia.so.0"},
+        },
+    )
+    evidence._EXPECTED_EGL_VENDOR_JSON = str(vendor_json_path.resolve())
+
+    def graphics_file_descriptor(path: Path) -> dict[str, object]:
+        return {
+            "supplied_path": str(path.resolve()),
+            "canonical_path": str(path.resolve()),
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        }
+
+    library_contracts = {
+        "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
+        "libEGL_nvidia": (
+            "libEGL_nvidia.so.0",
+            "eglQueryString",
+            "egl_context_mapped",
+            True,
+        ),
+        "libGL": (
+            "libGL.so.1",
+            "glGetString",
+            "resolved_and_dlopen_verified",
+            False,
+        ),
+        "libGLX": (
+            "libGLX.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            False,
+        ),
+        "libGLX_nvidia": (
+            "libGLX_nvidia.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            False,
+        ),
+    }
+    graphics_libraries: dict[str, dict[str, object]] = {}
+    for name, (soname, symbol, evidence_class, mapped) in library_contracts.items():
+        library_path = graphics_root / soname
+        library_path.write_bytes(f"{name}-fixture".encode())
+        graphics_libraries[name] = {
+            **graphics_file_descriptor(library_path),
+            "name": name,
+            "requested_soname": soname,
+            "symbol": symbol,
+            "evidence_class": evidence_class,
+            "was_mapped_after_egl_context": mapped,
+        }
+    graphics_userspace = {
+        "egl_vendor_json": {
+            **graphics_file_descriptor(vendor_json_path),
+            "file_format_version": "1.0.0",
+            "icd_library_path": "libEGL_nvidia.so.0",
+        },
+        "libraries": graphics_libraries,
+        "gl_identity": {
+            "vendor": "NVIDIA Corporation",
+            "renderer": "NVIDIA H200",
+        },
+    }
+
     eval_runtime_receipt = _artifact(
         tmp_path,
         "eval-runtime-receipt",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "cwam_robocasa365_eval_runtime_receipt",
             "status": "passed",
-            "captured_at_utc": "2026-07-29T01:02:03Z",
+            "capture_started_at_utc": "2026-07-28T19:02:00Z",
+            "captured_at_utc": "2026-07-28T19:02:03Z",
             "driver_environment": {
                 "ld_library_path": evidence._EXPECTED_H_DRIVER_LIBRARY_PATH,
-                "egl_vendor_library_dirs": None,
+                "egl_vendor_library_filenames": str(vendor_json_path.resolve()),
+                "glx_vendor_library_name": "nvidia",
+                "forbidden_environment_cleared": list(evidence._EXPECTED_FORBIDDEN_GRAPHICS_ENVIRONMENT),
             },
             "inputs": {
                 "experiment_id": "CWAM-E35-R12-GATE",
-                "logical_run_id": "CWAM-E35-R12-GATE-S42",
-                "capture_nonce": "e" * 64,
+                "logical_run_id": logical_run_id,
+                "capture_nonce": capture_nonce,
+                "submitted_at_utc": submitted_at_utc,
                 "num_gpus": 1,
+                "submission_verification_receipt": bound_receipt_descriptor(
+                    submission_verification,
+                    "cwam_robocasa365_eval_submission_verification",
+                ),
+                "asset_verification_receipt": bound_receipt_descriptor(
+                    asset_verification,
+                    "cwam_robocasa_asset_tree_verification_receipt",
+                ),
                 "interpreters": {
                     "cosmos": {
                         "launch_path": cosmos_python,
@@ -420,10 +617,13 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
                     "mujoco_gl": "egl",
                     "pyopengl_platform": "egl",
                     "ld_library_path": evidence._EXPECTED_H_DRIVER_LIBRARY_PATH,
-                    "egl_vendor_library_dirs": None,
+                    "egl_vendor_library_filenames": str(vendor_json_path.resolve()),
+                    "glx_vendor_library_name": "nvidia",
                     "robosuite_module_path": str(robosuite_module.resolve()),
+                    "graphics_userspace": graphics_userspace,
                 }
             ],
+            "graphics_userspace": graphics_userspace,
             "nvidia_smi": {
                 "executable": str(nvidia_smi.resolve()),
                 "driver_version": "570.133.20",
@@ -447,19 +647,24 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
                 "torch_and_nvidia_smi_uuid_sets_match": True,
                 "h_driver_library_path_is_exact": True,
                 "robocasa_egl_contexts_created_per_shard": True,
+                "submission_identity_and_freshness_match": True,
+                "asset_tree_verification_is_bound": True,
+                "graphics_userspace_files_match_live_hashes": True,
+                "nvidia_gl_vendor_and_renderer_match": True,
             },
         },
     )
     contract = {
         "schema_version": 1,
         "kind": "cwam_robocasa365_formal_eval_contract",
+        "created_at": "2026-07-28T19:02:04Z",
         "experiment_id": "CWAM-E35-R12-GATE",
-        "logical_run_id": "CWAM-E35-R12-GATE-S42",
+        "logical_run_id": logical_run_id,
         "source_commit": source_commit,
         "source_root": str(cosmos_repo.resolve()),
         "source_manifest_sha256": source_manifest_sha,
         "checkpoint_path": checkpoint_path,
-        "run_name": "gate",
+        "run_name": logical_run_id,
         "results_dir": str(results_dir.resolve()),
         "demian": {
             "repo": str(demian_repo.resolve()),
@@ -509,6 +714,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "action_stats": stats,
             "cosmos_environment_manifest": cosmos_environment,
             "robocasa_environment_manifest": robocasa_environment,
+            "submission_verification_receipt": submission_verification,
+            "asset_verification_receipt": asset_verification,
             "eval_runtime_receipt": eval_runtime_receipt,
             "demian_evaluator": demian_evaluator,
             "demian_task_registry": demian_task_registry,
@@ -528,7 +735,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "seed": 42,
         "checkpoint": checkpoint_path,
         "results_dir": str((tmp_path / "results").resolve()),
-        "run_name": "gate",
+        "run_name": logical_run_id,
         "eval_dataset": None,
         "save_video": False,
         "headless": True,
@@ -564,14 +771,131 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     return contract_path, results_dir
 
 
-def test_summarize_writes_complete_episode_and_task_csvs(tmp_path: Path) -> None:
+def _patch_post_rollout_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    contract_path: Path,
+) -> None:
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    checkpoint_manifest_path = Path(contract["artifacts"]["checkpoint_manifest"]["path"])
+    checkpoint_receipt_path = Path(contract["artifacts"]["checkpoint_verification_receipt"]["path"])
+    asset_receipt_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
+
+    def verify_snapshot(
+        *,
+        snapshot_root: Path,
+        allowed_root: Path,
+        expected_manifest_sha256: str,
+    ) -> dict[str, object]:
+        assert snapshot_root == Path(contract["source_root"])
+        assert allowed_root == evidence._POST_ROLLOUT_SNAPSHOT_ALLOWED_ROOT
+        assert expected_manifest_sha256 == contract["source_manifest_sha256"]
+        return {
+            "schema_version": 1,
+            "status": "passed",
+            "snapshot_root": str(snapshot_root.resolve()),
+            "snapshot_manifest": contract["artifacts"]["source_manifest"]["path"],
+            "snapshot_manifest_sha256": expected_manifest_sha256,
+            "file_count": 1,
+            "file_bytes": 1,
+        }
+
+    def load_checkpoint_manifest(path: str | Path) -> dict[str, object]:
+        assert Path(path) == checkpoint_manifest_path
+        return json.loads(checkpoint_manifest_path.read_text(encoding="utf-8"))
+
+    def verify_checkpoint(
+        manifest: dict[str, object],
+        checkpoint_path: str | Path,
+    ) -> dict[str, object]:
+        assert manifest == json.loads(checkpoint_manifest_path.read_text(encoding="utf-8"))
+        assert Path(checkpoint_path) == Path(contract["checkpoint_path"])
+        return json.loads(checkpoint_receipt_path.read_text(encoding="utf-8"))
+
+    def verify_assets(asset_root: str | Path) -> dict[str, object]:
+        assert Path(asset_root) == Path(contract["simulator"]["robocasa_repo"])
+        return json.loads(asset_receipt_path.read_text(encoding="utf-8"))
+
+    def verify_git_repository(
+        *,
+        name: str,
+        root: Path,
+        expected_commit: str,
+        verify_tracked_files: bool,
+    ) -> dict[str, object]:
+        tracked_files: dict[str, object]
+        if verify_tracked_files:
+            tracked_files = {
+                "object_format": "sha1",
+                "head_tree_oid": "a" * 40,
+                "tracked_entry_count": 1,
+                "tracked_regular_file_count": 1,
+                "tracked_non_regular_entry_count": 0,
+                "tracked_regular_total_bytes": 1,
+                "tracked_regular_manifest_sha256": "b" * 64,
+                "all_tracked_regular_files_match_head_blobs": True,
+            }
+        else:
+            tracked_files = {
+                "verification_mode": "covered_by_full_cosmos_snapshot_verification",
+            }
+        return {
+            "root": str(root.resolve()),
+            "expected_commit": expected_commit,
+            "actual_commit": expected_commit,
+            "clean": True,
+            "tracked_files": tracked_files,
+        }
+
+    monkeypatch.setattr(
+        evidence.cwam_formal_provenance,
+        "verify_snapshot",
+        verify_snapshot,
+    )
+    monkeypatch.setattr(
+        evidence.cwam_serving_checkpoint_manifest,
+        "load_serving_checkpoint_manifest",
+        load_checkpoint_manifest,
+    )
+    monkeypatch.setattr(
+        evidence.cwam_serving_checkpoint_manifest,
+        "verify_serving_checkpoint_manifest",
+        verify_checkpoint,
+    )
+    monkeypatch.setattr(
+        evidence.cwam_robocasa_asset_manifest,
+        "verify_robocasa_asset_tree",
+        verify_assets,
+    )
+    monkeypatch.setattr(evidence, "_verify_git_repository", verify_git_repository)
+
+
+def _mock_post_rollout_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    contract_path: Path,
+    output: Path,
+) -> Path:
+    _patch_post_rollout_verifiers(monkeypatch, contract_path)
+    evidence.verify_post_rollout(contract_path=contract_path, output=output)
+    return output
+
+
+def test_summarize_writes_complete_episode_and_task_csvs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     contract, results_dir = _fixture(tmp_path)
+    post_receipt = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract,
+        tmp_path / "post-rollout-receipt.json",
+    )
     summary_csv = tmp_path / "summary.csv"
     task_csv = tmp_path / "task_success_rates.csv"
     evidence_json = tmp_path / "evaluation_evidence.json"
 
     result = evidence.summarize(
         contract_path=contract,
+        post_rollout_verification_receipt=post_receipt,
         results_dir=results_dir,
         summary_csv=summary_csv,
         task_success_rates_csv=task_csv,
@@ -581,6 +905,18 @@ def test_summarize_writes_complete_episode_and_task_csvs(tmp_path: Path) -> None
 
     assert result["execution_complete"] is True
     assert result["effect_pass"] is True
+    assert result["external_execution_binding"]["submission"]["scheduler_rjob_name"] == "cwam-e35-r12-gate-abc123"
+    assert result["external_execution_binding"]["assets"]["payload_symlink_count"] == 0
+    assert result["external_execution_binding"]["graphics_userspace"]["gl_identity"]["vendor"] == "NVIDIA Corporation"
+    assert (
+        result["external_execution_binding"]["post_rollout_live_inputs"]["validation"][
+            "tracked_source_files_match_head_blobs"
+        ]
+        is True
+    )
+    assert result["external_execution_binding"]["post_rollout_live_inputs"]["receipt"]["sha256"] == _sha256(
+        post_receipt
+    )
     assert result["artifacts"]["raw_shards"][0]["shard"] == 0
     assert result["artifacts"]["raw_shards"][0]["args"]["sha256"] == _sha256(results_dir / "args.json")
     assert result["artifacts"]["raw_shards"][0]["results"]["sha256"] == _sha256(results_dir / "results_shard0.json")
@@ -594,6 +930,189 @@ def test_summarize_writes_complete_episode_and_task_csvs(tmp_path: Path) -> None
     with task_csv.open(newline="", encoding="utf-8") as handle:
         task_rows = list(csv.DictReader(handle))
     assert task_rows[0]["success_rate"] == "1.000000000000"
+
+
+def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    _patch_post_rollout_verifiers(monkeypatch, contract_path)
+    receipt_path = tmp_path / "post-rollout-receipt.json"
+    other_parent = tmp_path / "other"
+    other_parent.mkdir()
+
+    with pytest.raises(ValueError, match="share the eval contract"):
+        evidence.verify_post_rollout(
+            contract_path=contract_path,
+            output=other_parent / "post-rollout-receipt.json",
+        )
+
+    payload = evidence.verify_post_rollout(
+        contract_path=contract_path,
+        output=receipt_path,
+    )
+
+    assert payload["kind"] == evidence._POST_ROLLOUT_VERIFICATION_KIND
+    assert payload["scope"] == evidence._POST_ROLLOUT_SCOPE
+    assert all(payload["validation"].values())
+    assert all(payload["semantic_matches"].values())
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o444
+    assert payload["elapsed_seconds"]["total"] >= sum(
+        payload["elapsed_seconds"][key]
+        for key in (
+            "cosmos_snapshot",
+            "serving_checkpoint",
+            "robocasa_assets",
+            "source_repositories",
+        )
+    )
+
+    contract = evidence._validate_contract(contract_path)
+    binding = evidence._validate_post_rollout_verification_receipt(
+        receipt_path=receipt_path,
+        contract_path=contract_path,
+        contract=contract,
+    )
+    assert binding["receipt"]["sha256"] == _sha256(receipt_path)
+    assert binding["validation"]["tracked_source_files_match_head_blobs"] is True
+
+    with pytest.raises(FileExistsError, match="overwrite"):
+        evidence.verify_post_rollout(
+            contract_path=contract_path,
+            output=receipt_path,
+        )
+
+
+@pytest.mark.parametrize("input_name", ["checkpoint", "assets"])
+def test_post_rollout_requires_exact_pre_and_post_semantic_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    input_name: str,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    _patch_post_rollout_verifiers(monkeypatch, contract_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+    if input_name == "checkpoint":
+        receipt_path = Path(contract["artifacts"]["checkpoint_verification_receipt"]["path"])
+
+        def mismatched_checkpoint(
+            _manifest: dict[str, object],
+            _checkpoint_path: str | Path,
+        ) -> dict[str, object]:
+            result = json.loads(receipt_path.read_text(encoding="utf-8"))
+            result["file_count"] += 1
+            return result
+
+        monkeypatch.setattr(
+            evidence.cwam_serving_checkpoint_manifest,
+            "verify_serving_checkpoint_manifest",
+            mismatched_checkpoint,
+        )
+    else:
+        receipt_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
+
+        def mismatched_assets(_asset_root: str | Path) -> dict[str, object]:
+            result = json.loads(receipt_path.read_text(encoding="utf-8"))
+            result["payload_file_count"] += 1
+            return result
+
+        monkeypatch.setattr(
+            evidence.cwam_robocasa_asset_manifest,
+            "verify_robocasa_asset_tree",
+            mismatched_assets,
+        )
+
+    output = tmp_path / "post-rollout-receipt.json"
+    with pytest.raises(ValueError, match="does not exactly match"):
+        evidence.verify_post_rollout(contract_path=contract_path, output=output)
+    assert not output.exists()
+
+
+def test_post_rollout_receipt_rejects_unknown_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    receipt_path = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract_path,
+        tmp_path / "post-rollout-receipt.json",
+    )
+    receipt_path.chmod(0o644)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["unexpected"] = True
+    _write_json(receipt_path, receipt)
+    receipt_path.chmod(0o444)
+
+    with pytest.raises(ValueError, match="keys mismatch"):
+        evidence._validate_post_rollout_verification_receipt(
+            receipt_path=receipt_path,
+            contract_path=contract_path,
+            contract=evidence._validate_contract(contract_path),
+        )
+
+
+def test_git_tracked_regular_file_attestation_matches_head_and_detects_drift(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*arguments: str) -> str:
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", str(repo), *arguments],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "--quiet")
+    alpha = repo / "alpha.txt"
+    alpha.write_text("alpha\n", encoding="utf-8")
+    alpha.chmod(0o644)
+    nested = repo / "nested"
+    nested.mkdir()
+    executable = nested / "tool.sh"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    git("add", "--", "alpha.txt", "nested/tool.sh")
+    git(
+        "-c",
+        "user.name=Evidence Test",
+        "-c",
+        "user.email=evidence@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "fixture",
+    )
+    commit = git("rev-parse", "HEAD")
+
+    report = evidence._verify_git_repository(
+        name="fixture",
+        root=repo.resolve(),
+        expected_commit=commit,
+        verify_tracked_files=True,
+    )
+    tracked = report["tracked_files"]
+    assert tracked["tracked_regular_file_count"] == 2
+    assert tracked["tracked_regular_total_bytes"] == (alpha.stat().st_size + executable.stat().st_size)
+    assert len(tracked["tracked_regular_manifest_sha256"]) == 64
+    assert tracked["all_tracked_regular_files_match_head_blobs"] is True
+
+    alpha.chmod(0o600)
+    permission_drift = evidence._verify_tracked_regular_files(repo.resolve(), "fixture")
+    assert permission_drift["tracked_regular_manifest_sha256"] != tracked["tracked_regular_manifest_sha256"]
+    alpha.chmod(0o700)
+    with pytest.raises(ValueError, match="executable-bit semantics differ from HEAD"):
+        evidence._verify_tracked_regular_files(repo.resolve(), "fixture")
+    alpha.chmod(0o644)
+    alpha.write_text("drift\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="differs from HEAD"):
+        evidence._verify_tracked_regular_files(repo.resolve(), "fixture")
 
 
 @pytest.mark.parametrize(
@@ -610,10 +1129,16 @@ def test_summarize_writes_complete_episode_and_task_csvs(tmp_path: Path) -> None
 )
 def test_summarize_rejects_incomplete_or_malformed_results(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     mutation,
     match: str,
 ) -> None:
     contract, results_dir = _fixture(tmp_path)
+    post_receipt = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract,
+        tmp_path / "post-rollout-receipt.json",
+    )
     result_path = results_dir / "results_shard0.json"
     result = json.loads(result_path.read_text(encoding="utf-8"))
     mutation(result)
@@ -622,6 +1147,7 @@ def test_summarize_rejects_incomplete_or_malformed_results(
     with pytest.raises((RuntimeError, ValueError), match=match):
         evidence.summarize(
             contract_path=contract,
+            post_rollout_verification_receipt=post_receipt,
             results_dir=results_dir,
             summary_csv=tmp_path / "summary.csv",
             task_success_rates_csv=tmp_path / "task_success_rates.csv",
@@ -638,6 +1164,28 @@ def test_formal_contract_requires_full_canonical_atomic_suite(tmp_path: Path) ->
     _write_json(contract_path, contract)
 
     with pytest.raises(ValueError, match="canonical ordered task list"):
+        evidence._validate_contract(contract_path)
+
+
+def test_contract_and_artifact_schemas_reject_unknown_fields(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["unexpected"] = True
+    _write_json(contract_path, contract)
+    with pytest.raises(ValueError, match="contract keys mismatch"):
+        evidence._validate_contract(contract_path)
+
+    contract.pop("unexpected")
+    contract["artifacts"]["source_manifest"]["unexpected"] = True
+    _write_json(contract_path, contract)
+    with pytest.raises(ValueError, match="contract.artifacts.source_manifest keys mismatch"):
+        evidence._validate_contract(contract_path)
+
+    contract_path.write_text(
+        '{"schema_version":1,"schema_version":1}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate key"):
         evidence._validate_contract(contract_path)
 
 
@@ -785,35 +1333,48 @@ def test_runtime_module_paths_must_stay_in_their_bound_environment_prefix(
         evidence._validate_contract(contract_path)
 
 
-def test_effect_threshold_failure_preserves_evidence_then_fails(tmp_path: Path) -> None:
-    contract_path, results_dir = _fixture(tmp_path)
+def test_final_evidence_rehashes_graphics_and_asset_provenance_files(
+    tmp_path: Path,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    runtime_path = Path(contract["artifacts"]["eval_runtime_receipt"]["path"])
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    libegl = Path(runtime["graphics_userspace"]["libraries"]["libEGL"]["canonical_path"])
+    original = libegl.read_bytes()
+    libegl.write_bytes(b"X" * len(original))
+    with pytest.raises(ValueError, match="live graphics file"):
+        evidence._validate_contract(contract_path)
+
+    libegl.write_bytes(original)
+    asset_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
+    asset = json.loads(asset_path.read_text(encoding="utf-8"))
+    manifest_path = Path(asset["manifest_path"])
+    manifest_path.write_bytes(manifest_path.read_bytes() + b"drift")
+    with pytest.raises(ValueError, match="asset provenance SHA256"):
+        evidence._validate_contract(contract_path)
+
+
+def test_runtime_capture_must_remain_in_scheduler_start_window(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+
+    def mutate(receipt: dict[str, object]) -> None:
+        receipt["capture_started_at_utc"] = "2026-07-28T22:00:01Z"
+        receipt["captured_at_utc"] = "2026-07-28T22:00:02Z"
+
+    _mutate_contract_artifact(contract_path, "eval_runtime_receipt", mutate)
+    with pytest.raises(ValueError, match="scheduler-start freshness window"):
+        evidence._validate_contract(contract_path)
+
+
+def test_gate_rejects_nonzero_effect_thresholds(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     contract["evaluation"]["effect_thresholds"] = {
         "minimum_mean_success_rate": 1.0,
         "minimum_successful_tasks": 1,
     }
     _write_json(contract_path, contract)
-    result_path = results_dir / "results_shard0.json"
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    result["OpenDrawer"]["success_rate"] = 0.0
-    result["OpenDrawer"]["successes"] = 0
-    result["OpenDrawer"]["place_anytime_rate"] = 0.0
-    result["OpenDrawer"]["place_anytime_count"] = 0
-    result["OpenDrawer"]["episode_results"][0]["success"] = False
-    result["OpenDrawer"]["episode_results"][0]["place_anytime"] = False
-    _write_json(result_path, result)
-    evidence_json = tmp_path / "evaluation_evidence.json"
 
-    with pytest.raises(RuntimeError, match="effect threshold failed"):
-        evidence.summarize(
-            contract_path=contract_path,
-            results_dir=results_dir,
-            summary_csv=tmp_path / "summary.csv",
-            task_success_rates_csv=tmp_path / "task_success_rates.csv",
-            evidence_json=evidence_json,
-            require_effect_pass=True,
-        )
-
-    persisted = json.loads(evidence_json.read_text(encoding="utf-8"))
-    assert persisted["execution_complete"] is True
-    assert persisted["effect_pass"] is False
+    with pytest.raises(ValueError, match="effect thresholds must be exactly"):
+        evidence._validate_contract(contract_path)

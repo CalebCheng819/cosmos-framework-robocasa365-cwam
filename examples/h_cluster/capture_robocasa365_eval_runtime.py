@@ -27,22 +27,35 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 RECEIPT_KIND = "cwam_robocasa365_eval_runtime_receipt"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 COMMAND_TIMEOUT_SECONDS = 120.0
 MAX_INPUT_JSON_BYTES = 16 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 ENVIRONMENT_MANIFEST_KIND = "cwam_python_environment_manifest"
 ENVIRONMENT_MANIFEST_HELPER_REL = Path("examples/h_cluster/cwam_python_environment_manifest.py")
 H_DRIVER_LIBRARY_PATH = "/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+PINNED_EGL_VENDOR_JSON = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+SUBMISSION_VERIFICATION_KIND = "cwam_robocasa365_eval_submission_verification"
+ASSET_VERIFICATION_KIND = "cwam_robocasa_asset_tree_verification_receipt"
+MAX_START_TO_CAPTURE_SECONDS = 2 * 60 * 60
+MAX_FUTURE_SKEW_SECONDS = 5 * 60
+FORBIDDEN_GRAPHICS_ENVIRONMENT = (
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "__EGL_VENDOR_LIBRARY_DIRS",
+    "LIBGL_ALWAYS_SOFTWARE",
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "LIBGL_DRIVERS_PATH",
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _DRIVER_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}$")
 _NORMALIZED_GPU_UUID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -177,6 +190,8 @@ print(json.dumps(payload, sort_keys=True, allow_nan=False))
 
 _ROBOCASA_EGL_PROBE = r"""
 import contextlib
+import ctypes
+import hashlib
 import json
 import os
 import pathlib
@@ -185,6 +200,7 @@ import sys
 sys.dont_write_bytecode = True
 robosuite_source_root = pathlib.Path(sys.argv[1]).resolve(strict=True)
 shard_index = int(sys.argv[2])
+expected_vendor_json = pathlib.Path(sys.argv[3])
 expected_device = str(shard_index)
 sys.path.insert(0, str(robosuite_source_root))
 
@@ -198,8 +214,102 @@ for name, expected in expected_environment.items():
     actual = os.environ.get(name)
     if actual != expected:
         raise RuntimeError(f"{name} mismatch: expected={expected!r}, actual={actual!r}")
+if os.environ.get("__EGL_VENDOR_LIBRARY_FILENAMES") != str(expected_vendor_json):
+    raise RuntimeError("__EGL_VENDOR_LIBRARY_FILENAMES does not match the pinned vendor JSON")
+if os.environ.get("__GLX_VENDOR_LIBRARY_NAME") != "nvidia":
+    raise RuntimeError("__GLX_VENDOR_LIBRARY_NAME must be nvidia")
+
+
+def file_descriptor(path):
+    supplied = pathlib.Path(path)
+    canonical = supplied.resolve(strict=True)
+    if not canonical.is_file():
+        raise RuntimeError(f"graphics userspace path is not a file: {canonical}")
+    payload = canonical.read_bytes()
+    return {
+        "supplied_path": str(supplied),
+        "canonical_path": str(canonical),
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+class DlInfo(ctypes.Structure):
+    _fields_ = [
+        ("dli_fname", ctypes.c_char_p),
+        ("dli_fbase", ctypes.c_void_p),
+        ("dli_sname", ctypes.c_char_p),
+        ("dli_saddr", ctypes.c_void_p),
+    ]
+
+
+libdl = ctypes.CDLL("libdl.so.2")
+libdl.dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(DlInfo)]
+libdl.dladdr.restype = ctypes.c_int
+
+
+def mapped_library_paths():
+    paths = set()
+    for line in pathlib.Path("/proc/self/maps").read_text().splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) == 6 and fields[5].startswith("/"):
+            try:
+                paths.add(str(pathlib.Path(fields[5]).resolve(strict=True)))
+            except FileNotFoundError:
+                pass
+    return paths
+
+
+def library_descriptor(name, soname, symbol, mapped_after_context, evidence_class):
+    library = ctypes.CDLL(soname, mode=os.RTLD_NOW | os.RTLD_LOCAL)
+    function = getattr(library, symbol)
+    info = DlInfo()
+    address = ctypes.cast(function, ctypes.c_void_p)
+    if libdl.dladdr(address, ctypes.byref(info)) == 0 or not info.dli_fname:
+        raise RuntimeError(f"dladdr could not resolve {soname}:{symbol}")
+    descriptor = file_descriptor(os.fsdecode(info.dli_fname))
+    descriptor.update(
+        {
+            "name": name,
+            "requested_soname": soname,
+            "symbol": symbol,
+            "evidence_class": evidence_class,
+            "was_mapped_after_egl_context": descriptor["canonical_path"] in mapped_after_context,
+        }
+    )
+    return descriptor
+
+
+def reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key in EGL vendor JSON: {key!r}")
+        result[key] = value
+    return result
+
+
+vendor_json_bytes = expected_vendor_json.read_bytes()
+vendor_document = json.loads(
+    vendor_json_bytes.decode("utf-8"),
+    object_pairs_hook=reject_duplicate_pairs,
+    parse_constant=lambda value: (_ for _ in ()).throw(
+        ValueError(f"non-finite value in EGL vendor JSON: {value}")
+    ),
+)
+if set(vendor_document) != {"file_format_version", "ICD"}:
+    raise RuntimeError("EGL vendor JSON top-level schema drift")
+if vendor_document["file_format_version"] != "1.0.0":
+    raise RuntimeError("EGL vendor JSON file_format_version drift")
+if not isinstance(vendor_document["ICD"], dict) or set(vendor_document["ICD"]) != {"library_path"}:
+    raise RuntimeError("EGL vendor JSON ICD schema drift")
+if vendor_document["ICD"]["library_path"] != "libEGL_nvidia.so.0":
+    raise RuntimeError("EGL vendor JSON does not select libEGL_nvidia.so.0")
 
 context = None
+gl_vendor = None
+gl_renderer = None
+mapped_after_context = set()
 with contextlib.redirect_stdout(sys.stderr):
     import robosuite
     from robosuite.renderers.context.egl_context import EGLGLContext
@@ -207,8 +317,45 @@ with contextlib.redirect_stdout(sys.stderr):
     context = EGLGLContext(max_width=64, max_height=64, device_id=shard_index)
     try:
         context.make_current()
+        from OpenGL import GL
+
+        gl_vendor_raw = GL.glGetString(GL.GL_VENDOR)
+        gl_renderer_raw = GL.glGetString(GL.GL_RENDERER)
+        if not isinstance(gl_vendor_raw, bytes) or not isinstance(gl_renderer_raw, bytes):
+            raise RuntimeError("OpenGL vendor/renderer query returned no bytes")
+        gl_vendor = gl_vendor_raw.decode("utf-8", errors="strict")
+        gl_renderer = gl_renderer_raw.decode("utf-8", errors="strict")
+        mapped_after_context = mapped_library_paths()
     finally:
         context.free()
+
+if "NVIDIA" not in gl_vendor.upper():
+    raise RuntimeError(f"OpenGL vendor is not NVIDIA: {gl_vendor!r}")
+if "MESA" in gl_renderer.upper() or "LLVMPIPE" in gl_renderer.upper():
+    raise RuntimeError(f"OpenGL renderer is software/Mesa: {gl_renderer!r}")
+
+library_specs = (
+    ("libEGL", "libEGL.so.1", "eglGetDisplay", "egl_context_mapped"),
+    ("libEGL_nvidia", "libEGL_nvidia.so.0", "eglQueryString", "egl_context_mapped"),
+    ("libGL", "libGL.so.1", "glGetString", "resolved_and_dlopen_verified"),
+    ("libGLX", "libGLX.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified"),
+    ("libGLX_nvidia", "libGLX_nvidia.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified"),
+)
+libraries = {
+    name: library_descriptor(name, soname, symbol, mapped_after_context, evidence_class)
+    for name, soname, symbol, evidence_class in library_specs
+}
+for required_mapped in ("libEGL", "libEGL_nvidia"):
+    if not libraries[required_mapped]["was_mapped_after_egl_context"]:
+        raise RuntimeError(f"{required_mapped} was not mapped by the live EGL context")
+
+vendor_json_descriptor = file_descriptor(expected_vendor_json)
+vendor_json_descriptor.update(
+    {
+        "file_format_version": vendor_document["file_format_version"],
+        "icd_library_path": vendor_document["ICD"]["library_path"],
+    }
+)
 
 payload = {
     "status": "passed",
@@ -218,8 +365,17 @@ payload = {
     "mujoco_gl": os.environ["MUJOCO_GL"],
     "pyopengl_platform": os.environ["PYOPENGL_PLATFORM"],
     "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
-    "egl_vendor_library_dirs": os.environ.get("__EGL_VENDOR_LIBRARY_DIRS"),
+    "egl_vendor_library_filenames": os.environ.get("__EGL_VENDOR_LIBRARY_FILENAMES"),
+    "glx_vendor_library_name": os.environ.get("__GLX_VENDOR_LIBRARY_NAME"),
     "robosuite_module_path": str(pathlib.Path(robosuite.__file__).resolve(strict=True)),
+    "graphics_userspace": {
+        "egl_vendor_json": vendor_json_descriptor,
+        "libraries": libraries,
+        "gl_identity": {
+            "vendor": gl_vendor,
+            "renderer": gl_renderer,
+        },
+    },
 }
 print(json.dumps(payload, sort_keys=True, allow_nan=False))
 """
@@ -425,8 +581,8 @@ def _require_commit(value: object, label: str) -> str:
 
 
 def _require_run_id(value: object, label: str) -> str:
-    if not isinstance(value, str) or _RUN_ID_RE.fullmatch(value) is None:
-        raise RuntimeReceiptValidationError(f"{label} must contain only ASCII letters, digits, '.', '_', or '-'")
+    if not isinstance(value, str) or value in {".", ".."} or _RUN_ID_RE.fullmatch(value) is None:
+        raise RuntimeReceiptValidationError(f"{label} must be 1-128 path-safe characters with alphanumeric endpoints")
     return value
 
 
@@ -456,6 +612,55 @@ def _prepare_environment_manifest(path: Path, expected_sha256: str, label: str) 
         "kind": ENVIRONMENT_MANIFEST_KIND,
         "schema_version": 1,
     }
+
+
+def _prepare_bound_json_receipt(
+    path: Path,
+    expected_sha256: str,
+    label: str,
+    *,
+    kind: str,
+    schema_version: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    expected = _require_sha256(expected_sha256, f"expected {label} SHA256")
+    canonical = _canonical_path(path, label, kind="file")
+    payload = _read_stable_file(canonical, label)
+    actual = hashlib.sha256(payload).hexdigest()
+    if actual != expected:
+        raise RuntimeReceiptValidationError(f"{label} SHA256 mismatch: expected={expected}, actual={actual}")
+    receipt = _require_mapping(_strict_json_bytes(payload, label), label)
+    if (
+        receipt.get("schema_version") != schema_version
+        or receipt.get("kind") != kind
+        or receipt.get("status") != "passed"
+    ):
+        raise RuntimeReceiptValidationError(f"{label} must be a passed schema-{schema_version} {kind!r} document")
+    return receipt, {
+        "path": str(canonical),
+        "size_bytes": len(payload),
+        "sha256": actual,
+        "expected_sha256": expected,
+        "kind": kind,
+        "schema_version": schema_version,
+    }
+
+
+def _parse_utc(value: object, label: str) -> datetime:
+    text = _require_string(value, label)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeReceiptValidationError(f"{label} is not valid ISO-8601") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise RuntimeReceiptValidationError(f"{label} must identify UTC")
+    return parsed.astimezone(timezone.utc)
+
+
+def _clock_utc(clock: Callable[[], datetime], label: str) -> datetime:
+    value = clock()
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise RuntimeReceiptValidationError(f"{label} clock must return a timezone-aware datetime")
+    return value.astimezone(timezone.utc)
 
 
 def _resolve_executable(name: str, resolver: ExecutableResolver) -> Path:
@@ -499,12 +704,16 @@ def _run_command(
     if isinstance(argv, (str, bytes)) or not argv or any(not isinstance(item, str) or not item for item in argv):
         raise RuntimeReceiptValidationError(f"{label} command must be a non-empty argv sequence")
     environment = os.environ.copy()
+    for name in FORBIDDEN_GRAPHICS_ENVIRONMENT:
+        environment.pop(name, None)
     environment.update(
         {
             "LC_ALL": "C",
             "LANG": "C",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
+            "__EGL_VENDOR_LIBRARY_FILENAMES": PINNED_EGL_VENDOR_JSON,
+            "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
         }
     )
     if environment_overrides is not None:
@@ -901,6 +1110,166 @@ def _validate_robocasa_probe(
     }
 
 
+def _validate_graphics_file_descriptor(
+    value: object,
+    label: str,
+    *,
+    extra_keys: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    descriptor = _require_mapping(value, label)
+    common_keys = frozenset(
+        {
+            "supplied_path",
+            "canonical_path",
+            "size_bytes",
+            "sha256",
+        }
+    )
+    _require_exact_keys(descriptor, common_keys | extra_keys, label)
+    supplied = _lexical_absolute(
+        _require_string(descriptor.get("supplied_path"), f"{label}.supplied_path"),
+        f"{label}.supplied_path",
+    )
+    canonical = _canonical_path(
+        supplied,
+        f"{label}.supplied_path",
+        kind="file",
+        allow_leaf_symlink=True,
+    )
+    recorded_canonical = _lexical_absolute(
+        _require_string(descriptor.get("canonical_path"), f"{label}.canonical_path"),
+        f"{label}.canonical_path",
+    )
+    if recorded_canonical != canonical:
+        raise RuntimeReceiptValidationError(f"{label}.canonical_path does not resolve from supplied_path")
+    payload = _read_stable_file(canonical, label)
+    size_bytes = _require_int(
+        descriptor.get("size_bytes"),
+        f"{label}.size_bytes",
+        minimum=1,
+    )
+    if len(payload) != size_bytes:
+        raise RuntimeReceiptValidationError(f"{label}.size_bytes does not match the live file")
+    sha256 = _require_sha256(descriptor.get("sha256"), f"{label}.sha256")
+    if hashlib.sha256(payload).hexdigest() != sha256:
+        raise RuntimeReceiptValidationError(f"{label}.sha256 does not match the live file")
+    normalized = {
+        "supplied_path": str(supplied),
+        "canonical_path": str(canonical),
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+    }
+    for key in extra_keys:
+        normalized[key] = descriptor[key]
+    return normalized
+
+
+def _validate_graphics_userspace(value: object, label: str) -> dict[str, Any]:
+    graphics = _require_mapping(value, label)
+    _require_exact_keys(
+        graphics,
+        frozenset({"egl_vendor_json", "libraries", "gl_identity"}),
+        label,
+    )
+    vendor_json = _validate_graphics_file_descriptor(
+        graphics.get("egl_vendor_json"),
+        f"{label}.egl_vendor_json",
+        extra_keys=frozenset({"file_format_version", "icd_library_path"}),
+    )
+    if vendor_json["supplied_path"] != PINNED_EGL_VENDOR_JSON:
+        raise RuntimeReceiptValidationError(f"{label}.egl_vendor_json is not the pinned vendor JSON")
+    if vendor_json["file_format_version"] != "1.0.0" or vendor_json["icd_library_path"] != "libEGL_nvidia.so.0":
+        raise RuntimeReceiptValidationError(f"{label}.egl_vendor_json ICD contract drifted")
+
+    expected_libraries = {
+        "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
+        "libEGL_nvidia": (
+            "libEGL_nvidia.so.0",
+            "eglQueryString",
+            "egl_context_mapped",
+            True,
+        ),
+        "libGL": (
+            "libGL.so.1",
+            "glGetString",
+            "resolved_and_dlopen_verified",
+            None,
+        ),
+        "libGLX": (
+            "libGLX.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            None,
+        ),
+        "libGLX_nvidia": (
+            "libGLX_nvidia.so.0",
+            "glXGetProcAddress",
+            "resolved_and_dlopen_verified",
+            None,
+        ),
+    }
+    libraries = _require_mapping(graphics.get("libraries"), f"{label}.libraries")
+    _require_exact_keys(libraries, frozenset(expected_libraries), f"{label}.libraries")
+    normalized_libraries: dict[str, Any] = {}
+    library_extra_keys = frozenset(
+        {
+            "name",
+            "requested_soname",
+            "symbol",
+            "evidence_class",
+            "was_mapped_after_egl_context",
+        }
+    )
+    for name, (soname, symbol, evidence_class, required_mapped) in expected_libraries.items():
+        record_label = f"{label}.libraries.{name}"
+        record = _validate_graphics_file_descriptor(
+            libraries[name],
+            record_label,
+            extra_keys=library_extra_keys,
+        )
+        expected = {
+            "name": name,
+            "requested_soname": soname,
+            "symbol": symbol,
+            "evidence_class": evidence_class,
+        }
+        for key, expected_value in expected.items():
+            if record[key] != expected_value:
+                raise RuntimeReceiptValidationError(
+                    f"{record_label}.{key} mismatch: expected={expected_value!r}, actual={record[key]!r}"
+                )
+        mapped = record["was_mapped_after_egl_context"]
+        if type(mapped) is not bool:
+            raise RuntimeReceiptValidationError(f"{record_label}.was_mapped_after_egl_context must be boolean")
+        if required_mapped is True and mapped is not True:
+            raise RuntimeReceiptValidationError(f"{record_label} was not mapped by the live EGL context")
+        normalized_libraries[name] = record
+
+    gl_identity = _require_mapping(
+        graphics.get("gl_identity"),
+        f"{label}.gl_identity",
+    )
+    _require_exact_keys(
+        gl_identity,
+        frozenset({"vendor", "renderer"}),
+        f"{label}.gl_identity",
+    )
+    vendor = _require_string(gl_identity.get("vendor"), f"{label}.gl_identity.vendor")
+    renderer = _require_string(
+        gl_identity.get("renderer"),
+        f"{label}.gl_identity.renderer",
+    )
+    if "NVIDIA" not in vendor.upper():
+        raise RuntimeReceiptValidationError(f"{label} OpenGL vendor is not NVIDIA")
+    if "MESA" in renderer.upper() or "LLVMPIPE" in renderer.upper():
+        raise RuntimeReceiptValidationError(f"{label} OpenGL renderer is software/Mesa")
+    return {
+        "egl_vendor_json": vendor_json,
+        "libraries": normalized_libraries,
+        "gl_identity": {"vendor": vendor, "renderer": renderer},
+    }
+
+
 def _validate_robocasa_egl_probe(
     value: object,
     *,
@@ -920,8 +1289,10 @@ def _validate_robocasa_egl_probe(
                 "mujoco_gl",
                 "pyopengl_platform",
                 "ld_library_path",
-                "egl_vendor_library_dirs",
+                "egl_vendor_library_filenames",
+                "glx_vendor_library_name",
                 "robosuite_module_path",
+                "graphics_userspace",
             }
         ),
         label,
@@ -939,12 +1310,10 @@ def _validate_robocasa_egl_probe(
     for key, expected in expected_values.items():
         if probe[key] != expected:
             raise RuntimeReceiptValidationError(f"{label}.{key} mismatch: expected={expected!r}, actual={probe[key]!r}")
-    egl_vendor_library_dirs = probe["egl_vendor_library_dirs"]
-    if egl_vendor_library_dirs is not None:
-        egl_vendor_library_dirs = _require_string(
-            egl_vendor_library_dirs,
-            f"{label}.egl_vendor_library_dirs",
-        )
+    if probe["egl_vendor_library_filenames"] != PINNED_EGL_VENDOR_JSON:
+        raise RuntimeReceiptValidationError(f"{label}.egl_vendor_library_filenames is not pinned")
+    if probe["glx_vendor_library_name"] != "nvidia":
+        raise RuntimeReceiptValidationError(f"{label}.glx_vendor_library_name is not nvidia")
     robosuite_module_path = _canonical_reported_module_path(
         probe["robosuite_module_path"],
         f"{label}.robosuite_module_path",
@@ -963,8 +1332,13 @@ def _validate_robocasa_egl_probe(
         "status": "passed",
         "shard_index": shard_index,
         **expected_values,
-        "egl_vendor_library_dirs": egl_vendor_library_dirs,
+        "egl_vendor_library_filenames": PINNED_EGL_VENDOR_JSON,
+        "glx_vendor_library_name": "nvidia",
         "robosuite_module_path": str(robosuite_module_path),
+        "graphics_userspace": _validate_graphics_userspace(
+            probe["graphics_userspace"],
+            f"{label}.graphics_userspace",
+        ),
     }
 
 
@@ -1157,6 +1531,14 @@ def capture_runtime_receipt(
     experiment_id: str,
     logical_run_id: str,
     capture_nonce: str,
+    submitted_at_utc: str,
+    submission_verification_receipt: Path,
+    expected_submission_verification_receipt_sha256: str,
+    asset_verification_receipt: Path,
+    expected_asset_verification_receipt_sha256: str,
+    egl_vendor_json: Path,
+    max_start_to_capture_seconds: int,
+    max_future_skew_seconds: int,
     num_gpus: int,
     output: Path,
     runner: CommandRunner = subprocess.run,
@@ -1172,19 +1554,45 @@ def capture_runtime_receipt(
         raise RuntimeReceiptValidationError("timeout_seconds must be positive")
     experiment_id = _require_run_id(experiment_id, "experiment_id")
     logical_run_id = _require_run_id(logical_run_id, "logical_run_id")
+    if not logical_run_id.startswith(f"{experiment_id}-"):
+        raise RuntimeReceiptValidationError("logical_run_id must be namespaced below experiment_id")
     capture_nonce = _require_capture_nonce(capture_nonce)
+    submitted_at = _parse_utc(submitted_at_utc, "submitted_at_utc")
+    if type(max_start_to_capture_seconds) is not int or max_start_to_capture_seconds != MAX_START_TO_CAPTURE_SECONDS:
+        raise RuntimeReceiptValidationError(
+            f"max_start_to_capture_seconds must be exactly {MAX_START_TO_CAPTURE_SECONDS}"
+        )
+    if type(max_future_skew_seconds) is not int or max_future_skew_seconds != MAX_FUTURE_SKEW_SECONDS:
+        raise RuntimeReceiptValidationError(f"max_future_skew_seconds must be exactly {MAX_FUTURE_SKEW_SECONDS}")
+    capture_started = _clock_utc(clock, "capture start")
     driver_library_path = os.environ.get("LD_LIBRARY_PATH")
     if driver_library_path != H_DRIVER_LIBRARY_PATH:
         raise RuntimeReceiptValidationError(
             "LD_LIBRARY_PATH must be the exact audited H driver allowlist: "
             f"expected={H_DRIVER_LIBRARY_PATH!r}, actual={driver_library_path!r}"
         )
-    egl_vendor_library_dirs = os.environ.get("__EGL_VENDOR_LIBRARY_DIRS")
-    if egl_vendor_library_dirs is not None:
-        egl_vendor_library_dirs = _require_string(
-            egl_vendor_library_dirs,
-            "__EGL_VENDOR_LIBRARY_DIRS",
+    for name in FORBIDDEN_GRAPHICS_ENVIRONMENT:
+        if os.environ.get(name):
+            raise RuntimeReceiptValidationError(f"{name} must be unset")
+    egl_vendor_library_filenames = os.environ.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+    if egl_vendor_library_filenames != PINNED_EGL_VENDOR_JSON:
+        raise RuntimeReceiptValidationError(
+            "__EGL_VENDOR_LIBRARY_FILENAMES must be the exact pinned NVIDIA vendor JSON"
         )
+    if os.environ.get("__GLX_VENDOR_LIBRARY_NAME") != "nvidia":
+        raise RuntimeReceiptValidationError("__GLX_VENDOR_LIBRARY_NAME must be exactly nvidia")
+    egl_vendor_json_supplied = _lexical_absolute(
+        egl_vendor_json,
+        "EGL vendor JSON",
+    )
+    if str(egl_vendor_json_supplied) != PINNED_EGL_VENDOR_JSON:
+        raise RuntimeReceiptValidationError(f"EGL vendor JSON must be supplied exactly as {PINNED_EGL_VENDOR_JSON}")
+    egl_vendor_json = _canonical_path(
+        egl_vendor_json_supplied,
+        "EGL vendor JSON",
+        kind="file",
+        allow_leaf_symlink=True,
+    )
     # Fail before launching any subprocess if the output target is obviously unsafe.
     output_path = _lexical_absolute(output, "output path")
     output_parent = _canonical_path(output_path.parent, "output parent", kind="directory")
@@ -1196,6 +1604,148 @@ def capture_runtime_receipt(
         pass
     else:
         raise RuntimeReceiptValidationError(f"output already exists; refusing to overwrite: {output_path}")
+
+    submission_verification, submission_verification_descriptor = _prepare_bound_json_receipt(
+        submission_verification_receipt,
+        expected_submission_verification_receipt_sha256,
+        "submission verification receipt",
+        kind=SUBMISSION_VERIFICATION_KIND,
+        schema_version=1,
+    )
+    _require_exact_keys(
+        submission_verification,
+        frozenset(
+            {
+                "schema_version",
+                "kind",
+                "status",
+                "verified_at_utc",
+                "identity",
+                "freshness",
+                "evaluation",
+                "scheduler",
+                "reservation",
+                "scheduler_readback_receipt",
+                "scheduler_artifacts",
+                "validation",
+            }
+        ),
+        "submission verification receipt",
+    )
+    submission_identity = _require_mapping(
+        submission_verification.get("identity"),
+        "submission verification receipt.identity",
+    )
+    _require_exact_keys(
+        submission_identity,
+        frozenset(
+            {
+                "experiment_id",
+                "logical_run_id",
+                "run_name",
+                "submission_nonce",
+                "submitted_at_utc",
+            }
+        ),
+        "submission verification receipt.identity",
+    )
+    expected_submission_identity = {
+        "experiment_id": experiment_id,
+        "logical_run_id": logical_run_id,
+        "run_name": logical_run_id,
+        "submission_nonce": capture_nonce,
+        "submitted_at_utc": submitted_at_utc,
+    }
+    if submission_identity != expected_submission_identity:
+        raise RuntimeReceiptValidationError("submission verification identity does not match runtime inputs")
+    if (
+        _parse_utc(
+            submission_identity["submitted_at_utc"],
+            "submission verification receipt.identity.submitted_at_utc",
+        )
+        != submitted_at
+    ):
+        raise RuntimeReceiptValidationError("submission timestamp changed after parsing")
+    freshness = _require_mapping(
+        submission_verification.get("freshness"),
+        "submission verification receipt.freshness",
+    )
+    _require_exact_keys(
+        freshness,
+        frozenset(
+            {
+                "age_seconds",
+                "expires_at_utc",
+                "max_age_seconds",
+                "max_future_skew_seconds",
+                "scheduler_started_at_utc",
+                "start_age_seconds",
+                "max_start_to_verification_seconds",
+            }
+        ),
+        "submission verification receipt.freshness",
+    )
+    if freshness.get("max_future_skew_seconds") != max_future_skew_seconds:
+        raise RuntimeReceiptValidationError("submission verification future-skew window does not match runtime")
+    if freshness.get("max_start_to_verification_seconds") != max_start_to_capture_seconds:
+        raise RuntimeReceiptValidationError("submission verification scheduler-start window does not match runtime")
+    scheduler_started = _parse_utc(
+        freshness.get("scheduler_started_at_utc"),
+        "submission verification receipt.freshness.scheduler_started_at_utc",
+    )
+    verified_at = _parse_utc(
+        submission_verification.get("verified_at_utc"),
+        "submission verification receipt.verified_at_utc",
+    )
+    skew = timedelta(seconds=max_future_skew_seconds)
+    if capture_started < scheduler_started - skew:
+        raise RuntimeReceiptValidationError("runtime capture predates scheduler start")
+    if capture_started > scheduler_started + timedelta(seconds=max_start_to_capture_seconds):
+        raise RuntimeReceiptValidationError("runtime capture exceeded the scheduler-start freshness window")
+    if verified_at > capture_started + skew:
+        raise RuntimeReceiptValidationError("submission verification timestamp is after runtime capture")
+    if submitted_at > scheduler_started + skew:
+        raise RuntimeReceiptValidationError("submission timestamp is after scheduler start")
+
+    asset_verification, asset_verification_descriptor = _prepare_bound_json_receipt(
+        asset_verification_receipt,
+        expected_asset_verification_receipt_sha256,
+        "asset verification receipt",
+        kind=ASSET_VERIFICATION_KIND,
+        schema_version=1,
+    )
+    _require_exact_keys(
+        asset_verification,
+        frozenset(
+            {
+                "schema_version",
+                "kind",
+                "status",
+                "asset_root",
+                "asset_root_mode",
+                "excluded_top_level_paths",
+                "manifest_path",
+                "manifest_size_bytes",
+                "manifest_sha256",
+                "publisher_receipt_path",
+                "publisher_receipt_size_bytes",
+                "publisher_receipt_sha256",
+                "publisher_generator_id",
+                "publisher_generated_at_utc",
+                "robocasa_git_commit",
+                "payload_directory_count",
+                "payload_file_count",
+                "payload_symlink_count",
+                "payload_total_bytes",
+                "source_archive_directory",
+                "source_sha256sums_sha256",
+                "source_sizes_sha256",
+            }
+        ),
+        "asset verification receipt",
+    )
+    if asset_verification.get("payload_symlink_count") != 0:
+        raise RuntimeReceiptValidationError("asset verification receipt must report zero symlinks")
 
     cosmos_python_launch, cosmos_python_resolved = _python_launch_and_resolved(
         cosmos_python,
@@ -1309,6 +1859,7 @@ def capture_runtime_receipt(
                 _ROBOCASA_EGL_PROBE,
                 str(robosuite_root),
                 str(shard_index),
+                PINNED_EGL_VENDOR_JSON,
             ],
             label=f"RoboCasa EGL probe shard {shard_index}",
             runner=runner,
@@ -1318,6 +1869,8 @@ def capture_runtime_receipt(
                 "MUJOCO_EGL_DEVICE_ID": str(shard_index),
                 "MUJOCO_GL": "egl",
                 "PYOPENGL_PLATFORM": "egl",
+                "__EGL_VENDOR_LIBRARY_FILENAMES": PINNED_EGL_VENDOR_JSON,
+                "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
             },
         )
         robocasa_egl.append(
@@ -1330,6 +1883,9 @@ def capture_runtime_receipt(
                 robosuite_root=robosuite_root,
             )
         )
+    graphics_userspace = robocasa_egl[0]["graphics_userspace"]
+    if any(record["graphics_userspace"] != graphics_userspace for record in robocasa_egl[1:]):
+        raise RuntimeReceiptValidationError("RoboCasa EGL shards resolved different graphics userspace artifacts")
 
     if environment_verification["cosmos"]["interpreter_resolved_path"] != cosmos_runtime["python"]["executable"]:
         raise RuntimeReceiptValidationError(
@@ -1408,20 +1964,56 @@ def capture_runtime_receipt(
     if sources_after != sources:
         raise RuntimeReceiptValidationError("source identity changed during runtime capture")
 
+    graphics_userspace_after = _validate_graphics_userspace(
+        graphics_userspace,
+        "graphics userspace final verification",
+    )
+    if graphics_userspace_after != graphics_userspace:
+        raise RuntimeReceiptValidationError("graphics userspace identity changed during runtime capture")
+    submission_after, submission_descriptor_after = _prepare_bound_json_receipt(
+        submission_verification_receipt,
+        expected_submission_verification_receipt_sha256,
+        "submission verification receipt",
+        kind=SUBMISSION_VERIFICATION_KIND,
+        schema_version=1,
+    )
+    asset_after, asset_descriptor_after = _prepare_bound_json_receipt(
+        asset_verification_receipt,
+        expected_asset_verification_receipt_sha256,
+        "asset verification receipt",
+        kind=ASSET_VERIFICATION_KIND,
+        schema_version=1,
+    )
+    if submission_after != submission_verification or submission_descriptor_after != submission_verification_descriptor:
+        raise RuntimeReceiptValidationError("submission verification receipt changed during runtime capture")
+    if asset_after != asset_verification or asset_descriptor_after != asset_verification_descriptor:
+        raise RuntimeReceiptValidationError("asset verification receipt changed during runtime capture")
+
+    captured_at = _clock_utc(clock, "capture completion")
+    if captured_at < capture_started:
+        raise RuntimeReceiptValidationError("runtime capture completion predates capture start")
+    if captured_at > scheduler_started + timedelta(seconds=max_start_to_capture_seconds):
+        raise RuntimeReceiptValidationError("runtime capture completion exceeded the scheduler-start freshness window")
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "kind": RECEIPT_KIND,
         "status": "passed",
-        "captured_at_utc": _utc_timestamp(clock),
+        "capture_started_at_utc": capture_started.isoformat().replace("+00:00", "Z"),
+        "captured_at_utc": captured_at.isoformat().replace("+00:00", "Z"),
         "driver_environment": {
             "ld_library_path": driver_library_path,
-            "egl_vendor_library_dirs": egl_vendor_library_dirs,
+            "egl_vendor_library_filenames": egl_vendor_library_filenames,
+            "glx_vendor_library_name": "nvidia",
+            "forbidden_environment_cleared": list(FORBIDDEN_GRAPHICS_ENVIRONMENT),
         },
         "inputs": {
             "experiment_id": experiment_id,
             "logical_run_id": logical_run_id,
             "capture_nonce": capture_nonce,
+            "submitted_at_utc": submitted_at_utc,
             "num_gpus": num_gpus,
+            "submission_verification_receipt": submission_verification_descriptor,
+            "asset_verification_receipt": asset_verification_descriptor,
             "interpreters": {
                 "cosmos": {
                     "launch_path": str(cosmos_python_launch),
@@ -1442,6 +2034,7 @@ def capture_runtime_receipt(
         "cosmos_runtime": cosmos_runtime,
         "robocasa_runtime": robocasa_runtime,
         "robocasa_egl": robocasa_egl,
+        "graphics_userspace": graphics_userspace,
         "nvidia_smi": nvidia_inventory,
         "validation": {
             "environment_manifests_match_live_interpreters": True,
@@ -1453,6 +2046,10 @@ def capture_runtime_receipt(
             "torch_and_nvidia_smi_uuid_sets_match": True,
             "h_driver_library_path_is_exact": True,
             "robocasa_egl_contexts_created_per_shard": True,
+            "submission_identity_and_freshness_match": True,
+            "asset_tree_verification_is_bound": True,
+            "graphics_userspace_files_match_live_hashes": True,
+            "nvidia_gl_vendor_and_renderer_match": True,
         },
     }
     digest = write_json_atomic_exclusive(output_path, receipt)
@@ -1478,6 +2075,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-id", required=True)
     parser.add_argument("--logical-run-id", required=True)
     parser.add_argument("--capture-nonce", required=True)
+    parser.add_argument("--submitted-at-utc", required=True)
+    parser.add_argument("--submission-verification-receipt", type=Path, required=True)
+    parser.add_argument(
+        "--expected-submission-verification-receipt-sha256",
+        required=True,
+    )
+    parser.add_argument("--asset-verification-receipt", type=Path, required=True)
+    parser.add_argument(
+        "--expected-asset-verification-receipt-sha256",
+        required=True,
+    )
+    parser.add_argument("--egl-vendor-json", type=Path, required=True)
+    parser.add_argument("--max-start-to-capture-seconds", type=int, required=True)
+    parser.add_argument("--max-future-skew-seconds", type=int, required=True)
     parser.add_argument("--num-gpus", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=COMMAND_TIMEOUT_SECONDS)
@@ -1505,6 +2116,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             experiment_id=arguments.experiment_id,
             logical_run_id=arguments.logical_run_id,
             capture_nonce=arguments.capture_nonce,
+            submitted_at_utc=arguments.submitted_at_utc,
+            submission_verification_receipt=arguments.submission_verification_receipt,
+            expected_submission_verification_receipt_sha256=(arguments.expected_submission_verification_receipt_sha256),
+            asset_verification_receipt=arguments.asset_verification_receipt,
+            expected_asset_verification_receipt_sha256=(arguments.expected_asset_verification_receipt_sha256),
+            egl_vendor_json=arguments.egl_vendor_json,
+            max_start_to_capture_seconds=arguments.max_start_to_capture_seconds,
+            max_future_skew_seconds=arguments.max_future_skew_seconds,
             num_gpus=arguments.num_gpus,
             output=arguments.output,
             timeout_seconds=arguments.timeout_seconds,
