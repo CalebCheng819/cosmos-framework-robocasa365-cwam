@@ -139,7 +139,6 @@ export PATH="$COSMOS_ENV/bin:$PATH"
 [[ "$(realpath -e -- "$(command -v torchrun)")" == "$(realpath -e -- "$TORCHRUN")" ]] ||
     { echo "ERROR: PATH torchrun does not resolve to COSMOS_ENV" >&2; exit 1; }
 command -v findmnt >/dev/null
-command -v lsblk >/dev/null
 command -v nvidia-smi >/dev/null
 command -v sha256sum >/dev/null
 command -v df >/dev/null
@@ -237,7 +236,13 @@ CURRENT_PHASE=nvme_validation_and_stage
 NVME_MOUNT_TARGET="$(findmnt -n -T "$NVME_MOUNT_ROOT" -o TARGET)"
 NVME_MOUNT_SOURCE="$(findmnt -n -T "$NVME_MOUNT_ROOT" -o SOURCE)"
 NVME_MOUNT_FSTYPE="$(findmnt -n -T "$NVME_MOUNT_ROOT" -o FSTYPE)"
-[[ -n "$NVME_MOUNT_TARGET" && -n "$NVME_MOUNT_SOURCE" && -n "$NVME_MOUNT_FSTYPE" ]] ||
+NVME_MOUNT_OPTIONS="$(findmnt -n -T "$NVME_MOUNT_ROOT" -o OPTIONS)"
+NVME_FINDMNT_EVIDENCE="$(
+    findmnt -n -T "$NVME_MOUNT_ROOT" -o TARGET,SOURCE,FSTYPE,OPTIONS
+)"
+[[ -n "$NVME_MOUNT_TARGET" && -n "$NVME_MOUNT_SOURCE" &&
+   -n "$NVME_MOUNT_FSTYPE" && -n "$NVME_MOUNT_OPTIONS" &&
+   -n "$NVME_FINDMNT_EVIDENCE" ]] ||
     { echo "ERROR: findmnt could not resolve the NVMe contract" >&2; exit 1; }
 NVME_MOUNT_TARGET="$(realpath -e -- "$NVME_MOUNT_TARGET")"
 [[ "$NVME_MOUNT_TARGET" == /nvme ]] ||
@@ -246,14 +251,20 @@ NVME_MOUNT_TARGET="$(realpath -e -- "$NVME_MOUNT_TARGET")"
     { echo "ERROR: H host-NVMe mount source must be /dev/nvme1n1" >&2; exit 1; }
 [[ "$NVME_MOUNT_FSTYPE" == xfs ]] ||
     { echo "ERROR: H host-NVMe filesystem must be xfs" >&2; exit 1; }
-set +e
-NVME_BLOCK_EVIDENCE="$(lsblk -sno NAME,TYPE,TRAN "$NVME_MOUNT_SOURCE" 2>&1)"
-LSBLK_STATUS=$?
-set -e
-[[ "$LSBLK_STATUS" -eq 0 ]] ||
-    { echo "ERROR: cannot trace NVMe mount source through lsblk: $NVME_BLOCK_EVIDENCE" >&2; exit 1; }
-grep -Eq '(^|[[:space:]])nvme([[:space:]]|$)' <<<"$NVME_BLOCK_EVIDENCE" ||
-    { echo "ERROR: mount source has no NVMe block-device evidence" >&2; exit 1; }
+case ",$NVME_MOUNT_OPTIONS," in
+    *,rw,*) ;;
+    *) echo "ERROR: H host-NVMe mount is not read-write" >&2; exit 1 ;;
+esac
+# H's --store-host-nvme records /dev/nvme1n1 in the container mount table but
+# does not expose the host block-device node inside the unprivileged container.
+# Treat device-node visibility as evidence, not as a requirement; the exact
+# target/source/xfs/rw contract plus writability and capacity checks remain
+# fail-closed.
+if [[ -b "$NVME_MOUNT_SOURCE" ]]; then
+    NVME_MOUNT_SOURCE_DEVICE_VISIBILITY=block_device_visible
+else
+    NVME_MOUNT_SOURCE_DEVICE_VISIBILITY=not_visible_in_container
+fi
 NVME_FREE_BYTES="$(df -B1 --output=avail "$NVME_MOUNT_ROOT" | tail -n 1 | tr -d '[:space:]')"
 [[ "$NVME_FREE_BYTES" =~ ^[0-9]+$ ]] ||
     { echo "ERROR: cannot determine free bytes for NVME_MOUNT_ROOT" >&2; exit 1; }
@@ -276,11 +287,13 @@ payload = {
     "mount_target": sys.argv[3],
     "mount_source": sys.argv[4],
     "filesystem_type": sys.argv[5],
-    "free_bytes": int(sys.argv[6]),
-    "required_bytes": int(sys.argv[7]),
-    "minimum_free_bytes": int(sys.argv[8]),
-    "cache_total_bytes": int(sys.argv[9]),
-    "lsblk_ancestry": sys.argv[10],
+    "mount_options": sys.argv[6],
+    "findmnt_evidence": sys.argv[7],
+    "mount_source_device_node_visibility": sys.argv[8],
+    "free_bytes": int(sys.argv[9]),
+    "required_bytes": int(sys.argv[10]),
+    "minimum_free_bytes": int(sys.argv[11]),
+    "cache_total_bytes": int(sys.argv[12]),
 }
 target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 ' \
@@ -289,11 +302,13 @@ target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     "$NVME_MOUNT_TARGET" \
     "$NVME_MOUNT_SOURCE" \
     "$NVME_MOUNT_FSTYPE" \
+    "$NVME_MOUNT_OPTIONS" \
+    "$NVME_FINDMNT_EVIDENCE" \
+    "$NVME_MOUNT_SOURCE_DEVICE_VISIBILITY" \
     "$NVME_FREE_BYTES" \
     "$NVME_REQUIRED_FOR_CACHE" \
     "$NVME_MIN_FREE_BYTES" \
-    "$CACHE_TOTAL_BYTES" \
-    "$NVME_BLOCK_EVIDENCE"
+    "$CACHE_TOTAL_BYTES"
 
 NVME_STAGE_PARENT="$NVME_MOUNT_ROOT/.cwam-cosmos3-latent-cache/$THROUGHPUT_RUN_ID"
 mkdir -p "$NVME_STAGE_PARENT"

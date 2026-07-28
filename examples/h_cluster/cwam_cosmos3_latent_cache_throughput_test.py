@@ -589,6 +589,11 @@ class ThroughputHelperTest(unittest.TestCase):
             "minimum-cpus \"$MINIMUM_EFFECTIVE_CPUS\"",
             "NVME_MOUNT_ROOT:=/nvme",
             "NVME_MOUNT_SOURCE\" == /dev/nvme1n1",
+            "NVME_MOUNT_OPTIONS",
+            'case ",$NVME_MOUNT_OPTIONS," in',
+            "ERROR: H host-NVMe mount is not read-write",
+            "NVME_MOUNT_SOURCE_DEVICE_VISIBILITY=not_visible_in_container",
+            "mount_source_device_node_visibility",
             "ROBOCASA365_FIXED_INDEX_TRACE_PATH",
             "prepare-fixed-trace",
             "--dataset-root \"$ROBOCASA365_ROOT\"",
@@ -600,6 +605,8 @@ class ThroughputHelperTest(unittest.TestCase):
             runner.index('export PYTHONPATH="$COSMOS_SOURCE"'),
             runner.index('"$PYTHON" "$HELPER" validate-cache'),
         )
+        self.assertNotIn("lsblk -sno", runner)
+        self.assertNotIn("command -v lsblk", runner)
         self.assertIn("text_token_ids", helper)
         self.assertIn("readonly RJOB_CPU=160", submitter)
         self.assertIn("--store-host-nvme", submitter)
