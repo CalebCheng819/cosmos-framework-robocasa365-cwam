@@ -236,9 +236,7 @@ class ThroughputHelperTest(unittest.TestCase):
                 root / "none",
                 cell_id="workers-4__storage-gpfs__ac-none",
             )
-            none_paths["log"].write_text(
-                "rank 3: torch.cuda.OutOfMemoryError: CUDA out of memory\n"
-            )
+            none_paths["log"].write_text("rank 3: torch.cuda.OutOfMemoryError: CUDA out of memory\n")
             none_payload = OPS.summarize_cell_fail_closed(
                 _summary_args(
                     none_paths,
@@ -568,7 +566,7 @@ class ThroughputHelperTest(unittest.TestCase):
             "readonly MEASURE_STEPS=50",
             "readonly -a WORKER_MATRIX=(4 8 12 16)",
             "PROBE_MATRIX_MODE:=adaptive6",
-            "PROBE_MATRIX_MODE\" == full16",
+            'PROBE_MATRIX_MODE" == full16',
             "sample-gpu",
             "optimizer-step-wall-clock.ndjson",
             "make_throughput_probe_callback",
@@ -585,9 +583,9 @@ class ThroughputHelperTest(unittest.TestCase):
             "EXPECTED_SNAPSHOT_MANIFEST_SHA256",
             'export PATH="$COSMOS_ENV/bin:$PATH"',
             'export PYTHONPATH="$COSMOS_SOURCE"',
-            "minimum-cpus \"$MINIMUM_EFFECTIVE_CPUS\"",
+            'minimum-cpus "$MINIMUM_EFFECTIVE_CPUS"',
             "NVME_MOUNT_ROOT:=/nvme",
-            "NVME_MOUNT_SOURCE\" == /dev/nvme1n1",
+            'NVME_MOUNT_SOURCE" == /dev/nvme1n1',
             "NVME_MOUNT_OPTIONS",
             'case ",$NVME_MOUNT_OPTIONS," in',
             "ERROR: H host-NVMe mount is not read-write",
@@ -595,8 +593,8 @@ class ThroughputHelperTest(unittest.TestCase):
             "mount_source_device_node_visibility",
             "ROBOCASA365_FIXED_INDEX_TRACE_PATH",
             "prepare-fixed-trace",
-            "--dataset-root \"$ROBOCASA365_ROOT\"",
-            "--source-root \"$ROBOCASA365_SOURCE_ROOT\"",
+            '--dataset-root "$ROBOCASA365_ROOT"',
+            '--source-root "$ROBOCASA365_SOURCE_ROOT"',
         )
         for fragment in required_runner_fragments:
             self.assertIn(fragment, runner)
@@ -620,9 +618,7 @@ class ThroughputHelperTest(unittest.TestCase):
         self.assertIn("readonly SCHEDULER_RECEIPT_ATTEMPTS=86400", cache_submitter)
         self.assertIn("readonly SCHEDULER_RECEIPT_TIMEOUT_SECONDS=90000", cache_submitter)
         self.assertIn("--foreground --kill-after=10s 180s", cache_submitter)
-        cache_wrapper = (
-            Path(__file__).with_name("build_robocasa365_wan_latent_cache.sh").read_text()
-        )
+        cache_wrapper = Path(__file__).with_name("build_robocasa365_wan_latent_cache.sh").read_text()
         self.assertIn(
             'export LD_LIBRARY_PATH="$H_NVIDIA_DRIVER_LIB:$H_NVIDIA_DRIVER_LIB64"',
             cache_wrapper,
