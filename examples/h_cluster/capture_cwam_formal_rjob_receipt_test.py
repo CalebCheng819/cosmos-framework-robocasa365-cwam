@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from examples.h_cluster import capture_cwam_formal_rjob_receipt as receipt_module
 from examples.h_cluster.capture_cwam_formal_rjob_receipt import (
     ReceiptNotReady,
     ReceiptValidationError,
@@ -37,6 +38,14 @@ _MOUNTS = [
     "gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs",
     "gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public",
 ]
+_SUBMISSION_NONCE = "d" * 64
+_SUBMISSION_RESERVATION = (
+    "/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/"
+    "cwam-cosmos3-formal/formal_continuation_submission_reservations/"
+    f"{_EXPERIMENT_ID}/submission.json"
+)
+_HOST_NVME_ANNOTATION = "kubebrain.brainpp.cn/writeread-hostpath-mounts"
+_HOST_NVME_CONTRACT = "/nvme:/mnt/nvme1n1,/cfs:/mnt/cfs"
 
 
 def _expected() -> dict[str, object]:
@@ -76,6 +85,81 @@ def _formal_shell_script() -> str:
             f"bash {_WRAPPER}",
         ]
     )
+
+
+def test_expected_contract_rejects_continuation_schema_downgrade() -> None:
+    expected = _expected()
+    continuation_wrapper = f"{_SNAPSHOT_ROOT}/examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"
+    expected["wrapper_path"] = continuation_wrapper
+    command = _formal_shell_script().replace(_WRAPPER, continuation_wrapper)
+    expected["command_sha256"] = hashlib.sha256(command.encode()).hexdigest()
+
+    with pytest.raises(
+        ReceiptValidationError,
+        match="continuation wrapper requires.*schema_version=2",
+    ):
+        validate_expected_contract(expected)
+
+
+def test_expected_contract_preserves_single_wrapper_adapter_hook(
+    monkeypatch,
+) -> None:
+    adapter_relative = Path("examples/h_cluster/build_robocasa365_wan_latent_cache.sh")
+    monkeypatch.setattr(
+        receipt_module,
+        "_FORMAL_WRAPPER_RELATIVE_PATH",
+        receipt_module.PurePosixPath(str(adapter_relative)),
+    )
+    expected = _expected()
+    expected["wrapper_path"] = f"{_SNAPSHOT_ROOT}/{adapter_relative}"
+    command = _formal_shell_script().replace(_WRAPPER, expected["wrapper_path"])
+    expected["command_sha256"] = hashlib.sha256(command.encode()).hexdigest()
+
+    assert validate_expected_contract(expected)["wrapper_path"] == (expected["wrapper_path"])
+
+
+def _continuation_shell_script() -> str:
+    continuation_wrapper = f"{_SNAPSHOT_ROOT}/examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"
+    return "\n".join(
+        [
+            "set -Eeuo pipefail",
+            f"export COSMOS_SOURCE={_SNAPSHOT_ROOT}",
+            f"export FORMAL_EXPERIMENT_ID={_EXPERIMENT_ID}",
+            f"export FORMAL_RUN_NAME={_EXPERIMENT_ID}",
+            f"export FORMAL_SUBMISSION_NONCE={_SUBMISSION_NONCE}",
+            (f"export FORMAL_SUBMISSION_RESERVATION_PATH={_SUBMISSION_RESERVATION}"),
+            f"exec bash {continuation_wrapper}",
+        ]
+    )
+
+
+def _expected_v2(*, store_host_nvme: bool = True) -> dict[str, object]:
+    expected = _expected()
+    expected.update(
+        {
+            "schema_version": 2,
+            "wrapper_path": (f"{_SNAPSHOT_ROOT}/examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"),
+            "submission_nonce": _SUBMISSION_NONCE,
+            "submission_reservation_path": _SUBMISSION_RESERVATION,
+            "store_host_nvme": store_host_nvme,
+            "command_sha256": hashlib.sha256(_continuation_shell_script().encode()).hexdigest(),
+        }
+    )
+    return expected
+
+
+def test_expected_contract_accepts_only_v2_continuation_wrapper() -> None:
+    expected = _expected_v2()
+    assert validate_expected_contract(expected)["wrapper_path"] == (expected["wrapper_path"])
+
+    fresh_as_v2 = _expected_v2()
+    fresh_as_v2["wrapper_path"] = _WRAPPER
+    fresh_as_v2["command_sha256"] = hashlib.sha256(_formal_shell_script().encode()).hexdigest()
+    with pytest.raises(
+        ReceiptValidationError,
+        match="fresh formal and adapter wrappers require.*schema_version=1",
+    ):
+        validate_expected_contract(fresh_as_v2)
 
 
 def _raw_rjob() -> dict[str, object]:
@@ -271,6 +355,133 @@ def _raw_replicas(*, phase: str = "Pending") -> dict[str, object]:
         "kind": "ReplicaList",
         "items": [_raw_replica(phase=phase)],
     }
+
+
+def _raw_v2_scheduler_objects(
+    *,
+    store_host_nvme: bool = True,
+) -> tuple[dict[str, object], dict[str, object]]:
+    rjob = _raw_rjob()
+    replicas = _raw_replicas()
+    template = rjob["spec"]["taskSpecs"]["t0"]["template"]  # type: ignore[index]
+    replica = replicas["items"][0]  # type: ignore[index]
+    command = ["bash", "-lc", _continuation_shell_script()]
+    template["spec"]["containers"][0]["command"] = command  # type: ignore[index]
+    replica["spec"]["containers"][0]["command"] = [  # type: ignore[index]
+        "/kubebrain/worker-init",
+        "run",
+        "--enable-pid-monitor",
+        "--",
+        *command,
+    ]
+    if store_host_nvme:
+        template["metadata"]["annotations"][_HOST_NVME_ANNOTATION] = (  # type: ignore[index]
+            _HOST_NVME_CONTRACT
+        )
+        replica["metadata"]["annotations"][_HOST_NVME_ANNOTATION] = (  # type: ignore[index]
+            _HOST_NVME_CONTRACT
+        )
+    return rjob, replicas
+
+
+def test_v2_receipt_binds_nonce_reservation_and_host_nvme_on_crd_and_replica() -> None:
+    rjob, replicas = _raw_v2_scheduler_objects()
+    receipt = validate_and_normalize_receipt(
+        rjob,
+        replicas,
+        _expected_v2(),
+        captured_at="2026-07-28T00:00:02+00:00",
+    )
+
+    task = receipt["spec"]["task"]
+    assert task["submission_nonce"] == _SUBMISSION_NONCE
+    assert task["submission_reservation_path"] == _SUBMISSION_RESERVATION
+    assert task["container"]["command_sha256"] == _expected_v2()["command_sha256"]
+    assert task["store_host_nvme"] == {
+        "enabled": True,
+        "annotation": _HOST_NVME_ANNOTATION,
+        "value": _HOST_NVME_CONTRACT,
+        "container_target": "/nvme",
+        "host_source": "/mnt/nvme1n1",
+    }
+    assert receipt["replicas"][0]["worker_spec"]["store_host_nvme"] == (task["store_host_nvme"])
+    assert receipt["validation"]["expected_contract_schema_version"] == 2
+
+
+@pytest.mark.parametrize("location", ["template", "replica"])
+def test_v2_host_nvme_annotation_drift_fails_closed(location: str) -> None:
+    rjob, replicas = _raw_v2_scheduler_objects()
+    if location == "template":
+        annotations = rjob["spec"]["taskSpecs"]["t0"]["template"]["metadata"][  # type: ignore[index]
+            "annotations"
+        ]
+    else:
+        annotations = replicas["items"][0]["metadata"]["annotations"]  # type: ignore[index]
+    annotations[_HOST_NVME_ANNOTATION] = "/nvme:/wrong"
+    with pytest.raises(ReceiptValidationError, match="writeread-hostpath-mounts"):
+        validate_and_normalize_receipt(rjob, replicas, _expected_v2())
+
+
+def test_v2_gpfs_selection_requires_host_nvme_annotation_absent() -> None:
+    rjob, replicas = _raw_v2_scheduler_objects(store_host_nvme=False)
+    receipt = validate_and_normalize_receipt(
+        rjob,
+        replicas,
+        _expected_v2(store_host_nvme=False),
+    )
+    assert receipt["spec"]["task"]["store_host_nvme"]["enabled"] is False
+
+    rjob, replicas = _raw_v2_scheduler_objects(store_host_nvme=True)
+    with pytest.raises(ReceiptValidationError, match="writeread-hostpath-mounts"):
+        validate_and_normalize_receipt(
+            rjob,
+            replicas,
+            _expected_v2(store_host_nvme=False),
+        )
+
+
+def test_v2_nonce_and_reservation_exports_are_mandatory() -> None:
+    rjob, replicas = _raw_v2_scheduler_objects()
+    command = rjob["spec"]["taskSpecs"]["t0"]["template"]["spec"]["containers"][0][  # type: ignore[index]
+        "command"
+    ]
+    command[2] = command[2].replace(
+        f"export FORMAL_SUBMISSION_NONCE={_SUBMISSION_NONCE}",
+        f"export FORMAL_SUBMISSION_NONCE={'e' * 64}",
+    )
+    expected = _expected_v2()
+    expected["command_sha256"] = hashlib.sha256(command[2].encode()).hexdigest()
+    replicas["items"][0]["spec"]["containers"][0]["command"][-1] = command[2]  # type: ignore[index]
+    with pytest.raises(ReceiptValidationError, match="FORMAL_SUBMISSION_NONCE"):
+        validate_and_normalize_receipt(rjob, replicas, expected)
+
+    rjob, replicas = _raw_v2_scheduler_objects()
+    command = rjob["spec"]["taskSpecs"]["t0"]["template"]["spec"]["containers"][0][  # type: ignore[index]
+        "command"
+    ]
+    command[2] += f"\nexport FORMAL_SUBMISSION_NONCE={_SUBMISSION_NONCE}"
+    expected = _expected_v2()
+    expected["command_sha256"] = hashlib.sha256(command[2].encode()).hexdigest()
+    replicas["items"][0]["spec"]["containers"][0]["command"][-1] = command[2]  # type: ignore[index]
+    with pytest.raises(ReceiptValidationError, match="exactly once"):
+        validate_and_normalize_receipt(rjob, replicas, expected)
+
+    rjob, replicas = _raw_v2_scheduler_objects()
+    command = rjob["spec"]["taskSpecs"]["t0"]["template"]["spec"]["containers"][0][  # type: ignore[index]
+        "command"
+    ]
+    command[2] = command[2].replace(
+        _SUBMISSION_RESERVATION,
+        _SUBMISSION_RESERVATION + ".wrong",
+    )
+    expected = _expected_v2()
+    expected["command_sha256"] = hashlib.sha256(command[2].encode()).hexdigest()
+    replicas["items"][0]["spec"]["containers"][0]["command"][-1] = command[2]  # type: ignore[index]
+    with pytest.raises(
+        ReceiptValidationError,
+        match="FORMAL_SUBMISSION_RESERVATION_PATH",
+    ):
+        validate_and_normalize_receipt(rjob, replicas, expected)
 
 
 def _set_path(root: object, path: tuple[object, ...], value: object) -> None:

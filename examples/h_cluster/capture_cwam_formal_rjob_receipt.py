@@ -29,7 +29,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 _RECEIPT_KIND = "cwam_formal_rjob_scheduler_receipt"
-_EXPECTED_SCHEMA_VERSION = 1
 _RECEIPT_SCHEMA_VERSION = 1
 _TASK_NAME = "t0"
 _SHOW_NAME_ANNOTATION = "kubebrain.brainpp.cn/showname"
@@ -41,6 +40,8 @@ _PRIVATE_MACHINE_LABEL = "privatemachine.brainpp.cn/privatemachine"
 _PRIORITY_ANNOTATION = "volcano.brainpp.cn/priority"
 _SCHEDULING_GROUP_KEY = "scheduling.k8s.io/group-name"
 _GPFS_MOUNT_ANNOTATION = "mount.brainpp.cn/gpfs"
+_HOST_NVME_ANNOTATION = "kubebrain.brainpp.cn/writeread-hostpath-mounts"
+_HOST_NVME_CONTRACT = "/nvme:/mnt/nvme1n1,/cfs:/mnt/cfs"
 _REPLICA_INDEX_LABEL = "kubebrain.brainpp.cn/replica"
 _WORKER_INIT_PREFIXES = (
     ("/kubebrain/worker-init", "run", "--enable-pid-monitor", "--"),
@@ -59,12 +60,25 @@ _PLATFORM_INJECTED_LIMIT_KEYS = frozenset(
         "rdma/mlnx_shared",
     }
 )
-_FORMAL_WRAPPER_RELATIVE_PATH = PurePosixPath("examples/h_cluster/run_cwam_cosmos3_nano_production_then_formal.sh")
+_FRESH_FORMAL_WRAPPER_RELATIVE_PATH = PurePosixPath(
+    "examples/h_cluster/run_cwam_cosmos3_nano_production_then_formal.sh"
+)
+_CONTINUATION_FORMAL_WRAPPER_RELATIVE_PATH = PurePosixPath(
+    "examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"
+)
+_FORMAL_WRAPPER_RELATIVE_PATHS = (
+    _FRESH_FORMAL_WRAPPER_RELATIVE_PATH,
+    _CONTINUATION_FORMAL_WRAPPER_RELATIVE_PATH,
+)
+# Backward-compatible adapter hook used by the latent-cache/eval submitters.
+# The generic formal paths above remain allowed; an adapter may set this after
+# importing the module to add exactly one audited wrapper for its own receipt.
+_FORMAL_WRAPPER_RELATIVE_PATH: PurePosixPath | None = None
 _KUBERNETES_NAME_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IMAGE_DIGEST_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
-_EXPECTED_KEYS = frozenset(
+_EXPECTED_KEYS_V1 = frozenset(
     {
         "schema_version",
         "scheduler_rjob_name",
@@ -88,6 +102,13 @@ _EXPECTED_KEYS = frozenset(
         "wrapper_path",
         "experiment_id",
         "command_sha256",
+    }
+)
+_EXPECTED_KEYS_V2 = _EXPECTED_KEYS_V1 | frozenset(
+    {
+        "submission_nonce",
+        "submission_reservation_path",
+        "store_host_nvme",
     }
 )
 
@@ -151,9 +172,7 @@ def _require_container_env(
         if isinstance(item, dict) and item.get("name") == name
     ]
     if len(matches) != 1:
-        raise ReceiptValidationError(
-            f"replica.spec.containers[0].env must contain exactly one {name!r} binding"
-        )
+        raise ReceiptValidationError(f"replica.spec.containers[0].env must contain exactly one {name!r} binding")
     binding = matches[0]
     label = f"replica.spec.containers[0].env[{name}]"
     if expected_value is not None:
@@ -213,14 +232,22 @@ def validate_expected_contract(value: object) -> dict[str, Any]:
     """Validate and return a defensive copy of the exact expected schema."""
 
     expected = _require_mapping(value, "expected contract")
-    if set(expected) != _EXPECTED_KEYS:
+    schema_version = expected.get("schema_version")
+    if schema_version == 1:
+        expected_keys = _EXPECTED_KEYS_V1
+    elif schema_version == 2:
+        expected_keys = _EXPECTED_KEYS_V2
+    else:
+        raise ReceiptValidationError(
+            f"expected.schema_version mismatch: expected one of [1, 2], actual={schema_version!r}"
+        )
+    if set(expected) != expected_keys:
         raise ReceiptValidationError(
             "expected contract key mismatch: "
-            f"missing={sorted(_EXPECTED_KEYS - set(expected))}, "
-            f"extra={sorted(set(expected) - _EXPECTED_KEYS)}"
+            f"missing={sorted(expected_keys - set(expected))}, "
+            f"extra={sorted(set(expected) - expected_keys)}"
         )
 
-    _require_exact(expected["schema_version"], _EXPECTED_SCHEMA_VERSION, "expected.schema_version")
     scheduler_rjob_name = _require_string(expected["scheduler_rjob_name"], "expected.scheduler_rjob_name")
     showname = _require_string(expected["showname"], "expected.showname")
     if _KUBERNETES_NAME_RE.fullmatch(scheduler_rjob_name) is None:
@@ -268,17 +295,41 @@ def validate_expected_contract(value: object) -> dict[str, Any]:
 
     snapshot_root = _require_absolute_posix_path(expected["snapshot_root"], "expected.snapshot_root")
     wrapper_path = _require_absolute_posix_path(expected["wrapper_path"], "expected.wrapper_path")
-    required_wrapper = str(PurePosixPath(snapshot_root) / _FORMAL_WRAPPER_RELATIVE_PATH)
-    if wrapper_path != required_wrapper:
+    fresh_wrapper = str(PurePosixPath(snapshot_root) / _FRESH_FORMAL_WRAPPER_RELATIVE_PATH)
+    continuation_wrapper = str(PurePosixPath(snapshot_root) / _CONTINUATION_FORMAL_WRAPPER_RELATIVE_PATH)
+    adapter_wrapper = (
+        str(PurePosixPath(snapshot_root) / _FORMAL_WRAPPER_RELATIVE_PATH)
+        if _FORMAL_WRAPPER_RELATIVE_PATH is not None
+        else None
+    )
+    allowed_wrappers = {value for value in (fresh_wrapper, continuation_wrapper, adapter_wrapper) if value is not None}
+    if wrapper_path not in allowed_wrappers:
         raise ReceiptValidationError(
-            f"expected.wrapper_path must be the formal wrapper inside snapshot_root: {required_wrapper}"
+            f"expected.wrapper_path must be an audited formal wrapper inside snapshot_root: {sorted(allowed_wrappers)}"
         )
+    if wrapper_path == continuation_wrapper and schema_version != 2:
+        raise ReceiptValidationError("formal continuation wrapper requires expected.schema_version=2")
+    if wrapper_path != continuation_wrapper and schema_version != 1:
+        raise ReceiptValidationError("fresh formal and adapter wrappers require expected.schema_version=1")
     experiment_id = _require_string(expected["experiment_id"], "expected.experiment_id")
     if _SAFE_TOKEN_RE.fullmatch(experiment_id) is None:
         raise ReceiptValidationError("expected.experiment_id contains unsupported characters")
     command_sha256 = _require_string(expected["command_sha256"], "expected.command_sha256")
     if _SHA256_RE.fullmatch(command_sha256) is None:
         raise ReceiptValidationError("expected.command_sha256 must be a lowercase SHA-256")
+    if schema_version == 2:
+        submission_nonce = _require_string(
+            expected["submission_nonce"],
+            "expected.submission_nonce",
+        )
+        if _SHA256_RE.fullmatch(submission_nonce) is None:
+            raise ReceiptValidationError("expected.submission_nonce must be 64 lowercase hexadecimal characters")
+        _require_absolute_posix_path(
+            expected["submission_reservation_path"],
+            "expected.submission_reservation_path",
+        )
+        if type(expected["store_host_nvme"]) is not bool:
+            raise ReceiptValidationError("expected.store_host_nvme must be a boolean")
 
     return json.loads(json.dumps(expected))
 
@@ -414,6 +465,17 @@ def _validate_command(command_value: object, expected: Mapping[str, Any]) -> lis
     _require_one_export(exports, "COSMOS_SOURCE", expected["snapshot_root"])
     _require_one_export(exports, "FORMAL_EXPERIMENT_ID", expected["experiment_id"])
     _require_one_export(exports, "FORMAL_RUN_NAME", expected["experiment_id"])
+    if expected["schema_version"] == 2:
+        _require_one_export(
+            exports,
+            "FORMAL_SUBMISSION_NONCE",
+            expected["submission_nonce"],
+        )
+        _require_one_export(
+            exports,
+            "FORMAL_SUBMISSION_RESERVATION_PATH",
+            expected["submission_reservation_path"],
+        )
 
     wrapper_invocations: list[list[str]] = []
     for line_number, line in enumerate(shell_script.splitlines(), start=1):
@@ -528,11 +590,7 @@ def _validate_expanded_worker_command(
         command_suffix = normalized_command
     else:
         matched_prefix = next(
-            (
-                list(prefix)
-                for prefix in _WORKER_INIT_PREFIXES
-                if normalized_command[: len(prefix)] == list(prefix)
-            ),
+            (list(prefix) for prefix in _WORKER_INIT_PREFIXES if normalized_command[: len(prefix)] == list(prefix)),
             None,
         )
         if matched_prefix is None:
@@ -580,6 +638,13 @@ def _normalize_replica(
     )
     replica_mounts = replica_mount_annotation.split(";")
     _require_exact(replica_mounts, expected["mounts"], f"replica annotation {_GPFS_MOUNT_ANNOTATION}")
+    if expected["schema_version"] == 2:
+        expected_host_nvme = _HOST_NVME_CONTRACT if expected["store_host_nvme"] else None
+        _require_exact(
+            annotations.get(_HOST_NVME_ANNOTATION),
+            expected_host_nvme,
+            f"replica annotation {_HOST_NVME_ANNOTATION}",
+        )
     replica_index = _require_string(labels.get(_REPLICA_INDEX_LABEL), f"replica label {_REPLICA_INDEX_LABEL}")
     if replica_index != "0":
         raise ReceiptValidationError(f"the only formal replica must have index '0', got {replica_index!r}")
@@ -686,6 +751,19 @@ def _normalize_replica(
             "restart_policy": expected["restart_policy"],
             "termination_grace_period_seconds": expected["termination_grace_period_seconds"],
             "mounts": replica_mounts,
+            **(
+                {
+                    "store_host_nvme": {
+                        "enabled": expected["store_host_nvme"],
+                        "annotation": _HOST_NVME_ANNOTATION,
+                        "value": (_HOST_NVME_CONTRACT if expected["store_host_nvme"] else None),
+                        "container_target": ("/nvme" if expected["store_host_nvme"] else None),
+                        "host_source": ("/mnt/nvme1n1" if expected["store_host_nvme"] else None),
+                    }
+                }
+                if expected["schema_version"] == 2
+                else {}
+            ),
             "command": replica_command,
             "worker_init_prefix": worker_init_prefix,
         },
@@ -768,6 +846,13 @@ def validate_and_normalize_receipt(
     mount_annotation = _require_string(template_annotations.get(_GPFS_MOUNT_ANNOTATION), _GPFS_MOUNT_ANNOTATION)
     observed_mounts = mount_annotation.split(";")
     _require_exact(observed_mounts, expected["mounts"], _GPFS_MOUNT_ANNOTATION)
+    if expected["schema_version"] == 2:
+        expected_host_nvme = _HOST_NVME_CONTRACT if expected["store_host_nvme"] else None
+        _require_exact(
+            template_annotations.get(_HOST_NVME_ANNOTATION),
+            expected_host_nvme,
+            _HOST_NVME_ANNOTATION,
+        )
 
     pod_spec = _require_mapping(template.get("spec"), f"rjob.spec.taskSpecs.{_TASK_NAME}.template.spec")
     _require_exact(pod_spec.get("hostNetwork"), True, "template.spec.hostNetwork")
@@ -808,10 +893,7 @@ def validate_and_normalize_receipt(
             f"expected exactly {expected['replicas']} scheduler replica, got {len(replica_items)}"
         )
     normalized_replicas = sorted(
-        (
-            _normalize_replica(item, expected, command, identity["uid"])
-            for item in replica_items
-        ),
+        (_normalize_replica(item, expected, command, identity["uid"]) for item in replica_items),
         key=lambda item: (item["replica_index"], item["replica_name"]),
     )
 
@@ -836,7 +918,7 @@ def validate_and_normalize_receipt(
         "captured_at": captured_at,
         "validation": {
             "status": "passed",
-            "expected_contract_schema_version": _EXPECTED_SCHEMA_VERSION,
+            "expected_contract_schema_version": expected["schema_version"],
         },
         "metadata": {
             **identity,
@@ -855,11 +937,27 @@ def validate_and_normalize_receipt(
                 "restart_policy": expected["restart_policy"],
                 "termination_grace_period_seconds": expected["termination_grace_period_seconds"],
                 "mounts": list(expected["mounts"]),
+                **(
+                    {
+                        "store_host_nvme": {
+                            "enabled": expected["store_host_nvme"],
+                            "annotation": _HOST_NVME_ANNOTATION,
+                            "value": (_HOST_NVME_CONTRACT if expected["store_host_nvme"] else None),
+                            "container_target": ("/nvme" if expected["store_host_nvme"] else None),
+                            "host_source": ("/mnt/nvme1n1" if expected["store_host_nvme"] else None),
+                        },
+                        "submission_nonce": expected["submission_nonce"],
+                        "submission_reservation_path": expected["submission_reservation_path"],
+                    }
+                    if expected["schema_version"] == 2
+                    else {}
+                ),
                 "container": {
                     "name": _TASK_NAME,
                     "image": expected["image"],
                     "resources": observed_resources,
                     "command": command,
+                    **({"command_sha256": expected["command_sha256"]} if expected["schema_version"] == 2 else {}),
                     "snapshot_root": expected["snapshot_root"],
                     "wrapper_path": expected["wrapper_path"],
                     "experiment_id": expected["experiment_id"],

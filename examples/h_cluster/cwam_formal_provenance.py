@@ -216,8 +216,7 @@ def _formal_rjob_contract(
     allowed_cpu = {128, 160} if world_size == 8 else {96}
     if cpu not in allowed_cpu:
         raise ProvenanceError(
-            f"formal world_size={world_size} does not allow rjob cpu={cpu}; "
-            f"allowed={sorted(allowed_cpu)}"
+            f"formal world_size={world_size} does not allow rjob cpu={cpu}; allowed={sorted(allowed_cpu)}"
         )
     return {
         "quota_group": _FORMAL_QUOTA_GROUP,
@@ -1120,6 +1119,7 @@ def verify_formal_contract(
     environment: Path,
     expected_rjob_cpu: int | None = None,
     expected_formal_wrapper: str = _FRESH_FORMAL_WRAPPER,
+    expected_experiment_mode: str = "confirmatory",
 ) -> dict[str, Any]:
     if _IMAGE_DIGEST_RE.fullmatch(expected_container_image) is None:
         raise ProvenanceError(
@@ -1137,9 +1137,9 @@ def verify_formal_contract(
     if nproc_per_node not in {6, 8}:
         raise ProvenanceError(f"formal world size must be 6 or 8, got {nproc_per_node}")
     if expected_formal_wrapper not in _ALLOWED_FORMAL_WRAPPERS:
-        raise ProvenanceError(
-            f"unsupported formal wrapper: {expected_formal_wrapper!r}"
-        )
+        raise ProvenanceError(f"unsupported formal wrapper: {expected_formal_wrapper!r}")
+    if expected_experiment_mode not in {"confirmatory", "exploratory"}:
+        raise ProvenanceError(f"unsupported formal experiment mode: {expected_experiment_mode!r}")
 
     snapshot_root_literal = Path(os.path.abspath(snapshot_root))
     snapshot_root_canonical = snapshot_root.resolve(strict=True)
@@ -1178,6 +1178,11 @@ def verify_formal_contract(
         raise ProvenanceError(f"formal experiment mismatch: {formal.get('experiment_id')!r}")
     if formal.get("status") not in {"planned", "queued"}:
         raise ProvenanceError(f"formal manifest status is not launchable: {formal.get('status')!r}")
+    if formal.get("mode") != expected_experiment_mode:
+        raise ProvenanceError(
+            "formal manifest experiment mode does not match the requested mode: "
+            f"expected={expected_experiment_mode!r}, actual={formal.get('mode')!r}"
+        )
     protocol = _verify_formal_protocol(
         formal,
         experiment_id=experiment_id,
@@ -1198,8 +1203,12 @@ def verify_formal_contract(
     )
 
     git = _require_mapping(formal.get("git"), "formal git")
-    if git.get("dirty") is not False or git.get("pushed") is not True:
-        raise ProvenanceError("formal manifest does not declare a clean pushed commit")
+    if git.get("dirty") is not False:
+        raise ProvenanceError("formal manifest does not declare a clean commit")
+    if type(git.get("pushed")) is not bool:
+        raise ProvenanceError("formal manifest git.pushed must be a boolean")
+    if expected_experiment_mode == "confirmatory" and git.get("pushed") is not True:
+        raise ProvenanceError("confirmatory formal manifest requires a clean pushed commit")
     if git.get("commit") != expected_commit or git.get("snapshot_sha256") != expected_workflow_snapshot_sha256:
         raise ProvenanceError("formal manifest Git provenance does not match the requested commit/workflow snapshot")
     if git.get("source_manifest_sha256") != snapshot_manifest_sha256:
@@ -1309,6 +1318,8 @@ def verify_formal_contract(
         "formal_manifest_sha256": actual_formal_sha256,
         "source_manifest_sha256": actual_snapshot_manifest_sha256,
         "source_commit": expected_commit,
+        "experiment_mode": expected_experiment_mode,
+        "source_commit_pushed": git["pushed"],
         "workflow_snapshot_sha256": expected_workflow_snapshot_sha256,
         "protocol": protocol,
         "storage": storage_contract,
@@ -1389,6 +1400,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(_ALLOWED_FORMAL_WRAPPERS),
         default=_FRESH_FORMAL_WRAPPER,
     )
+    formal.add_argument(
+        "--expected-experiment-mode",
+        choices=("confirmatory", "exploratory"),
+        default="confirmatory",
+    )
     formal.add_argument("--output-json", type=Path)
     return parser
 
@@ -1461,6 +1477,7 @@ def main() -> None:
                 environment=args.environment,
                 expected_rjob_cpu=args.expected_rjob_cpu,
                 expected_formal_wrapper=args.expected_formal_wrapper,
+                expected_experiment_mode=args.expected_experiment_mode,
             )
             _write_json_report(report, args.output_json)
             return

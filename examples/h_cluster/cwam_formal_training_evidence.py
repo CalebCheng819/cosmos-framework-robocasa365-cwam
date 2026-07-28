@@ -39,12 +39,12 @@ _FORMAL_MOUNTS = (
     "gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public",
 )
 _DCP_COMPONENTS = ("model", "optim", "scheduler", "trainer")
+_LEGAL_ZERO_DCP_SHARD_RE = re.compile(r"^__[0-7]_0\.distcp$")
 _CONTINUATION_INITIAL_ITERATION = 1_000
 _CONTINUATION_DATA_STREAM_RESUME = "restarted_from_beginning_not_exact_loader_cursor"
 _CONTINUATION_CONTRACT_KIND = "cwam_cosmos3_formal_continuation_inputs"
 _PRECOMPUTED_WAN_TOKENIZER_TARGET = (
-    "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
-    "PrecomputedWan2pt2LatentTokenizer"
+    "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2.PrecomputedWan2pt2LatentTokenizer"
 )
 _FORBIDDEN_LOG_MARKERS = (
     "Traceback (most recent call last):",
@@ -354,11 +354,16 @@ def _validate_dcp(checkpoint_dir: Path) -> dict[str, dict[str, int]]:
         metadata = component_dir / ".metadata"
         if not metadata.is_file() or metadata.is_symlink() or metadata.stat().st_size <= 0:
             raise EvidenceError(f"missing non-empty DCP metadata: {metadata}")
-        shards = sorted(
-            path
-            for path in component_dir.glob("*.distcp")
-            if path.is_file() and not path.is_symlink() and path.stat().st_size > 0
-        )
+        all_shards = sorted(path for path in component_dir.glob("*.distcp") if path.is_file() and not path.is_symlink())
+        zero_shards = [path for path in all_shards if path.stat().st_size == 0]
+        illegal_zero_shards = [
+            path.name for path in zero_shards if _LEGAL_ZERO_DCP_SHARD_RE.fullmatch(path.name) is None
+        ]
+        if illegal_zero_shards:
+            raise EvidenceError(
+                f"DCP component contains an illegal zero-byte shard name: {component_dir}: {illegal_zero_shards}"
+            )
+        shards = [path for path in all_shards if path.stat().st_size > 0]
         if not shards:
             raise EvidenceError(f"missing non-empty DCP shards: {component_dir}")
         try:
@@ -391,6 +396,7 @@ def _validate_dcp(checkpoint_dir: Path) -> dict[str, dict[str, int]]:
             "metadata_bytes": metadata.stat().st_size,
             "distcp_files": len(shards),
             "distcp_bytes": sum(path.stat().st_size for path in shards),
+            "zero_byte_rank_shards": [path.name for path in zero_shards],
             "state_dict_entries": len(state_dict_metadata),
             "storage_entries": len(storage_data),
         }
@@ -2031,8 +2037,7 @@ def _expected_continuation_gradient_iterations(
 
     if not 0 <= initial_iteration < max_iter or every_n < 1:
         raise EvidenceError(
-            "invalid continuation gradient range: "
-            f"initial={initial_iteration}, max={max_iter}, every_n={every_n}"
+            f"invalid continuation gradient range: initial={initial_iteration}, max={max_iter}, every_n={every_n}"
         )
     first_periodic = ((initial_iteration // every_n) + 1) * every_n
     iterations = set(range(first_periodic, max_iter + 1, every_n))
@@ -2049,18 +2054,12 @@ def _validate_continuation_resume_log(
     expected_resume_path = str(seed_link)
     markers = {
         "warning": "WARNING: resuming model/optim/scheduler/trainer with a restarted data stream.",
-        "resume": (
-            f"Resuming ckpt {expected_resume_path} with keys: "
-            "['model', 'optim', 'scheduler', 'trainer']"
-        ),
+        "resume": (f"Resuming ckpt {expected_resume_path} with keys: ['model', 'optim', 'scheduler', 'trainer']"),
         "model": "- Loading the model...",
         "optimizer": "- Loading the optimizer...",
         "scheduler": "- Loading the scheduler...",
         "trainer": "- Loading the trainer...",
-        "loaded": (
-            f"Loaded checkpoint from {expected_resume_path} in iteration "
-            f"{initial_iteration}"
-        ),
+        "loaded": (f"Loaded checkpoint from {expected_resume_path} in iteration {initial_iteration}"),
         "fsdp": "Distributed parallelism mode: fsdp",
         "done": "Done with training.",
     }
@@ -2120,9 +2119,7 @@ def _validate_continuation_checkpoint_root(
         resume_checkpoint.resolve(strict=True),
         "continuation seed checkpoint target",
     )
-    expected_new_iterations = list(
-        range(initial_iteration + save_iter, max_iter + 1, save_iter)
-    )
+    expected_new_iterations = list(range(initial_iteration + save_iter, max_iter + 1, save_iter))
     expected_entries = {
         "latest_checkpoint.txt",
         seed_name,
@@ -2135,19 +2132,13 @@ def _validate_continuation_checkpoint_root(
     )
 
     seed_components = _validate_dcp(resume_checkpoint)
-    all_checkpoint_bytes = sum(
-        stats["metadata_bytes"] + stats["distcp_bytes"]
-        for stats in seed_components.values()
-    )
+    all_checkpoint_bytes = sum(stats["metadata_bytes"] + stats["distcp_bytes"] for stats in seed_components.values())
     for iteration in expected_new_iterations:
         checkpoint = checkpoint_root / f"iter_{iteration:09d}"
         if checkpoint.is_symlink():
             raise EvidenceError(f"new continuation checkpoint must not be a symlink: {checkpoint}")
         components = _validate_dcp(checkpoint)
-        all_checkpoint_bytes += sum(
-            stats["metadata_bytes"] + stats["distcp_bytes"]
-            for stats in components.values()
-        )
+        all_checkpoint_bytes += sum(stats["metadata_bytes"] + stats["distcp_bytes"] for stats in components.values())
     final_checkpoint = checkpoint_root / expected_final_name
     final_components = _validate_dcp(final_checkpoint)
     return (
@@ -2167,6 +2158,7 @@ def verify_formal_continuation(
     formal_run_name: str,
     continuation_contract_path: Path,
     continuation_contract_sha256: str,
+    submission_reservation_path: Path,
 ) -> dict[str, Any]:
     """Validate a formal 8-H200 continuation from the exact R6 iter-1000 state."""
 
@@ -2210,6 +2202,132 @@ def verify_formal_continuation(
         contract.get("protocol"),
         "formal continuation protocol",
     )
+    submission = _require_mapping(
+        contract.get("submission"),
+        "formal continuation submission binding",
+    )
+    expected_submission_keys = {
+        "reservation_path",
+        "reservation_sha256",
+        "submission_nonce",
+        "command_sha256",
+        "container_image",
+        "resources",
+        "mounts",
+        "store_host_nvme",
+        "scheduler_rjob_name",
+        "scheduler_rjob_uid",
+        "scheduler_replica_name",
+        "scheduler_pod_name",
+        "artifacts",
+        "scheduler_source_objects",
+    }
+    if set(submission) != expected_submission_keys:
+        raise EvidenceError("formal continuation submission-binding schema mismatch")
+    expected_reservation_path = (
+        _FORMAL_OUTPUT_ROOT / "formal_continuation_submission_reservations" / experiment_id / "submission.json"
+    )
+    _require_equal(
+        submission_reservation_path,
+        expected_reservation_path,
+        "formal continuation submission-reservation path",
+    )
+    _require_equal(
+        submission.get("reservation_path"),
+        str(expected_reservation_path),
+        "formal continuation contract submission-reservation path",
+    )
+    if (
+        submission_reservation_path.is_symlink()
+        or not submission_reservation_path.is_file()
+        or submission_reservation_path.stat().st_mode & 0o777 != 0o444
+    ):
+        raise EvidenceError(
+            "formal continuation submission reservation must remain mode-0444 regular non-symlink evidence"
+        )
+    reservation, reservation_sha256 = _load_json_and_sha256(
+        submission_reservation_path,
+        "formal continuation submission reservation",
+    )
+    _require_equal(
+        reservation_sha256,
+        submission.get("reservation_sha256"),
+        "formal continuation submission-reservation SHA-256",
+    )
+    for key, expected in {
+        "schema_version": 2,
+        "kind": "cwam_cosmos3_formal_continuation_submission_reservation",
+        "status": "accepted",
+        "experiment_id": experiment_id,
+        "run_name": formal_run_name,
+        "submission_nonce": submission.get("submission_nonce"),
+        "command_sha256": submission.get("command_sha256"),
+        "container_image": submission.get("container_image"),
+        "mounts": submission.get("mounts"),
+        "scheduler_rjob_name": submission.get("scheduler_rjob_name"),
+        "scheduler_rjob_uid": submission.get("scheduler_rjob_uid"),
+        "scheduler_replica_name": submission.get("scheduler_replica_name"),
+        "scheduler_pod_name": submission.get("scheduler_pod_name"),
+    }.items():
+        _require_equal(
+            reservation.get(key),
+            expected,
+            f"formal continuation submission reservation {key}",
+        )
+    for label in (
+        "reservation_sha256",
+        "submission_nonce",
+        "command_sha256",
+    ):
+        value = submission.get(label)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise EvidenceError(f"formal continuation submission {label} is invalid")
+    artifact_bindings = _require_mapping(
+        submission.get("artifacts"),
+        "formal continuation submission artifact bindings",
+    )
+    _require_equal(
+        set(artifact_bindings),
+        {
+            "submission_log",
+            "scheduler_expected_contract",
+            "scheduler_capture_log",
+            "scheduler_structured_receipt",
+            "scheduler_text_readback",
+        },
+        "formal continuation submission artifact set",
+    )
+    for label, raw_descriptor in artifact_bindings.items():
+        descriptor = _require_mapping(
+            raw_descriptor,
+            f"formal continuation submission artifact {label}",
+        )
+        _require_equal(
+            set(descriptor),
+            {"path", "size_bytes", "sha256"},
+            f"formal continuation submission artifact {label} schema",
+        )
+        path = Path(str(descriptor.get("path")))
+        if (
+            path.parent != submission_reservation_path.parent
+            or path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_mode & 0o777 != 0o444
+        ):
+            raise EvidenceError(f"formal continuation submission artifact {label} is unsafe")
+        _require_equal(
+            path.stat().st_size,
+            descriptor.get("size_bytes"),
+            f"formal continuation submission artifact {label} size",
+        )
+        _require_equal(
+            _sha256_file(
+                path,
+                f"formal continuation submission artifact {label}",
+            ),
+            descriptor.get("sha256"),
+            f"formal continuation submission artifact {label} SHA-256",
+        )
     expected_protocol = {
         "initial_iteration": _CONTINUATION_INITIAL_ITERATION,
         "max_iter": protocol.max_iter,
@@ -2236,21 +2354,128 @@ def verify_formal_continuation(
     activation_checkpointing = throughput.get("activation_checkpointing")
     if activation_checkpointing not in {"selective", "none"}:
         raise EvidenceError(
-            "invalid selected continuation activation-checkpointing mode: "
-            f"{activation_checkpointing!r}"
+            f"invalid selected continuation activation-checkpointing mode: {activation_checkpointing!r}"
+        )
+    expected_submission_cpu = 160 if workers in {12, 16} else 128
+    _require_equal(
+        submission.get("resources"),
+        {
+            "cpu": expected_submission_cpu,
+            "memory_mib": 1_500_000,
+            "gpu": 8,
+        },
+        "formal continuation scheduler resources",
+    )
+    submission_host_nvme = _require_mapping(
+        submission.get("store_host_nvme"),
+        "formal continuation host-NVMe binding",
+    )
+    _require_equal(
+        submission_host_nvme.get("enabled"),
+        storage == "nvme",
+        "formal continuation host-NVMe selection",
+    )
+    if storage == "nvme":
+        _require_equal(
+            submission_host_nvme,
+            {
+                "enabled": True,
+                "annotation": ("kubebrain.brainpp.cn/writeread-hostpath-mounts"),
+                "value": "/nvme:/mnt/nvme1n1,/cfs:/mnt/cfs",
+                "container_target": "/nvme",
+                "host_source": "/mnt/nvme1n1",
+            },
+            "formal continuation host-NVMe scheduler binding",
         )
     if throughput.get("best_observed_cell_id") != (
         f"workers-{workers}__storage-{storage}__ac-{activation_checkpointing}"
     ):
         raise EvidenceError("continuation throughput fields do not match best_observed_cell_id")
+    benchmark_artifacts = _require_mapping(
+        throughput.get("benchmark_artifacts"),
+        "formal continuation throughput benchmark artifacts",
+    )
+    _require_equal(
+        benchmark_artifacts.get("gpfs_latent_cache_root"),
+        cache.get("root"),
+        "formal continuation throughput/cache root binding",
+    )
+    _require_equal(
+        benchmark_artifacts.get("latent_cache_manifest_sha256"),
+        cache.get("manifest_sha256"),
+        "formal continuation throughput/cache manifest binding",
+    )
+    _require_equal(
+        benchmark_artifacts.get("resume_checkpoint"),
+        resume.get("path"),
+        "formal continuation throughput/R6 checkpoint binding",
+    )
+    for label, value in (
+        ("throughput source root", benchmark_artifacts.get("source_root")),
+        ("throughput Wan VAE path", benchmark_artifacts.get("wan_vae_path")),
+    ):
+        if not isinstance(value, str) or not Path(value).is_absolute() or ".." in Path(value).parts:
+            raise EvidenceError(f"{label} is invalid: {value!r}")
+    benchmark_source_commit = benchmark_artifacts.get("source_commit")
+    if not isinstance(benchmark_source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", benchmark_source_commit) is None:
+        raise EvidenceError(f"throughput source commit is invalid: {benchmark_source_commit!r}")
     for label, value in (
         ("cache _SUCCESS SHA-256", cache.get("success_sha256")),
         ("cache manifest SHA-256", cache.get("manifest_sha256")),
         ("throughput matrix SHA-256", throughput.get("matrix_summary_sha256")),
         ("R6 checkpoint fingerprint", resume.get("fingerprint_sha256")),
+        ("throughput terminal receipt SHA-256", benchmark_artifacts.get("run_exit_sha256")),
+        ("throughput fixed trace SHA-256", benchmark_artifacts.get("fixed_index_trace_sha256")),
+        (
+            "throughput fixed trace manifest SHA-256",
+            benchmark_artifacts.get("fixed_index_trace_manifest_sha256"),
+        ),
+        ("throughput node evidence SHA-256", benchmark_artifacts.get("node_evidence_sha256")),
+        (
+            "throughput source snapshot manifest SHA-256",
+            benchmark_artifacts.get("snapshot_manifest_sha256"),
+        ),
+        ("throughput Wan VAE SHA-256", benchmark_artifacts.get("wan_vae_sha256")),
+        ("throughput runner SHA-256", benchmark_artifacts.get("runner_sha256")),
+        ("throughput helper SHA-256", benchmark_artifacts.get("helper_sha256")),
     ):
         if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
             raise EvidenceError(f"{label} is invalid: {value!r}")
+    benchmark_cells = benchmark_artifacts.get("cells")
+    if not isinstance(benchmark_cells, list) or not benchmark_cells:
+        raise EvidenceError("formal continuation has no artifact-bound throughput cells")
+    for index, cell in enumerate(benchmark_cells):
+        cell = _require_mapping(
+            cell,
+            f"formal continuation throughput artifact cell {index}",
+        )
+        for key in ("contract_sha256", "metrics_sha256"):
+            value = cell.get(key)
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise EvidenceError(f"formal continuation throughput cell {index} {key} is invalid")
+    component_reports = _require_mapping(
+        resume.get("component_reports"),
+        "formal continuation R6 component reports",
+    )
+    _require_equal(
+        set(component_reports),
+        {"model", "optim", "scheduler", "trainer"},
+        "formal continuation R6 component-report set",
+    )
+    for component, raw_report in component_reports.items():
+        report = _require_mapping(
+            raw_report,
+            f"formal continuation R6 {component} report",
+        )
+        torch_metadata = _require_mapping(
+            report.get("torch_dcp_metadata"),
+            f"formal continuation R6 {component} Torch DCP metadata",
+        )
+        _require_equal(
+            torch_metadata.get("status"),
+            "passed",
+            f"formal continuation R6 {component} Torch DCP metadata status",
+        )
 
     config = _load_config(run_dir)
     _validate_common_config(
@@ -2342,6 +2567,13 @@ def verify_formal_continuation(
         "seed_checkpoint_fingerprint_sha256": resume.get("fingerprint_sha256"),
         "continuation_contract": str(continuation_contract_path),
         "continuation_contract_sha256": continuation_contract_sha256,
+        "submission_reservation": str(submission_reservation_path),
+        "submission_reservation_sha256": reservation_sha256,
+        "submission_nonce": submission["submission_nonce"],
+        "scheduler_rjob_name": submission["scheduler_rjob_name"],
+        "scheduler_rjob_uid": submission["scheduler_rjob_uid"],
+        "scheduler_replica_name": submission["scheduler_replica_name"],
+        "scheduler_pod_name": submission["scheduler_pod_name"],
     }.items():
         _require_equal(seed_receipt.get(key), expected, f"continuation seed receipt {key}")
 
@@ -2366,9 +2598,7 @@ def verify_formal_continuation(
         max_iter=protocol.max_iter,
         every_n=50,
     )
-    gradient_files = [
-        f"iteration_{iteration:09d}.json" for iteration in gradient_iterations
-    ]
+    gradient_files = [f"iteration_{iteration:09d}.json" for iteration in gradient_iterations]
     gradient_dir = run_dir / "action_gradient_evidence"
     _require_exact_regular_files(
         gradient_dir,
@@ -2382,14 +2612,12 @@ def verify_formal_continuation(
             iteration=iteration,
         )
 
-    final_checkpoint, final_components, checkpoint_count, all_checkpoint_bytes = (
-        _validate_continuation_checkpoint_root(
-            run_dir=run_dir,
-            resume_checkpoint=resume_checkpoint,
-            initial_iteration=_CONTINUATION_INITIAL_ITERATION,
-            max_iter=protocol.max_iter,
-            save_iter=protocol.save_iter,
-        )
+    final_checkpoint, final_components, checkpoint_count, all_checkpoint_bytes = _validate_continuation_checkpoint_root(
+        run_dir=run_dir,
+        resume_checkpoint=resume_checkpoint,
+        initial_iteration=_CONTINUATION_INITIAL_ITERATION,
+        max_iter=protocol.max_iter,
+        save_iter=protocol.save_iter,
     )
     expected_log_path = _FORMAL_LOG_ROOT / f"{formal_run_name}.continuation.log"
     if (
@@ -2444,11 +2672,25 @@ def verify_formal_continuation(
         "cache_success_sha256": cache["success_sha256"],
         "cache_manifest_sha256": cache["manifest_sha256"],
         "throughput_matrix_sha256": throughput["matrix_summary_sha256"],
+        "throughput_source_root": benchmark_artifacts["source_root"],
+        "throughput_source_commit": benchmark_source_commit,
+        "throughput_snapshot_manifest_sha256": benchmark_artifacts["snapshot_manifest_sha256"],
+        "throughput_wan_vae_path": benchmark_artifacts["wan_vae_path"],
+        "throughput_wan_vae_sha256": benchmark_artifacts["wan_vae_sha256"],
+        "throughput_runner_sha256": benchmark_artifacts["runner_sha256"],
+        "throughput_helper_sha256": benchmark_artifacts["helper_sha256"],
         "resume_checkpoint": str(resume_checkpoint),
         "resume_checkpoint_fingerprint_algorithm": resume["fingerprint_algorithm"],
         "resume_checkpoint_fingerprint_sha256": resume["fingerprint_sha256"],
         "continuation_contract": str(continuation_contract_path),
         "continuation_contract_sha256": continuation_contract_sha256,
+        "submission_reservation": str(submission_reservation_path),
+        "submission_reservation_sha256": reservation_sha256,
+        "submission_nonce": submission["submission_nonce"],
+        "scheduler_rjob_name": submission["scheduler_rjob_name"],
+        "scheduler_rjob_uid": submission["scheduler_rjob_uid"],
+        "scheduler_replica_name": submission["scheduler_replica_name"],
+        "scheduler_pod_name": submission["scheduler_pod_name"],
         "continuation_seed_receipt": str(seed_receipt_path),
         "continuation_seed_receipt_sha256": seed_receipt_sha256,
         "first_step_memory_gate": str(memory_path),
@@ -2552,10 +2794,14 @@ def main() -> None:
                 sampled_memory_path=args.sampled_memory,
             )
         elif args.mode == "continuation":
-            if args.continuation_contract is None or args.continuation_contract_sha256 is None:
+            if (
+                args.continuation_contract is None
+                or args.continuation_contract_sha256 is None
+                or args.submission_reservation is None
+            ):
                 raise EvidenceError(
                     "continuation mode requires --continuation-contract and "
-                    "--continuation-contract-sha256"
+                    "--continuation-contract-sha256 and --submission-reservation"
                 )
             payload = verify_formal_continuation(
                 run_dir=args.run_dir,
@@ -2565,6 +2811,7 @@ def main() -> None:
                 formal_run_name=args.formal_run_name,
                 continuation_contract_path=args.continuation_contract,
                 continuation_contract_sha256=args.continuation_contract_sha256,
+                submission_reservation_path=args.submission_reservation,
             )
         else:
             fresh_required = {
@@ -2580,10 +2827,7 @@ def main() -> None:
             }
             missing = sorted(name for name, value in fresh_required.items() if value is None)
             if missing:
-                raise EvidenceError(
-                    "fresh verify-formal mode is missing required arguments: "
-                    + ", ".join(missing)
-                )
+                raise EvidenceError("fresh verify-formal mode is missing required arguments: " + ", ".join(missing))
             payload = verify_formal(
                 run_dir=args.run_dir,
                 log_path=args.log,

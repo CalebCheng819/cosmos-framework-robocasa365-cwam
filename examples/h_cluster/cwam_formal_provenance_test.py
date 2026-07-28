@@ -16,8 +16,8 @@ import examples.h_cluster.cwam_formal_provenance as provenance
 from examples.h_cluster.cwam_formal_provenance import (
     _EXPECTED_CONFIG_PATH,
     _QWEN_PROCESSOR_FILES,
-    _formal_rjob_contract,
     ProvenanceError,
+    _formal_rjob_contract,
     create_artifact_inventory,
     sha256_file,
     verify_artifact_inventory,
@@ -380,6 +380,7 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             "schema_version": 1,
             "experiment_id": experiment_id,
             "status": status_value,
+            "mode": "confirmatory",
             "protocol": protocol,
             "storage": copy.deepcopy(_STORAGE),
             "rjob": copy.deepcopy(_RJOBS[world_size]),
@@ -426,7 +427,12 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             "formal_manifest_sha256": sha256_file(formal_path),
         }
 
-    def _verify_formal(self, fixture: dict[str, object]) -> dict[str, object]:
+    def _verify_formal(
+        self,
+        fixture: dict[str, object],
+        *,
+        expected_experiment_mode: str = "confirmatory",
+    ) -> dict[str, object]:
         return verify_formal_contract(
             snapshot_root=fixture["snapshot_root"],
             snapshot_manifest_sha256=fixture["snapshot_manifest_sha256"],
@@ -443,6 +449,7 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             wan_vae=self.wan_vae,
             qwen_tokenizer=self.qwen,
             environment=self.environment,
+            expected_experiment_mode=expected_experiment_mode,
         )
 
     def test_formal_contract_accepts_only_planned_or_queued(self) -> None:
@@ -459,6 +466,50 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
 
         fixture = self._make_snapshot_and_formal_manifest(status_value="running")
         with self.assertRaisesRegex(ProvenanceError, "not launchable"):
+            self._verify_formal(fixture)
+
+    def test_exploratory_mode_allows_unpushed_but_never_dirty_commit(
+        self,
+    ) -> None:
+        fixture = self._make_snapshot_and_formal_manifest(status_value="planned")
+        formal_path = fixture["formal_manifest_path"]
+        formal = json.loads(formal_path.read_text())
+        formal["mode"] = "exploratory"
+        formal["git"]["pushed"] = False
+        _write_json(formal_path, formal)
+        fixture["formal_manifest_sha256"] = sha256_file(formal_path)
+
+        report = self._verify_formal(
+            fixture,
+            expected_experiment_mode="exploratory",
+        )
+        self.assertEqual(report["experiment_mode"], "exploratory")
+        self.assertIs(report["source_commit_pushed"], False)
+
+        with self.assertRaisesRegex(ProvenanceError, "requested mode"):
+            self._verify_formal(fixture)
+
+        formal["git"]["dirty"] = True
+        _write_json(formal_path, formal)
+        fixture["formal_manifest_sha256"] = sha256_file(formal_path)
+        with self.assertRaisesRegex(ProvenanceError, "clean commit"):
+            self._verify_formal(
+                fixture,
+                expected_experiment_mode="exploratory",
+            )
+
+    def test_confirmatory_mode_still_requires_pushed_commit(self) -> None:
+        fixture = self._make_snapshot_and_formal_manifest(status_value="planned")
+        formal_path = fixture["formal_manifest_path"]
+        formal = json.loads(formal_path.read_text())
+        formal["git"]["pushed"] = False
+        _write_json(formal_path, formal)
+        fixture["formal_manifest_sha256"] = sha256_file(formal_path)
+
+        with self.assertRaisesRegex(
+            ProvenanceError,
+            "confirmatory.*clean pushed commit",
+        ):
             self._verify_formal(fixture)
 
     def test_formal_protocol_rejects_every_wrong_scalar(self) -> None:
@@ -567,9 +618,7 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
         formal_path = fixture["formal_manifest_path"]
         formal = json.loads(formal_path.read_text())
         formal["rjob"]["cpu"] = 160
-        formal["command"] = (
-            "bash examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"
-        )
+        formal["command"] = "bash examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"
         _write_json(formal_path, formal)
         fixture["formal_manifest_sha256"] = sha256_file(formal_path)
         report = verify_formal_contract(
@@ -631,6 +680,8 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             "160",
             "--expected-formal-wrapper",
             "run_cwam_cosmos3_nano_formal_continuation.sh",
+            "--expected-experiment-mode",
+            "exploratory",
         ]
         with (
             mock.patch.object(provenance, "verify_formal_contract", return_value={"status": "passed"}) as verify,
@@ -642,6 +693,10 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
         self.assertEqual(
             verify.call_args.kwargs["expected_formal_wrapper"],
             "run_cwam_cosmos3_nano_formal_continuation.sh",
+        )
+        self.assertEqual(
+            verify.call_args.kwargs["expected_experiment_mode"],
+            "exploratory",
         )
 
     def test_create_inventory_cli_remains_independent_of_formal_cpu_option(self) -> None:
@@ -715,15 +770,15 @@ class FormalShellContractTest(unittest.TestCase):
             runtime.index('python3 "$COSMOS_SOURCE/examples/h_cluster/cwam_formal_provenance.py"'),
         )
         self.assertIn(
-            'audited_worker_init_prefixes = [\n'
-            '    [],\n'
-            '    [\n'
+            "audited_worker_init_prefixes = [\n"
+            "    [],\n"
+            "    [\n"
             '        "/kubebrain/worker-init",\n'
             '        "run",\n'
             '        "--enable-pid-monitor",\n'
             '        "--",\n'
-            '    ],\n'
-            '    [\n'
+            "    ],\n"
+            "    [\n"
             '        "/kubebrain/worker-init",\n'
             '        "run",\n'
             '        "--enable-pid-monitor",\n'

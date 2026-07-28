@@ -445,6 +445,16 @@ def test_dcp_rejects_nonparseable_metadata(tmp_path) -> None:
         _validate_dcp(checkpoint)
 
 
+def test_dcp_rejects_arbitrary_zero_byte_distcp_name(tmp_path) -> None:
+    holder = tmp_path / "holder"
+    _write_dcp(holder, 1)
+    checkpoint = holder / "checkpoints" / "iter_000000001"
+    (checkpoint / "scheduler" / "evil.distcp").write_bytes(b"")
+
+    with pytest.raises(EvidenceError, match="illegal zero-byte shard name"):
+        _validate_dcp(checkpoint)
+
+
 def test_storage_gate_rejects_threshold_below_estimate(tmp_path) -> None:
     with pytest.raises(EvidenceError, match="formal minimum free storage"):
         verify_storage(
@@ -963,8 +973,7 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
     config["model"]["config"]["activation_checkpointing"] = {"mode": "selective"}
     config["model"]["config"]["tokenizer"] = {
         "_target_": (
-            "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
-            "PrecomputedWan2pt2LatentTokenizer"
+            "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2.PrecomputedWan2pt2LatentTokenizer"
         )
     }
     config["dataloader_train"]["dataloader"]["num_workers"] = 12
@@ -1022,11 +1031,39 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
             "workers_per_rank": 12,
             "storage": "gpfs",
             "activation_checkpointing": "selective",
+            "benchmark_artifacts": {
+                "gpfs_latent_cache_root": "/gpfs/cache",
+                "latent_cache_manifest_sha256": "2" * 64,
+                "resume_checkpoint": str(resume_checkpoint),
+                "run_exit_sha256": "5" * 64,
+                "fixed_index_trace_sha256": "6" * 64,
+                "fixed_index_trace_manifest_sha256": "7" * 64,
+                "node_evidence_sha256": "8" * 64,
+                "source_root": "/benchmark/snapshot",
+                "source_commit": "d" * 40,
+                "snapshot_manifest_sha256": "e" * 64,
+                "wan_vae_path": "/benchmark/Wan2.2_VAE.pth",
+                "wan_vae_sha256": "f" * 64,
+                "runner_sha256": "0" * 64,
+                "helper_sha256": "1" * 64,
+                "cells": [
+                    {
+                        "contract_sha256": "9" * 64,
+                        "metrics_sha256": "a" * 64,
+                    }
+                ],
+            },
         },
         "resume": {
             "path": str(resume_checkpoint),
-            "fingerprint_algorithm": "sha256-full-dcp-file-inventory-v1",
+            "fingerprint_algorithm": "sha256-full-dcp-content-inventory-v3",
             "fingerprint_sha256": "4" * 64,
+            "component_reports": {
+                component: {
+                    "torch_dcp_metadata": {"status": "passed"},
+                }
+                for component in ("model", "optim", "scheduler", "trainer")
+            },
         },
         "protocol": {
             "initial_iteration": 1_000,
@@ -1039,6 +1076,80 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
             "checkpoint_keys_not_to_resume": ["dataloader"],
             "checkpoint_strict_resume": True,
             "fixed_index_trace_path": None,
+        },
+    }
+    reservation_dir = output_root / "formal_continuation_submission_reservations" / experiment_id
+    reservation_dir.mkdir(parents=True)
+    artifact_filenames = {
+        "submission_log": "rjob-submit.log",
+        "scheduler_expected_contract": "rjob-expected-contract.json",
+        "scheduler_capture_log": "rjob-scheduler-capture.log",
+        "scheduler_structured_receipt": "rjob-scheduler-receipt.json",
+        "scheduler_text_readback": "rjob-get.log",
+    }
+    artifact_descriptors = {}
+    for label, filename in artifact_filenames.items():
+        path = reservation_dir / filename
+        path.write_text(f"{label}\n")
+        path.chmod(0o444)
+        artifact_descriptors[label] = {
+            "path": str(path),
+            "size_bytes": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    reservation_path = reservation_dir / "submission.json"
+    submission_nonce = "b" * 64
+    command_sha256 = "c" * 64
+    scheduler_rjob_name = "cwam-e35-cont-test-12345678"
+    scheduler_rjob_uid = "6d7d6919-2bff-44fa-8b8f-4d5ec49460e2"
+    scheduler_replica_name = f"{scheduler_rjob_name}-abcde"
+    scheduler_pod_name = "rjob-cont-test-0"
+    reservation_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "kind": ("cwam_cosmos3_formal_continuation_submission_reservation"),
+                "status": "accepted",
+                "experiment_id": experiment_id,
+                "run_name": experiment_id,
+                "submission_nonce": submission_nonce,
+                "command_sha256": command_sha256,
+                "container_image": "registry.example/cwam@sha256:" + "d" * 64,
+                "mounts": ["/gpfs/a", "/gpfs/b"],
+                "scheduler_rjob_name": scheduler_rjob_name,
+                "scheduler_rjob_uid": scheduler_rjob_uid,
+                "scheduler_replica_name": scheduler_replica_name,
+                "scheduler_pod_name": scheduler_pod_name,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    reservation_path.chmod(0o444)
+    continuation_contract["submission"] = {
+        "reservation_path": str(reservation_path),
+        "reservation_sha256": hashlib.sha256(reservation_path.read_bytes()).hexdigest(),
+        "submission_nonce": submission_nonce,
+        "command_sha256": command_sha256,
+        "container_image": "registry.example/cwam@sha256:" + "d" * 64,
+        "resources": {"cpu": 160, "memory_mib": 1_500_000, "gpu": 8},
+        "mounts": ["/gpfs/a", "/gpfs/b"],
+        "store_host_nvme": {
+            "enabled": False,
+            "annotation": "kubebrain.brainpp.cn/writeread-hostpath-mounts",
+            "value": None,
+            "container_target": None,
+            "host_source": None,
+        },
+        "scheduler_rjob_name": scheduler_rjob_name,
+        "scheduler_rjob_uid": scheduler_rjob_uid,
+        "scheduler_replica_name": scheduler_replica_name,
+        "scheduler_pod_name": scheduler_pod_name,
+        "artifacts": artifact_descriptors,
+        "scheduler_source_objects": {
+            "rjob_raw_sha256": "e" * 64,
+            "replicas_raw_sha256": "f" * 64,
         },
     }
     contract_path = tmp_path / "continuation-inputs.json"
@@ -1054,14 +1165,17 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
                 "run_dir": str(run_dir),
                 "seed_checkpoint_link": str(seed_link),
                 "seed_checkpoint_target": str(resume_checkpoint),
-                "seed_checkpoint_fingerprint_algorithm": (
-                    continuation_contract["resume"]["fingerprint_algorithm"]
-                ),
-                "seed_checkpoint_fingerprint_sha256": (
-                    continuation_contract["resume"]["fingerprint_sha256"]
-                ),
+                "seed_checkpoint_fingerprint_algorithm": (continuation_contract["resume"]["fingerprint_algorithm"]),
+                "seed_checkpoint_fingerprint_sha256": (continuation_contract["resume"]["fingerprint_sha256"]),
                 "continuation_contract": str(contract_path),
                 "continuation_contract_sha256": contract_sha256,
+                "submission_reservation": str(reservation_path),
+                "submission_reservation_sha256": (continuation_contract["submission"]["reservation_sha256"]),
+                "submission_nonce": submission_nonce,
+                "scheduler_rjob_name": scheduler_rjob_name,
+                "scheduler_rjob_uid": scheduler_rjob_uid,
+                "scheduler_replica_name": scheduler_replica_name,
+                "scheduler_pod_name": scheduler_pod_name,
             }
         )
     )
@@ -1076,10 +1190,7 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
         "\n".join(
             (
                 "WARNING: resuming model/optim/scheduler/trainer with a restarted data stream.",
-                (
-                    f"Resuming ckpt {seed_link} with keys: "
-                    "['model', 'optim', 'scheduler', 'trainer']"
-                ),
+                (f"Resuming ckpt {seed_link} with keys: ['model', 'optim', 'scheduler', 'trainer']"),
                 "- Loading the model...",
                 "- Loading the optimizer...",
                 "- Loading the scheduler...",
@@ -1101,6 +1212,7 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
         formal_run_name=experiment_id,
         continuation_contract_path=contract_path,
         continuation_contract_sha256=contract_sha256,
+        submission_reservation_path=reservation_path,
     )
     assert result["status"] == "training_completed"
     assert result["mode"] == "continuation"
@@ -1108,9 +1220,9 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
     assert result["checkpoint_count_including_seed"] == 3
     assert result["fixed_index_trace_used"] is False
 
-    config["dataloader_train"]["dataloader"]["datasets"]["robocasa365"]["dataset"][
-        "fixed_index_trace_path"
-    ] = "/benchmark/fixed-trace.npy"
+    config["dataloader_train"]["dataloader"]["datasets"]["robocasa365"]["dataset"]["fixed_index_trace_path"] = (
+        "/benchmark/fixed-trace.npy"
+    )
     (run_dir / "config.yaml").write_text(yaml.safe_dump(config))
     with pytest.raises(EvidenceError, match="fixed-index trace"):
         verify_formal_continuation(
@@ -1121,4 +1233,5 @@ def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
             formal_run_name=experiment_id,
             continuation_contract_path=contract_path,
             continuation_contract_sha256=contract_sha256,
+            submission_reservation_path=reservation_path,
         )

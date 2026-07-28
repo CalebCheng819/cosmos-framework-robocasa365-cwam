@@ -16,9 +16,11 @@ readonly PINNED_FORMAL_OUTPUT_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-
 readonly PINNED_FORMAL_LOG_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/logs/cwam-cosmos3-formal"
 readonly SNAPSHOT_ALLOWED_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/run_snapshots"
 readonly NPROC_REQUIRED=8
+readonly SUBMISSION_BINDING_WAIT_SECONDS=600
 
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable formal snapshot.}"
 : "${FORMAL_EXPERIMENT_ID:?Set FORMAL_EXPERIMENT_ID.}"
+: "${FORMAL_EXPERIMENT_MODE:?Set FORMAL_EXPERIMENT_MODE to exploratory or confirmatory.}"
 : "${FORMAL_RUN_NAME:=$FORMAL_EXPERIMENT_ID}"
 : "${FORMAL_MANIFEST_PATH:?Set FORMAL_MANIFEST_PATH.}"
 : "${FORMAL_MANIFEST_SHA256:?Set FORMAL_MANIFEST_SHA256.}"
@@ -30,6 +32,10 @@ readonly NPROC_REQUIRED=8
 : "${EXPECTED_CONTINUATION_HELPER_SHA256:?Set EXPECTED_CONTINUATION_HELPER_SHA256.}"
 : "${EXPECTED_TRAINING_EVIDENCE_SHA256:?Set EXPECTED_TRAINING_EVIDENCE_SHA256.}"
 : "${RJOB_NAME:?Set RJOB_NAME.}"
+: "${FORMAL_SUBMISSION_NONCE:?Set the submitter-generated nonce.}"
+: "${FORMAL_SUBMISSION_RESERVATION_PATH:?Set the immutable accepted reservation path.}"
+: "${KUBEBRAIN_RJOB_NAME:?The scheduler must inject KUBEBRAIN_RJOB_NAME.}"
+: "${KUBEBRAIN_RJOB_UID:?The scheduler must inject KUBEBRAIN_RJOB_UID.}"
 : "${EXPECTED_RJOB_CPU:?Set EXPECTED_RJOB_CPU from the selected throughput cell.}"
 : "${EXPECTED_SELECTED_WORKERS:?Set EXPECTED_SELECTED_WORKERS.}"
 : "${EXPECTED_SELECTED_STORAGE:?Set EXPECTED_SELECTED_STORAGE.}"
@@ -39,6 +45,9 @@ readonly NPROC_REQUIRED=8
 : "${EXPECTED_CACHE_MANIFEST_SHA256:?Set EXPECTED_CACHE_MANIFEST_SHA256.}"
 : "${THROUGHPUT_MATRIX_SUMMARY:?Set THROUGHPUT_MATRIX_SUMMARY.}"
 : "${EXPECTED_THROUGHPUT_MATRIX_SHA256:?Set EXPECTED_THROUGHPUT_MATRIX_SHA256.}"
+: "${EXPECTED_BENCHMARK_SOURCE_ROOT:?Set the immutable throughput benchmark snapshot root.}"
+: "${EXPECTED_BENCHMARK_SOURCE_COMMIT:?Set the throughput benchmark source commit.}"
+: "${EXPECTED_BENCHMARK_SNAPSHOT_MANIFEST_SHA256:?Set the throughput benchmark snapshot digest.}"
 : "${R6_ITER1000_CHECKPOINT_PATH:?Set R6_ITER1000_CHECKPOINT_PATH.}"
 : "${EXPECTED_R6_CHECKPOINT_FINGERPRINT_SHA256:?Set EXPECTED_R6_CHECKPOINT_FINGERPRINT_SHA256.}"
 : "${NPROC_PER_NODE:=8}"
@@ -47,6 +56,7 @@ readonly NPROC_REQUIRED=8
 : "${ROBOCASA365_SOURCE_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data/robocasa365-demian/raw/robocasa365-pretrain-atomic-d5eac857ee9b07ff089e89c594c64493b8df6e41}"
 : "${BASE_CHECKPOINT_PATH:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_checkpoint/Cosmos3-Nano-DCP}"
 : "${WAN_VAE_PATH:=/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
+: "${EXPECTED_WAN_VAE_SHA256:=20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36}"
 : "${QWEN3_VL_TOKENIZER_PATH:=/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Qwen--Qwen3-VL-8B-Instruct}"
 : "${FORMAL_OUTPUT_ROOT:=$PINNED_FORMAL_OUTPUT_ROOT}"
 : "${FORMAL_LOG_ROOT:=$PINNED_FORMAL_LOG_ROOT}"
@@ -58,10 +68,20 @@ readonly NPROC_REQUIRED=8
     { echo "ERROR: FORMAL_RUN_NAME must equal FORMAL_EXPERIMENT_ID" >&2; exit 1; }
 [[ "$FORMAL_EXPERIMENT_ID" =~ ^CWAM-E35-[A-Za-z0-9._-]+$ ]] ||
     { echo "ERROR: formal continuation must use the CWAM-E35 experiment family" >&2; exit 1; }
+[[ "$FORMAL_EXPERIMENT_MODE" == exploratory ||
+   "$FORMAL_EXPERIMENT_MODE" == confirmatory ]] ||
+    { echo "ERROR: FORMAL_EXPERIMENT_MODE must be exploratory or confirmatory" >&2; exit 1; }
 [[ "$RJOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#RJOB_NAME}" -le 50 ]] ||
     { echo "ERROR: invalid RJOB_NAME" >&2; exit 1; }
 [[ "$EXPECTED_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
     { echo "ERROR: invalid EXPECTED_SOURCE_COMMIT" >&2; exit 1; }
+[[ "$EXPECTED_BENCHMARK_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
+    { echo "ERROR: invalid EXPECTED_BENCHMARK_SOURCE_COMMIT" >&2; exit 1; }
+[[ "$FORMAL_SUBMISSION_NONCE" =~ ^[0-9a-f]{64}$ ]] ||
+    { echo "ERROR: invalid formal submission nonce" >&2; exit 1; }
+EXPECTED_RESERVATION_PATH="$PINNED_FORMAL_OUTPUT_ROOT/formal_continuation_submission_reservations/$FORMAL_EXPERIMENT_ID/submission.json"
+[[ "$FORMAL_SUBMISSION_RESERVATION_PATH" == "$EXPECTED_RESERVATION_PATH" ]] ||
+    { echo "ERROR: non-canonical formal submission reservation path" >&2; exit 1; }
 for digest in \
     "$FORMAL_MANIFEST_SHA256" \
     "$EXPECTED_WORKFLOW_SNAPSHOT_SHA256" \
@@ -72,6 +92,8 @@ for digest in \
     "$EXPECTED_CACHE_SUCCESS_SHA256" \
     "$EXPECTED_CACHE_MANIFEST_SHA256" \
     "$EXPECTED_THROUGHPUT_MATRIX_SHA256" \
+    "$EXPECTED_BENCHMARK_SNAPSHOT_MANIFEST_SHA256" \
+    "$EXPECTED_WAN_VAE_SHA256" \
     "$EXPECTED_R6_CHECKPOINT_FINGERPRINT_SHA256"; do
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] ||
         { echo "ERROR: all expected identities must be lowercase SHA-256 digests" >&2; exit 1; }
@@ -149,11 +171,44 @@ test -x "$TORCHRUN"
     --qwen-tokenizer "$QWEN3_VL_TOKENIZER_PATH" \
     --environment "$COSMOS_ENV" \
     --expected-rjob-cpu "$EXPECTED_RJOB_CPU" \
-    --expected-formal-wrapper run_cwam_cosmos3_nano_formal_continuation.sh >/dev/null
+    --expected-formal-wrapper run_cwam_cosmos3_nano_formal_continuation.sh \
+    --expected-experiment-mode "$FORMAL_EXPERIMENT_MODE" >/dev/null
 if [[ -e "$COSMOS_SOURCE/.git" ]]; then
     [[ "$(git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" rev-parse HEAD)" == "$EXPECTED_SOURCE_COMMIT" ]] ||
         { echo "ERROR: COSMOS_SOURCE commit mismatch" >&2; exit 1; }
 fi
+
+SUBMISSION_UNKNOWN_PATH="$(
+    dirname -- "$FORMAL_SUBMISSION_RESERVATION_PATH"
+)/submission-unknown.json"
+SUBMISSION_BINDING_READY=0
+for ((attempt = 0; attempt < SUBMISSION_BINDING_WAIT_SECONDS; attempt++)); do
+    if [[ -e "$SUBMISSION_UNKNOWN_PATH" || -L "$SUBMISSION_UNKNOWN_PATH" ]]; then
+        echo "ERROR: submitter sealed this attempt as submission-unknown" >&2
+        exit 1
+    fi
+    if [[ -f "$FORMAL_SUBMISSION_RESERVATION_PATH" &&
+        ! -L "$FORMAL_SUBMISSION_RESERVATION_PATH" &&
+        ! -e "$SUBMISSION_UNKNOWN_PATH" &&
+        ! -L "$SUBMISSION_UNKNOWN_PATH" &&
+        "$(stat -c %a "$FORMAL_SUBMISSION_RESERVATION_PATH")" == 444 &&
+        "$(stat -c %a "$(dirname -- "$FORMAL_SUBMISSION_RESERVATION_PATH")")" == 555 ]]; then
+        SUBMISSION_BINDING_READY=1
+        break
+    fi
+    sleep 1
+done
+[[ "$SUBMISSION_BINDING_READY" == 1 ]] ||
+    { echo "ERROR: timed out waiting for immutable accepted submission binding" >&2; exit 1; }
+[[ ! -e "$SUBMISSION_UNKNOWN_PATH" && ! -L "$SUBMISSION_UNKNOWN_PATH" ]] ||
+    { echo "ERROR: accepted submission binding is ambiguous with submission-unknown" >&2; exit 1; }
+EXPECTED_FORMAL_COMMAND_SHA256="$(
+    "$PYTHON" -c \
+        'import json,sys; print(json.load(open(sys.argv[1]))["command_sha256"])' \
+        "$FORMAL_SUBMISSION_RESERVATION_PATH"
+)"
+[[ "$EXPECTED_FORMAL_COMMAND_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    { echo "ERROR: accepted reservation has an invalid command SHA-256" >&2; exit 1; }
 
 export PATH="$COSMOS_ENV/bin:$PATH"
 export PYTHONPATH="$COSMOS_SOURCE"
@@ -182,10 +237,58 @@ SUMMARY_PATH="$EVIDENCE_DIR/summary.json"
 RUN_DIR="$FORMAL_OUTPUT_ROOT/cosmos3_action_robocasa365/action_sft/$FORMAL_RUN_NAME"
 CURRENT_PHASE=input_validation
 FINAL_STATUS=failed
+NVME_STAGE_PARENT=
 
-record_failure() {
+cleanup_nvme_stage() {
+    [[ -n "$NVME_STAGE_PARENT" ]] || return 0
+    if ! "$PYTHON" - \
+        "$NVME_STAGE_PARENT" "$NVME_MOUNT_ROOT" "$FORMAL_RUN_NAME" \
+        "$EVIDENCE_DIR/nvme-cleanup.json" <<'PY'
+import json
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(sys.argv[1])
+mount = Path(sys.argv[2])
+run_name = sys.argv[3]
+evidence = Path(sys.argv[4])
+expected = mount / ".cwam-cosmos3-formal-continuation" / run_name
+if mount != Path("/nvme") or root != expected or root.parent.parent != mount:
+    raise SystemExit(f"refusing unsafe NVMe cleanup target: {root}")
+if root.is_symlink():
+    raise SystemExit(f"refusing symlink NVMe cleanup target: {root}")
+removed = root.exists()
+if removed:
+    if not root.is_dir() or root.resolve(strict=True) != root:
+        raise SystemExit(f"refusing non-canonical NVMe cleanup target: {root}")
+    shutil.rmtree(root)
+payload = {
+    "schema_version": 1,
+    "status": "passed",
+    "cleaned_at": datetime.now(timezone.utc).isoformat(),
+    "target": str(root),
+    "removed": removed,
+}
+evidence.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+    then
+        return 1
+    fi
+    NVME_STAGE_PARENT=
+}
+
+record_exit() {
     local exit_code=$?
     trap - EXIT
+    local cleanup_status=0
+    cleanup_nvme_stage || cleanup_status=$?
+    if [[ "$exit_code" -eq 0 && "$cleanup_status" -ne 0 ]]; then
+        exit_code=70
+        CURRENT_PHASE=nvme_cleanup
+        FINAL_STATUS=failed
+    fi
     if [[ "$FINAL_STATUS" != passed && -d "$EVIDENCE_DIR" ]]; then
         "$PYTHON" - "$SUMMARY_PATH" "$FORMAL_EXPERIMENT_ID" "$CURRENT_PHASE" "$exit_code" <<'PY' || true
 import json
@@ -206,7 +309,9 @@ PY
     fi
     exit "$exit_code"
 }
-trap record_failure EXIT
+trap record_exit EXIT
+trap 'CURRENT_PHASE=terminated; exit 143' TERM
+trap 'CURRENT_PHASE=interrupted; exit 130' INT
 
 "$PYTHON" "$CONTINUATION_HELPER" validate-inputs \
     --experiment-id "$FORMAL_EXPERIMENT_ID" \
@@ -219,6 +324,16 @@ trap record_failure EXIT
     --matrix-summary-sha256 "$EXPECTED_THROUGHPUT_MATRIX_SHA256" \
     --resume-checkpoint "$R6_ITER1000_CHECKPOINT_PATH" \
     --resume-checkpoint-fingerprint-sha256 "$EXPECTED_R6_CHECKPOINT_FINGERPRINT_SHA256" \
+    --expected-benchmark-source-root "$EXPECTED_BENCHMARK_SOURCE_ROOT" \
+    --expected-benchmark-source-commit "$EXPECTED_BENCHMARK_SOURCE_COMMIT" \
+    --expected-benchmark-snapshot-manifest-sha256 "$EXPECTED_BENCHMARK_SNAPSHOT_MANIFEST_SHA256" \
+    --wan-vae-path "$WAN_VAE_PATH" \
+    --expected-wan-vae-sha256 "$EXPECTED_WAN_VAE_SHA256" \
+    --require-torch-dcp-metadata \
+    --submission-reservation "$FORMAL_SUBMISSION_RESERVATION_PATH" \
+    --submission-nonce "$FORMAL_SUBMISSION_NONCE" \
+    --expected-scheduler-command-sha256 "$EXPECTED_FORMAL_COMMAND_SHA256" \
+    --expected-rjob-cpu "$EXPECTED_RJOB_CPU" \
     --output "$CONTRACT_PATH" >/dev/null
 CONTRACT_SHA256="$(sha256sum "$CONTRACT_PATH" | awk '{print $1}')"
 read -r SELECTED_WORKERS SELECTED_STORAGE SELECTED_AC < <(
@@ -230,6 +345,14 @@ read -r SELECTED_WORKERS SELECTED_STORAGE SELECTED_AC < <(
    "$SELECTED_STORAGE" == "$EXPECTED_SELECTED_STORAGE" &&
    "$SELECTED_AC" == "$EXPECTED_SELECTED_ACTIVATION_CHECKPOINTING" ]] ||
     { echo "ERROR: runtime throughput selection differs from the submit-side contract" >&2; exit 1; }
+read -r BOUND_RJOB_NAME BOUND_RJOB_UID < <(
+    "$PYTHON" -c \
+        'import json,sys; p=json.load(open(sys.argv[1]))["submission"]; print(p["scheduler_rjob_name"], p["scheduler_rjob_uid"])' \
+        "$CONTRACT_PATH"
+)
+[[ "$BOUND_RJOB_NAME" == "$KUBEBRAIN_RJOB_NAME" &&
+   "$BOUND_RJOB_UID" == "$KUBEBRAIN_RJOB_UID" ]] ||
+    { echo "ERROR: runtime scheduler identity differs from the structured CRD receipt" >&2; exit 1; }
 
 CURRENT_PHASE=node_validation
 "$PYTHON" "$THROUGHPUT_HELPER" capture-node \
@@ -249,11 +372,18 @@ if [[ "$SELECTED_STORAGE" == nvme ]]; then
         { echo "ERROR: /nvme is not backed by /dev/nvme1n1" >&2; exit 1; }
     [[ "$(findmnt -n -T /nvme -o FSTYPE)" == xfs ]] ||
         { echo "ERROR: /nvme is not xfs" >&2; exit 1; }
-    NVME_STAGE_PARENT="/nvme/.cwam-cosmos3-formal-continuation/$FORMAL_RUN_NAME"
+    NVME_NAMESPACE="/nvme/.cwam-cosmos3-formal-continuation"
+    mkdir -p "$NVME_NAMESPACE"
+    [[ ! -L "$NVME_NAMESPACE" && -d "$NVME_NAMESPACE" &&
+       "$(realpath -e -- "$NVME_NAMESPACE")" == "$NVME_NAMESPACE" ]] ||
+        { echo "ERROR: unsafe formal-continuation NVMe namespace" >&2; exit 1; }
+    NVME_STAGE_CANDIDATE="$NVME_NAMESPACE/$FORMAL_RUN_NAME"
+    if ! mkdir "$NVME_STAGE_CANDIDATE"; then
+        echo "ERROR: run-specific NVMe stage parent already exists" >&2
+        exit 1
+    fi
+    NVME_STAGE_PARENT="$NVME_STAGE_CANDIDATE"
     NVME_CACHE_ROOT="$NVME_STAGE_PARENT/cache"
-    mkdir -p "$NVME_STAGE_PARENT"
-    [[ ! -e "$NVME_CACHE_ROOT" && ! -L "$NVME_CACHE_ROOT" ]] ||
-        { echo "ERROR: run-specific NVMe cache stage already exists" >&2; exit 1; }
     STAGE_PORT_HASH="$(printf '%s' "$FORMAL_RUN_NAME-nvme-stage" | cksum)"
     STAGE_PORT_HASH="${STAGE_PORT_HASH%% *}"
     STAGE_MASTER_PORT="$((20000 + STAGE_PORT_HASH % 10000))"
@@ -279,7 +409,8 @@ CURRENT_PHASE=run_prepare
     --output-root "$FORMAL_OUTPUT_ROOT" \
     --run-name "$FORMAL_RUN_NAME" \
     --contract "$CONTRACT_PATH" \
-    --contract-sha256 "$CONTRACT_SHA256" >"$EVIDENCE_DIR/run-prepare.json"
+    --contract-sha256 "$CONTRACT_SHA256" \
+    --require-torch-dcp-metadata >"$EVIDENCE_DIR/run-prepare.json"
 
 # The fixed trace belongs only to the throughput benchmark.  Formal training
 # must regain its normal iterable-shuffle stream, with replay explicitly
@@ -341,8 +472,11 @@ CURRENT_PHASE=formal_evidence
     --experiment-id "$FORMAL_EXPERIMENT_ID" \
     --continuation-contract "$CONTRACT_PATH" \
     --continuation-contract-sha256 "$CONTRACT_SHA256" \
+    --submission-reservation "$FORMAL_SUBMISSION_RESERVATION_PATH" \
     --output-json "$SUMMARY_PATH"
 
+CURRENT_PHASE=nvme_cleanup
+cleanup_nvme_stage
 FINAL_STATUS=passed
 CURRENT_PHASE=complete
 echo "CWAM_COSMOS3_FORMAL_CONTINUATION_COMPLETED summary=$SUMMARY_PATH control_success_claim=false"
