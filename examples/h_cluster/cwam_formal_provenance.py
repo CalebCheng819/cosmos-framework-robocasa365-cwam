@@ -37,6 +37,12 @@ _FORMAL_MIN_FREE_BYTES = 5 * 1024**4
 _FORMAL_ESTIMATED_REQUIRED_BYTES = 4 * 1024**4
 _FORMAL_QUOTA_GROUP = "eailabagent_gpu"
 _FORMAL_EXCLUDED_NODE_TAG = "node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn"
+_FRESH_FORMAL_WRAPPER = "run_cwam_cosmos3_nano_production_then_formal.sh"
+_CONTINUATION_FORMAL_WRAPPER = "run_cwam_cosmos3_nano_formal_continuation.sh"
+_ALLOWED_FORMAL_WRAPPERS = {
+    _FRESH_FORMAL_WRAPPER,
+    _CONTINUATION_FORMAL_WRAPPER,
+}
 _PROTOCOL_FIELDS = (
     "experiment_family",
     "world_size",
@@ -200,10 +206,22 @@ def _formal_storage_contract() -> dict[str, str | int]:
     }
 
 
-def _formal_rjob_contract(world_size: int) -> dict[str, str | int]:
+def _formal_rjob_contract(
+    world_size: int,
+    *,
+    cpu_override: int | None = None,
+) -> dict[str, str | int]:
+    default_cpu = 128 if world_size == 8 else 96
+    cpu = default_cpu if cpu_override is None else cpu_override
+    allowed_cpu = {128, 160} if world_size == 8 else {96}
+    if cpu not in allowed_cpu:
+        raise ProvenanceError(
+            f"formal world_size={world_size} does not allow rjob cpu={cpu}; "
+            f"allowed={sorted(allowed_cpu)}"
+        )
     return {
         "quota_group": _FORMAL_QUOTA_GROUP,
-        "cpu": 128 if world_size == 8 else 96,
+        "cpu": cpu,
         "memory_mib": 1_500_000 if world_size == 8 else 1_125_000,
         "negative_tag": _FORMAL_EXCLUDED_NODE_TAG,
         "task_type": "normal",
@@ -1100,6 +1118,8 @@ def verify_formal_contract(
     wan_vae: Path,
     qwen_tokenizer: Path,
     environment: Path,
+    expected_rjob_cpu: int | None = None,
+    expected_formal_wrapper: str = _FRESH_FORMAL_WRAPPER,
 ) -> dict[str, Any]:
     if _IMAGE_DIGEST_RE.fullmatch(expected_container_image) is None:
         raise ProvenanceError(
@@ -1116,6 +1136,10 @@ def verify_formal_contract(
         raise ProvenanceError(f"expected source commit must be a 40-character lowercase Git SHA: {expected_commit!r}")
     if nproc_per_node not in {6, 8}:
         raise ProvenanceError(f"formal world size must be 6 or 8, got {nproc_per_node}")
+    if expected_formal_wrapper not in _ALLOWED_FORMAL_WRAPPERS:
+        raise ProvenanceError(
+            f"unsupported formal wrapper: {expected_formal_wrapper!r}"
+        )
 
     snapshot_root_literal = Path(os.path.abspath(snapshot_root))
     snapshot_root_canonical = snapshot_root.resolve(strict=True)
@@ -1167,7 +1191,10 @@ def verify_formal_contract(
     rjob_contract = _verify_exact_contract(
         formal,
         key="rjob",
-        expected=_formal_rjob_contract(nproc_per_node),
+        expected=_formal_rjob_contract(
+            nproc_per_node,
+            cpu_override=expected_rjob_cpu,
+        ),
     )
 
     git = _require_mapping(formal.get("git"), "formal git")
@@ -1265,7 +1292,7 @@ def verify_formal_contract(
     )
 
     command = str(formal.get("command", ""))
-    if "BLOCKED" in command or "run_cwam_cosmos3_nano_production_then_formal.sh" not in command:
+    if "BLOCKED" in command or expected_formal_wrapper not in command:
         raise ProvenanceError("formal manifest command is stale or does not name the formal wrapper")
     hardware = str(formal.get("hardware", ""))
     if f"{nproc_per_node}x H200" not in hardware or "128 samples/rank" not in hardware:
@@ -1356,6 +1383,12 @@ def _build_parser() -> argparse.ArgumentParser:
     formal.add_argument("--wan-vae", type=Path, required=True)
     formal.add_argument("--qwen-tokenizer", type=Path, required=True)
     formal.add_argument("--environment", type=Path, required=True)
+    formal.add_argument("--expected-rjob-cpu", type=int)
+    formal.add_argument(
+        "--expected-formal-wrapper",
+        choices=sorted(_ALLOWED_FORMAL_WRAPPERS),
+        default=_FRESH_FORMAL_WRAPPER,
+    )
     formal.add_argument("--output-json", type=Path)
     return parser
 
@@ -1426,6 +1459,8 @@ def main() -> None:
                 wan_vae=args.wan_vae,
                 qwen_tokenizer=args.qwen_tokenizer,
                 environment=args.environment,
+                expected_rjob_cpu=args.expected_rjob_cpu,
+                expected_formal_wrapper=args.expected_formal_wrapper,
             )
             _write_json_report(report, args.output_json)
             return

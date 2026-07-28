@@ -10,10 +10,13 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import examples.h_cluster.cwam_formal_provenance as provenance
 from examples.h_cluster.cwam_formal_provenance import (
     _EXPECTED_CONFIG_PATH,
     _QWEN_PROCESSOR_FILES,
+    _formal_rjob_contract,
     ProvenanceError,
     create_artifact_inventory,
     sha256_file,
@@ -549,6 +552,125 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
                 fixture["formal_manifest_sha256"] = sha256_file(formal_path)
                 with self.assertRaisesRegex(ProvenanceError, rf"{section} key mismatch"):
                     self._verify_formal(fixture)
+
+    def test_formal_rjob_cpu_override_is_limited_to_eight_rank_continuations(self) -> None:
+        self.assertEqual(_formal_rjob_contract(8)["cpu"], 128)
+        self.assertEqual(_formal_rjob_contract(8, cpu_override=160)["cpu"], 160)
+        self.assertEqual(_formal_rjob_contract(6)["cpu"], 96)
+        for world_size, cpu in ((8, 96), (8, 192), (6, 128), (6, 160)):
+            with self.subTest(world_size=world_size, cpu=cpu):
+                with self.assertRaisesRegex(ProvenanceError, "does not allow rjob cpu"):
+                    _formal_rjob_contract(world_size, cpu_override=cpu)
+
+    def test_formal_contract_accepts_selected_160_cpu_eight_rank_job(self) -> None:
+        fixture = self._make_snapshot_and_formal_manifest(status_value="planned")
+        formal_path = fixture["formal_manifest_path"]
+        formal = json.loads(formal_path.read_text())
+        formal["rjob"]["cpu"] = 160
+        formal["command"] = (
+            "bash examples/h_cluster/run_cwam_cosmos3_nano_formal_continuation.sh"
+        )
+        _write_json(formal_path, formal)
+        fixture["formal_manifest_sha256"] = sha256_file(formal_path)
+        report = verify_formal_contract(
+            snapshot_root=fixture["snapshot_root"],
+            snapshot_manifest_sha256=fixture["snapshot_manifest_sha256"],
+            formal_manifest_path=formal_path,
+            formal_manifest_sha256=fixture["formal_manifest_sha256"],
+            experiment_id=fixture["experiment_id"],
+            expected_commit=_COMMIT,
+            expected_workflow_snapshot_sha256=_WORKFLOW_SHA256,
+            nproc_per_node=8,
+            expected_container_image=_IMAGE,
+            dataset_root=self.dataset_root,
+            source_root=self.source_root,
+            base_checkpoint=self.base_checkpoint,
+            wan_vae=self.wan_vae,
+            qwen_tokenizer=self.qwen,
+            environment=self.environment,
+            expected_rjob_cpu=160,
+            expected_formal_wrapper="run_cwam_cosmos3_nano_formal_continuation.sh",
+        )
+        self.assertEqual(report["rjob"]["cpu"], 160)
+
+    def test_cli_forwards_selected_cpu_only_to_formal_verification(self) -> None:
+        argv = [
+            "cwam_formal_provenance.py",
+            "verify-formal-contract",
+            "--snapshot-root",
+            str(self.root),
+            "--snapshot-manifest-sha256",
+            "a" * 64,
+            "--formal-manifest",
+            str(self.root / "formal.json"),
+            "--formal-manifest-sha256",
+            "b" * 64,
+            "--experiment-id",
+            "CWAM-E35-CLI",
+            "--expected-commit",
+            "c" * 40,
+            "--expected-workflow-snapshot-sha256",
+            "d" * 64,
+            "--nproc-per-node",
+            "8",
+            "--expected-container-image",
+            _IMAGE,
+            "--dataset-root",
+            str(self.dataset_root),
+            "--source-root",
+            str(self.source_root),
+            "--base-checkpoint",
+            str(self.base_checkpoint),
+            "--wan-vae",
+            str(self.wan_vae),
+            "--qwen-tokenizer",
+            str(self.qwen),
+            "--environment",
+            str(self.environment),
+            "--expected-rjob-cpu",
+            "160",
+            "--expected-formal-wrapper",
+            "run_cwam_cosmos3_nano_formal_continuation.sh",
+        ]
+        with (
+            mock.patch.object(provenance, "verify_formal_contract", return_value={"status": "passed"}) as verify,
+            mock.patch.object(provenance, "_write_json_report"),
+            mock.patch.object(provenance.sys, "argv", argv),
+        ):
+            provenance.main()
+        self.assertEqual(verify.call_args.kwargs["expected_rjob_cpu"], 160)
+        self.assertEqual(
+            verify.call_args.kwargs["expected_formal_wrapper"],
+            "run_cwam_cosmos3_nano_formal_continuation.sh",
+        )
+
+    def test_create_inventory_cli_remains_independent_of_formal_cpu_option(self) -> None:
+        output = self.root / "cli-inventory.json"
+        argv = [
+            "cwam_formal_provenance.py",
+            "create-artifact-inventory",
+            "--base-checkpoint",
+            str(self.base_checkpoint),
+            "--wan-vae",
+            str(self.wan_vae),
+            "--qwen-tokenizer",
+            str(self.qwen),
+            "--environment",
+            str(self.environment),
+            "--dataset-root",
+            str(self.dataset_root),
+            "--source-root",
+            str(self.source_root),
+            "--output-json",
+            str(output),
+        ]
+        with (
+            mock.patch.object(provenance, "create_artifact_inventory", return_value={"schema_version": 1}) as create,
+            mock.patch.object(provenance, "write_inventory", return_value="e" * 64),
+            mock.patch.object(provenance.sys, "argv", argv),
+        ):
+            provenance.main()
+        self.assertNotIn("expected_rjob_cpu", create.call_args.kwargs)
 
     def test_formal_contract_rejects_unbound_data_root(self) -> None:
         fixture = self._make_snapshot_and_formal_manifest(status_value="planned")

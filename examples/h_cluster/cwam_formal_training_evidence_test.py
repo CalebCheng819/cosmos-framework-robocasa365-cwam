@@ -15,11 +15,13 @@ from examples.h_cluster.cwam_formal_training_evidence import (
     _PROTOCOLS,
     EvidenceError,
     TrainingProtocol,
+    _expected_continuation_gradient_iterations,
     _expected_gradient_iterations,
     _validate_dcp,
     _validate_validation_summaries,
     protocol_for_world_size,
     verify_formal,
+    verify_formal_continuation,
     verify_resume,
     verify_storage,
 )
@@ -901,4 +903,222 @@ def test_formal_contract_binds_storage_reservation_and_provenance(tmp_path, monk
             storage_preflight_path=storage_path,
             submission_reservation_path=reservation_path,
             sampled_memory_path=sampled_memory_path,
+        )
+
+
+def test_formal_continuation_accepts_iter1000_seed_and_rejects_fixed_trace(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    protocol = TrainingProtocol(
+        experiment_family="CWAM-E35",
+        world_size=8,
+        learning_rate=5.0e-5,
+        max_iter=1_100,
+        warm_up_steps=500,
+        cycle_length=16_000,
+        validation_iter=50,
+        max_val_iter=1,
+        save_iter=50,
+    )
+    monkeypatch.setitem(_PROTOCOLS, 8, protocol)
+    experiment_id = "CWAM-E35-CONTINUATION-TEST"
+    output_root = tmp_path / "formal-output"
+    formal_log_root = tmp_path / "formal-logs"
+    formal_log_root.mkdir()
+    monkeypatch.setattr(
+        "examples.h_cluster.cwam_formal_training_evidence._FORMAL_OUTPUT_ROOT",
+        output_root,
+    )
+    monkeypatch.setattr(
+        "examples.h_cluster.cwam_formal_training_evidence._FORMAL_LOG_ROOT",
+        formal_log_root,
+    )
+
+    resume_holder = tmp_path / "r6"
+    _write_dcp(resume_holder, 1_000)
+    resume_checkpoint = resume_holder / "checkpoints" / "iter_000001000"
+    run_dir = output_root / "cosmos3_action_robocasa365" / "action_sft" / experiment_id
+    checkpoint_root = run_dir / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    seed_link = checkpoint_root / "iter_000001000"
+    seed_link.symlink_to(resume_checkpoint, target_is_directory=True)
+    _write_dcp(run_dir, 1_050)
+    _write_dcp(run_dir, 1_100)
+    (checkpoint_root / "latest_checkpoint.txt").write_text("iter_000001100\n")
+
+    config = _config(world_size=8, max_iter=protocol.max_iter, gradient_every_n=50)
+    config["trainer"]["max_val_iter"] = protocol.max_val_iter
+    config["trainer"]["validation_iter"] = protocol.validation_iter
+    config["checkpoint"].update(
+        {
+            "save_iter": protocol.save_iter,
+            "load_training_state": True,
+            "keys_to_skip_loading": [],
+            "keys_not_to_resume": ["dataloader"],
+        }
+    )
+    config["scheduler"]["warm_up_steps"] = [protocol.warm_up_steps]
+    config["scheduler"]["cycle_lengths"] = [protocol.cycle_length]
+    config["model"]["config"]["activation_checkpointing"] = {"mode": "selective"}
+    config["model"]["config"]["tokenizer"] = {
+        "_target_": (
+            "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
+            "PrecomputedWan2pt2LatentTokenizer"
+        )
+    }
+    config["dataloader_train"]["dataloader"]["num_workers"] = 12
+    config["dataloader_train"]["dataloader"]["datasets"] = {
+        "robocasa365": {
+            "dataset": {
+                "latent_cache_root": "/gpfs/cache",
+                "latent_cache_mode": "required",
+                "fixed_index_trace_path": None,
+            }
+        }
+    }
+    (run_dir / "config.yaml").write_text(yaml.safe_dump(config))
+
+    memory_dir = run_dir / "production_batch_memory_gate"
+    memory_dir.mkdir()
+    (memory_dir / "iteration_000001001.json").write_text(
+        json.dumps(
+            _memory_report(
+                world_size=8,
+                iteration=1_001,
+                initial_validation=False,
+                checkpoint_save=False,
+            )
+        )
+    )
+    gradient_dir = run_dir / "action_gradient_evidence"
+    gradient_dir.mkdir()
+    gradient_iterations = _expected_continuation_gradient_iterations(
+        initial_iteration=1_000,
+        max_iter=protocol.max_iter,
+        every_n=50,
+    )
+    assert gradient_iterations == [1_050, 1_100]
+    for iteration in gradient_iterations:
+        (gradient_dir / f"iteration_{iteration:09d}.json").write_text(
+            json.dumps(_gradient_report(world_size=8, iteration=iteration))
+        )
+
+    continuation_contract = {
+        "schema_version": 1,
+        "status": "passed",
+        "kind": "cwam_cosmos3_formal_continuation_inputs",
+        "experiment_id": experiment_id,
+        "run_name": experiment_id,
+        "world_size": 8,
+        "cache": {
+            "root": "/gpfs/cache",
+            "success_sha256": "1" * 64,
+            "manifest_sha256": "2" * 64,
+        },
+        "throughput": {
+            "matrix_summary_sha256": "3" * 64,
+            "best_observed_cell_id": "workers-12__storage-gpfs__ac-selective",
+            "workers_per_rank": 12,
+            "storage": "gpfs",
+            "activation_checkpointing": "selective",
+        },
+        "resume": {
+            "path": str(resume_checkpoint),
+            "fingerprint_algorithm": "sha256-full-dcp-file-inventory-v1",
+            "fingerprint_sha256": "4" * 64,
+        },
+        "protocol": {
+            "initial_iteration": 1_000,
+            "max_iter": protocol.max_iter,
+            "resume_existing_run": True,
+            "allow_data_stream_replay": True,
+            "data_stream_resume": "restarted_from_beginning_not_exact_loader_cursor",
+            "checkpoint_load_training_state": True,
+            "checkpoint_keys_to_skip_loading": [],
+            "checkpoint_keys_not_to_resume": ["dataloader"],
+            "checkpoint_strict_resume": True,
+            "fixed_index_trace_path": None,
+        },
+    }
+    contract_path = tmp_path / "continuation-inputs.json"
+    contract_path.write_text(json.dumps(continuation_contract, indent=2, sort_keys=True) + "\n")
+    contract_sha256 = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+    (run_dir / "continuation-seed.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "prepared",
+                "prepared_at": datetime.now(timezone.utc).isoformat(),
+                "run_name": experiment_id,
+                "run_dir": str(run_dir),
+                "seed_checkpoint_link": str(seed_link),
+                "seed_checkpoint_target": str(resume_checkpoint),
+                "seed_checkpoint_fingerprint_algorithm": (
+                    continuation_contract["resume"]["fingerprint_algorithm"]
+                ),
+                "seed_checkpoint_fingerprint_sha256": (
+                    continuation_contract["resume"]["fingerprint_sha256"]
+                ),
+                "continuation_contract": str(contract_path),
+                "continuation_contract_sha256": contract_sha256,
+            }
+        )
+    )
+
+    validation_lines = [
+        f"[val] number of unique url and key: 1024 / 1024; "
+        f"avg_final_loss: 1.0; unstable_count: 0; iteration: {iteration}"
+        for iteration in (1_050, 1_100)
+    ]
+    formal_log = formal_log_root / f"{experiment_id}.continuation.log"
+    formal_log.write_text(
+        "\n".join(
+            (
+                "WARNING: resuming model/optim/scheduler/trainer with a restarted data stream.",
+                (
+                    f"Resuming ckpt {seed_link} with keys: "
+                    "['model', 'optim', 'scheduler', 'trainer']"
+                ),
+                "- Loading the model...",
+                "- Loading the optimizer...",
+                "- Loading the scheduler...",
+                "- Loading the trainer...",
+                f"Loaded checkpoint from {seed_link} in iteration 1000",
+                "Distributed parallelism mode: fsdp",
+                *validation_lines,
+                "Done with training.",
+            )
+        )
+        + "\n"
+    )
+
+    result = verify_formal_continuation(
+        run_dir=run_dir,
+        log_path=formal_log,
+        world_size=8,
+        experiment_id=experiment_id,
+        formal_run_name=experiment_id,
+        continuation_contract_path=contract_path,
+        continuation_contract_sha256=contract_sha256,
+    )
+    assert result["status"] == "training_completed"
+    assert result["mode"] == "continuation"
+    assert result["initial_iteration"] == 1_000
+    assert result["checkpoint_count_including_seed"] == 3
+    assert result["fixed_index_trace_used"] is False
+
+    config["dataloader_train"]["dataloader"]["datasets"]["robocasa365"]["dataset"][
+        "fixed_index_trace_path"
+    ] = "/benchmark/fixed-trace.npy"
+    (run_dir / "config.yaml").write_text(yaml.safe_dump(config))
+    with pytest.raises(EvidenceError, match="fixed-index trace"):
+        verify_formal_continuation(
+            run_dir=run_dir,
+            log_path=formal_log,
+            world_size=8,
+            experiment_id=experiment_id,
+            formal_run_name=experiment_id,
+            continuation_contract_path=contract_path,
+            continuation_contract_sha256=contract_sha256,
         )

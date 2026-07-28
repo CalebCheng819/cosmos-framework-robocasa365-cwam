@@ -39,6 +39,13 @@ _FORMAL_MOUNTS = (
     "gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public",
 )
 _DCP_COMPONENTS = ("model", "optim", "scheduler", "trainer")
+_CONTINUATION_INITIAL_ITERATION = 1_000
+_CONTINUATION_DATA_STREAM_RESUME = "restarted_from_beginning_not_exact_loader_cursor"
+_CONTINUATION_CONTRACT_KIND = "cwam_cosmos3_formal_continuation_inputs"
+_PRECOMPUTED_WAN_TOKENIZER_TARGET = (
+    "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
+    "PrecomputedWan2pt2LatentTokenizer"
+)
 _FORBIDDEN_LOG_MARKERS = (
     "Traceback (most recent call last):",
     "CUDA out of memory",
@@ -277,6 +284,8 @@ def _validate_common_config(
     max_iter: int,
     max_val_iter: int,
     save_iter: int,
+    train_num_workers: int = 4,
+    val_num_workers: int = 2,
 ) -> None:
     trainer = _require_mapping(config.get("trainer"), "trainer config")
     checkpoint = _require_mapping(config.get("checkpoint"), "checkpoint config")
@@ -316,8 +325,8 @@ def _validate_common_config(
     train_worker = _require_mapping(train_loader.get("dataloader"), "train DataLoader config")
     val_worker = _require_mapping(val_loader.get("dataloader"), "validation DataLoader config")
     for worker, expected_workers, label in (
-        (train_worker, 4, "train"),
-        (val_worker, 2, "validation"),
+        (train_worker, train_num_workers, "train"),
+        (val_worker, val_num_workers, "validation"),
     ):
         _require_equal(worker.get("num_workers"), expected_workers, f"{label} num_workers")
         _require_equal(worker.get("persistent_workers"), True, f"{label} persistent_workers")
@@ -2012,6 +2021,450 @@ def verify_formal(
     }
 
 
+def _expected_continuation_gradient_iterations(
+    *,
+    initial_iteration: int,
+    max_iter: int,
+    every_n: int,
+) -> list[int]:
+    """Return callback boundaries reached after a non-zero checkpoint resume."""
+
+    if not 0 <= initial_iteration < max_iter or every_n < 1:
+        raise EvidenceError(
+            "invalid continuation gradient range: "
+            f"initial={initial_iteration}, max={max_iter}, every_n={every_n}"
+        )
+    first_periodic = ((initial_iteration // every_n) + 1) * every_n
+    iterations = set(range(first_periodic, max_iter + 1, every_n))
+    iterations.add(max_iter)
+    return sorted(iterations)
+
+
+def _validate_continuation_resume_log(
+    text: str,
+    *,
+    seed_link: Path,
+    initial_iteration: int,
+) -> None:
+    expected_resume_path = str(seed_link)
+    markers = {
+        "warning": "WARNING: resuming model/optim/scheduler/trainer with a restarted data stream.",
+        "resume": (
+            f"Resuming ckpt {expected_resume_path} with keys: "
+            "['model', 'optim', 'scheduler', 'trainer']"
+        ),
+        "model": "- Loading the model...",
+        "optimizer": "- Loading the optimizer...",
+        "scheduler": "- Loading the scheduler...",
+        "trainer": "- Loading the trainer...",
+        "loaded": (
+            f"Loaded checkpoint from {expected_resume_path} in iteration "
+            f"{initial_iteration}"
+        ),
+        "fsdp": "Distributed parallelism mode: fsdp",
+        "done": "Done with training.",
+    }
+    positions = {
+        label: _unique_position(text, marker, f"formal continuation {label} marker")
+        for label, marker in markers.items()
+    }
+    if not (
+        positions["warning"]
+        < positions["resume"]
+        < positions["model"]
+        < positions["optimizer"]
+        < positions["scheduler"]
+        < positions["trainer"]
+        < positions["loaded"]
+        < positions["fsdp"]
+        < positions["done"]
+    ):
+        raise EvidenceError(f"formal continuation checkpoint state machine is out of order: {positions}")
+    if text.count("Resuming ckpt ") != 1 or text.count("Loaded checkpoint from ") != 1:
+        raise EvidenceError("formal continuation log contains multiple checkpoint attempts")
+    _validate_log(
+        text,
+        required=(),
+        extra_forbidden=(
+            "Training from scratch.",
+            "Unstable val loss",
+            "skip loading dataloader.",
+            "- Loading the dataloader",
+        ),
+    )
+
+
+def _validate_continuation_checkpoint_root(
+    *,
+    run_dir: Path,
+    resume_checkpoint: Path,
+    initial_iteration: int,
+    max_iter: int,
+    save_iter: int,
+) -> tuple[Path, dict[str, dict[str, int]], int, int]:
+    checkpoint_root = run_dir / "checkpoints"
+    if checkpoint_root.is_symlink() or not checkpoint_root.is_dir():
+        raise EvidenceError(f"continuation checkpoint root is missing or unsafe: {checkpoint_root}")
+    latest = checkpoint_root / "latest_checkpoint.txt"
+    if latest.is_symlink() or not latest.is_file():
+        raise EvidenceError(f"continuation latest-checkpoint pointer is missing or unsafe: {latest}")
+    expected_final_name = f"iter_{max_iter:09d}"
+    _require_equal(latest.read_text().strip(), expected_final_name, "continuation latest checkpoint")
+
+    seed_name = f"iter_{initial_iteration:09d}"
+    seed_link = checkpoint_root / seed_name
+    if not seed_link.is_symlink():
+        raise EvidenceError(f"continuation seed checkpoint must remain a symlink: {seed_link}")
+    _require_equal(
+        seed_link.resolve(strict=True),
+        resume_checkpoint.resolve(strict=True),
+        "continuation seed checkpoint target",
+    )
+    expected_new_iterations = list(
+        range(initial_iteration + save_iter, max_iter + 1, save_iter)
+    )
+    expected_entries = {
+        "latest_checkpoint.txt",
+        seed_name,
+        *(f"iter_{iteration:09d}" for iteration in expected_new_iterations),
+    }
+    _require_equal(
+        {path.name for path in checkpoint_root.iterdir()},
+        expected_entries,
+        "continuation checkpoint-root entry set",
+    )
+
+    seed_components = _validate_dcp(resume_checkpoint)
+    all_checkpoint_bytes = sum(
+        stats["metadata_bytes"] + stats["distcp_bytes"]
+        for stats in seed_components.values()
+    )
+    for iteration in expected_new_iterations:
+        checkpoint = checkpoint_root / f"iter_{iteration:09d}"
+        if checkpoint.is_symlink():
+            raise EvidenceError(f"new continuation checkpoint must not be a symlink: {checkpoint}")
+        components = _validate_dcp(checkpoint)
+        all_checkpoint_bytes += sum(
+            stats["metadata_bytes"] + stats["distcp_bytes"]
+            for stats in components.values()
+        )
+    final_checkpoint = checkpoint_root / expected_final_name
+    final_components = _validate_dcp(final_checkpoint)
+    return (
+        final_checkpoint,
+        final_components,
+        len(expected_new_iterations) + 1,
+        all_checkpoint_bytes,
+    )
+
+
+def verify_formal_continuation(
+    *,
+    run_dir: Path,
+    log_path: Path,
+    world_size: int,
+    experiment_id: str,
+    formal_run_name: str,
+    continuation_contract_path: Path,
+    continuation_contract_sha256: str,
+) -> dict[str, Any]:
+    """Validate a formal 8-H200 continuation from the exact R6 iter-1000 state."""
+
+    if world_size != 8:
+        raise EvidenceError("formal continuation is defined only for world_size=8")
+    if not re.fullmatch(r"[0-9a-f]{64}", continuation_contract_sha256):
+        raise EvidenceError("continuation contract SHA-256 must be lowercase hexadecimal")
+    protocol = protocol_for_world_size(world_size)
+    _require_equal(formal_run_name, experiment_id, "formal continuation run name")
+    run_dir = _validate_run_identity(
+        run_dir=run_dir,
+        expected_name=formal_run_name,
+        experiment_id=experiment_id,
+        protocol=protocol,
+    )
+    contract, observed_contract_sha256 = _load_json_and_sha256(
+        continuation_contract_path,
+        "formal continuation contract",
+    )
+    _require_equal(
+        observed_contract_sha256,
+        continuation_contract_sha256,
+        "formal continuation contract SHA-256",
+    )
+    for key, expected in {
+        "schema_version": 1,
+        "status": "passed",
+        "kind": _CONTINUATION_CONTRACT_KIND,
+        "experiment_id": experiment_id,
+        "run_name": formal_run_name,
+        "world_size": world_size,
+    }.items():
+        _require_equal(contract.get(key), expected, f"formal continuation contract {key}")
+    cache = _require_mapping(contract.get("cache"), "formal continuation cache")
+    throughput = _require_mapping(
+        contract.get("throughput"),
+        "formal continuation throughput selection",
+    )
+    resume = _require_mapping(contract.get("resume"), "formal continuation resume")
+    continuation_protocol = _require_mapping(
+        contract.get("protocol"),
+        "formal continuation protocol",
+    )
+    expected_protocol = {
+        "initial_iteration": _CONTINUATION_INITIAL_ITERATION,
+        "max_iter": protocol.max_iter,
+        "resume_existing_run": True,
+        "allow_data_stream_replay": True,
+        "data_stream_resume": _CONTINUATION_DATA_STREAM_RESUME,
+        "checkpoint_load_training_state": True,
+        "checkpoint_keys_to_skip_loading": [],
+        "checkpoint_keys_not_to_resume": ["dataloader"],
+        "checkpoint_strict_resume": True,
+        "fixed_index_trace_path": None,
+    }
+    _require_equal(
+        continuation_protocol,
+        expected_protocol,
+        "formal continuation protocol payload",
+    )
+    workers = throughput.get("workers_per_rank")
+    if workers not in {4, 8, 12, 16}:
+        raise EvidenceError(f"invalid selected continuation worker count: {workers!r}")
+    storage = throughput.get("storage")
+    if storage not in {"gpfs", "nvme"}:
+        raise EvidenceError(f"invalid selected continuation storage: {storage!r}")
+    activation_checkpointing = throughput.get("activation_checkpointing")
+    if activation_checkpointing not in {"selective", "none"}:
+        raise EvidenceError(
+            "invalid selected continuation activation-checkpointing mode: "
+            f"{activation_checkpointing!r}"
+        )
+    if throughput.get("best_observed_cell_id") != (
+        f"workers-{workers}__storage-{storage}__ac-{activation_checkpointing}"
+    ):
+        raise EvidenceError("continuation throughput fields do not match best_observed_cell_id")
+    for label, value in (
+        ("cache _SUCCESS SHA-256", cache.get("success_sha256")),
+        ("cache manifest SHA-256", cache.get("manifest_sha256")),
+        ("throughput matrix SHA-256", throughput.get("matrix_summary_sha256")),
+        ("R6 checkpoint fingerprint", resume.get("fingerprint_sha256")),
+    ):
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise EvidenceError(f"{label} is invalid: {value!r}")
+
+    config = _load_config(run_dir)
+    _validate_common_config(
+        config,
+        world_size=world_size,
+        max_iter=protocol.max_iter,
+        max_val_iter=protocol.max_val_iter,
+        save_iter=protocol.save_iter,
+        train_num_workers=int(workers),
+        val_num_workers=2,
+    )
+    _validate_protocol_scalars(config, protocol)
+    _require_equal(
+        config["trainer"].get("validation_iter"),
+        protocol.validation_iter,
+        "continuation validation frequency",
+    )
+    _validate_callback_config(config, gradient_every_n=50)
+    checkpoint_config = _require_mapping(config.get("checkpoint"), "checkpoint config")
+    for key, expected in {
+        "load_training_state": True,
+        "keys_to_skip_loading": [],
+        "keys_not_to_resume": ["dataloader"],
+        "strict_resume": True,
+    }.items():
+        _require_equal(
+            checkpoint_config.get(key),
+            expected,
+            f"formal continuation checkpoint.{key}",
+        )
+    model_config = _require_mapping(
+        _require_mapping(config.get("model"), "model config").get("config"),
+        "model.config",
+    )
+    activation_config = _require_mapping(
+        model_config.get("activation_checkpointing"),
+        "model activation-checkpointing config",
+    )
+    _require_equal(
+        activation_config.get("mode"),
+        activation_checkpointing,
+        "formal continuation activation-checkpointing selection",
+    )
+    tokenizer = _require_mapping(model_config.get("tokenizer"), "model tokenizer config")
+    _require_equal(
+        tokenizer.get("_target_"),
+        _PRECOMPUTED_WAN_TOKENIZER_TARGET,
+        "formal continuation metadata-only tokenizer",
+    )
+    train_loader = _require_mapping(config.get("dataloader_train"), "train loader config")
+    train_worker = _require_mapping(train_loader.get("dataloader"), "train worker config")
+    datasets = _require_mapping(train_worker.get("datasets"), "train dataset mapping")
+    dataset_wrapper = _require_mapping(datasets.get("robocasa365"), "RoboCasa365 dataset wrapper")
+    dataset = _require_mapping(dataset_wrapper.get("dataset"), "RoboCasa365 train dataset")
+    expected_cache_root = (
+        Path(str(cache.get("root")))
+        if storage == "gpfs"
+        else Path("/nvme/.cwam-cosmos3-formal-continuation") / formal_run_name / "cache"
+    )
+    _require_equal(
+        Path(str(dataset.get("latent_cache_root"))),
+        expected_cache_root,
+        "formal continuation runtime latent-cache root",
+    )
+    _require_equal(dataset.get("latent_cache_mode"), "required", "formal continuation cache mode")
+    _require_equal(
+        dataset.get("fixed_index_trace_path"),
+        None,
+        "formal continuation fixed-index trace",
+    )
+
+    resume_checkpoint = Path(str(resume.get("path")))
+    if resume_checkpoint.name != "iter_000001000":
+        raise EvidenceError("formal continuation resume checkpoint is not iter_000001000")
+    seed_link = run_dir / "checkpoints" / "iter_000001000"
+    seed_receipt_path = run_dir / "continuation-seed.json"
+    seed_receipt, seed_receipt_sha256 = _load_json_and_sha256(
+        seed_receipt_path,
+        "formal continuation seed receipt",
+    )
+    for key, expected in {
+        "schema_version": 1,
+        "status": "prepared",
+        "run_name": formal_run_name,
+        "run_dir": str(run_dir),
+        "seed_checkpoint_link": str(seed_link),
+        "seed_checkpoint_target": str(resume_checkpoint),
+        "seed_checkpoint_fingerprint_algorithm": resume.get("fingerprint_algorithm"),
+        "seed_checkpoint_fingerprint_sha256": resume.get("fingerprint_sha256"),
+        "continuation_contract": str(continuation_contract_path),
+        "continuation_contract_sha256": continuation_contract_sha256,
+    }.items():
+        _require_equal(seed_receipt.get(key), expected, f"continuation seed receipt {key}")
+
+    memory_dir = run_dir / "production_batch_memory_gate"
+    expected_memory_name = "iteration_000001001.json"
+    _require_exact_regular_files(
+        memory_dir,
+        [expected_memory_name],
+        "formal continuation memory evidence",
+    )
+    memory_path = memory_dir / expected_memory_name
+    _validate_memory_report(
+        memory_path,
+        world_size=world_size,
+        iteration=_CONTINUATION_INITIAL_ITERATION + 1,
+        included_initial_validation=False,
+        included_checkpoint_save=False,
+    )
+
+    gradient_iterations = _expected_continuation_gradient_iterations(
+        initial_iteration=_CONTINUATION_INITIAL_ITERATION,
+        max_iter=protocol.max_iter,
+        every_n=50,
+    )
+    gradient_files = [
+        f"iteration_{iteration:09d}.json" for iteration in gradient_iterations
+    ]
+    gradient_dir = run_dir / "action_gradient_evidence"
+    _require_exact_regular_files(
+        gradient_dir,
+        gradient_files,
+        "formal continuation action-gradient evidence",
+    )
+    for iteration in gradient_iterations:
+        _validate_gradient_report(
+            gradient_dir / f"iteration_{iteration:09d}.json",
+            world_size=world_size,
+            iteration=iteration,
+        )
+
+    final_checkpoint, final_components, checkpoint_count, all_checkpoint_bytes = (
+        _validate_continuation_checkpoint_root(
+            run_dir=run_dir,
+            resume_checkpoint=resume_checkpoint,
+            initial_iteration=_CONTINUATION_INITIAL_ITERATION,
+            max_iter=protocol.max_iter,
+            save_iter=protocol.save_iter,
+        )
+    )
+    expected_log_path = _FORMAL_LOG_ROOT / f"{formal_run_name}.continuation.log"
+    if (
+        log_path != Path(os.path.abspath(log_path))
+        or log_path != expected_log_path
+        or log_path.is_symlink()
+        or not log_path.is_file()
+        or log_path.resolve(strict=True) != expected_log_path
+    ):
+        raise EvidenceError(
+            "formal continuation log must be the exact canonical non-symlink path: "
+            f"expected={expected_log_path}, actual={log_path}"
+        )
+    text = log_path.read_text(errors="replace")
+    _validate_continuation_resume_log(
+        text,
+        seed_link=seed_link,
+        initial_iteration=_CONTINUATION_INITIAL_ITERATION,
+    )
+    # Trainer.run_validation_on_start is intentionally gated on iteration == 0;
+    # an iter-1000 resume first validates at the next periodic boundary.
+    validation_iterations = list(
+        range(
+            _CONTINUATION_INITIAL_ITERATION + protocol.validation_iter,
+            protocol.max_iter + 1,
+            protocol.validation_iter,
+        )
+    )
+    validation = _validate_validation_summaries(
+        text,
+        expected_iterations=validation_iterations,
+        expected_samples=world_size * protocol.max_val_iter * _BATCH_PER_RANK,
+    )
+    return {
+        "schema_version": 1,
+        "status": "training_completed",
+        "mode": "continuation",
+        "experiment_family": protocol.experiment_family,
+        "experiment_id": experiment_id,
+        "formal_run_name": formal_run_name,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "world_size": world_size,
+        "global_batch_per_optimizer_step": protocol.global_batch,
+        "initial_iteration": _CONTINUATION_INITIAL_ITERATION,
+        "final_iteration": protocol.max_iter,
+        "run_dir": str(run_dir),
+        "formal_log": str(log_path),
+        "workers_per_rank": workers,
+        "storage": storage,
+        "activation_checkpointing": activation_checkpointing,
+        "best_observed_cell_id": throughput["best_observed_cell_id"],
+        "cache_success_sha256": cache["success_sha256"],
+        "cache_manifest_sha256": cache["manifest_sha256"],
+        "throughput_matrix_sha256": throughput["matrix_summary_sha256"],
+        "resume_checkpoint": str(resume_checkpoint),
+        "resume_checkpoint_fingerprint_algorithm": resume["fingerprint_algorithm"],
+        "resume_checkpoint_fingerprint_sha256": resume["fingerprint_sha256"],
+        "continuation_contract": str(continuation_contract_path),
+        "continuation_contract_sha256": continuation_contract_sha256,
+        "continuation_seed_receipt": str(seed_receipt_path),
+        "continuation_seed_receipt_sha256": seed_receipt_sha256,
+        "first_step_memory_gate": str(memory_path),
+        "action_gradient_reports": len(gradient_files),
+        "validation_reports": validation,
+        "checkpoint_count_including_seed": checkpoint_count,
+        "all_checkpoint_bytes_including_seed": all_checkpoint_bytes,
+        "final_checkpoint": str(final_checkpoint),
+        "final_dcp_components": final_components,
+        "exact_data_resume": False,
+        "data_stream_resume": _CONTINUATION_DATA_STREAM_RESUME,
+        "fixed_index_trace_used": False,
+        "control_success_claim": False,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2043,20 +2496,28 @@ def _build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--output-json", type=Path, required=True)
 
     formal = subparsers.add_parser("verify-formal")
+    formal.add_argument(
+        "--mode",
+        choices=("fresh", "continuation"),
+        default="fresh",
+        help="fresh keeps the original production-probe contract; continuation resumes R6 iter 1000",
+    )
     formal.add_argument("--run-dir", type=Path, required=True)
     formal.add_argument("--log", type=Path, required=True)
     formal.add_argument("--world-size", type=int, choices=(6, 8), required=True)
     formal.add_argument("--formal-run-name", required=True)
-    formal.add_argument("--probe-assertions", type=Path, required=True)
-    formal.add_argument("--resume-assertions", type=Path, required=True)
+    formal.add_argument("--probe-assertions", type=Path)
+    formal.add_argument("--resume-assertions", type=Path)
     formal.add_argument("--experiment-id", required=True)
-    formal.add_argument("--formal-manifest", type=Path, required=True)
-    formal.add_argument("--formal-manifest-sha256", required=True)
-    formal.add_argument("--owner", type=Path, required=True)
-    formal.add_argument("--provenance", type=Path, required=True)
-    formal.add_argument("--storage-preflight", type=Path, required=True)
-    formal.add_argument("--submission-reservation", type=Path, required=True)
-    formal.add_argument("--sampled-memory", type=Path, required=True)
+    formal.add_argument("--formal-manifest", type=Path)
+    formal.add_argument("--formal-manifest-sha256")
+    formal.add_argument("--owner", type=Path)
+    formal.add_argument("--provenance", type=Path)
+    formal.add_argument("--storage-preflight", type=Path)
+    formal.add_argument("--submission-reservation", type=Path)
+    formal.add_argument("--sampled-memory", type=Path)
+    formal.add_argument("--continuation-contract", type=Path)
+    formal.add_argument("--continuation-contract-sha256")
     formal.add_argument("--output-json", type=Path, required=True)
     return parser
 
@@ -2090,7 +2551,39 @@ def main() -> None:
                 formal_run_name=args.formal_run_name,
                 sampled_memory_path=args.sampled_memory,
             )
+        elif args.mode == "continuation":
+            if args.continuation_contract is None or args.continuation_contract_sha256 is None:
+                raise EvidenceError(
+                    "continuation mode requires --continuation-contract and "
+                    "--continuation-contract-sha256"
+                )
+            payload = verify_formal_continuation(
+                run_dir=args.run_dir,
+                log_path=args.log,
+                world_size=args.world_size,
+                experiment_id=args.experiment_id,
+                formal_run_name=args.formal_run_name,
+                continuation_contract_path=args.continuation_contract,
+                continuation_contract_sha256=args.continuation_contract_sha256,
+            )
         else:
+            fresh_required = {
+                "--probe-assertions": args.probe_assertions,
+                "--resume-assertions": args.resume_assertions,
+                "--formal-manifest": args.formal_manifest,
+                "--formal-manifest-sha256": args.formal_manifest_sha256,
+                "--owner": args.owner,
+                "--provenance": args.provenance,
+                "--storage-preflight": args.storage_preflight,
+                "--submission-reservation": args.submission_reservation,
+                "--sampled-memory": args.sampled_memory,
+            }
+            missing = sorted(name for name, value in fresh_required.items() if value is None)
+            if missing:
+                raise EvidenceError(
+                    "fresh verify-formal mode is missing required arguments: "
+                    + ", ".join(missing)
+                )
             payload = verify_formal(
                 run_dir=args.run_dir,
                 log_path=args.log,
