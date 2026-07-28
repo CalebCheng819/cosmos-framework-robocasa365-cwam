@@ -23,10 +23,11 @@ readonly FINDMNT_BIN="/usr/bin/findmnt"
 readonly H_NVIDIA_DRIVER_BIN="/usr/local/nvidia/bin"
 readonly H_NVIDIA_DRIVER_LIB="/usr/local/nvidia/lib"
 readonly H_NVIDIA_DRIVER_LIB64="/usr/local/nvidia/lib64"
+readonly H_NVIDIA_SYSTEM_PATH="$H_NVIDIA_DRIVER_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Capture worker-init's value before sanitizing the process environment.  The H
 # runtime currently injects these allowlisted entries even when one of the
 # conventional directories is not materialized in the container namespace.
-readonly H_WORKER_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+readonly H_WORKER_LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
 
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable Cosmos source snapshot.}"
 : "${COSMOS_ENV:?Set COSMOS_ENV to the exact runtime environment.}"
@@ -147,7 +148,7 @@ RUNTIME_PYTHON_REALPATH="$("$REALPATH_BIN" -e -- "$RUNTIME_PYTHON")"
 [[ -x "$RUNTIME_PYTHON" && "$RUNTIME_PYTHON_REALPATH" == "$EXPECTED_PYTHON_REALPATH" ]] ||
   { echo "ERROR: runtime Python realpath differs from the submission contract" >&2; exit 1; }
 
-export PATH="$COSMOS_ENV_REALPATH/bin:$H_NVIDIA_DRIVER_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="$COSMOS_ENV_REALPATH/bin:$H_NVIDIA_SYSTEM_PATH"
 export PYTHONPATH="$COSMOS_SOURCE_REALPATH"
 # Do not inherit arbitrary shell library paths.  Validate worker-init's input
 # against the two audited H driver locations, then rebuild a canonical value.
@@ -158,6 +159,10 @@ export PYTHONPATH="$COSMOS_SOURCE_REALPATH"
 # fail-closed capability gates.
 [[ -n "$H_WORKER_LD_LIBRARY_PATH" ]] ||
   { echo "ERROR: H worker-init did not provide LD_LIBRARY_PATH" >&2; exit 1; }
+[[ "$H_WORKER_LD_LIBRARY_PATH" != :* &&
+   "$H_WORKER_LD_LIBRARY_PATH" != *: &&
+   "$H_WORKER_LD_LIBRARY_PATH" != *::* ]] ||
+  { echo "ERROR: H worker-init LD_LIBRARY_PATH contains an empty entry" >&2; exit 1; }
 IFS=: read -r -a H_WORKER_DRIVER_LIBRARY_ENTRIES <<<"$H_WORKER_LD_LIBRARY_PATH"
 [[ "${#H_WORKER_DRIVER_LIBRARY_ENTRIES[@]}" -gt 0 ]] ||
   { echo "ERROR: H worker-init LD_LIBRARY_PATH is empty" >&2; exit 1; }
@@ -245,7 +250,7 @@ NVME_MOUNT_TARGET="$("$REALPATH_BIN" -e -- "$NVME_MOUNT_TARGET")"
 # directory and exports the exact LD_LIBRARY_PATH required by TorchCodec.
 source "$TORCHCODEC_RUNTIME_HELPER"
 
-NVIDIA_SMI_BIN="$(type -P nvidia-smi || true)"
+NVIDIA_SMI_BIN="$(PATH="$H_NVIDIA_SYSTEM_PATH" type -P nvidia-smi || true)"
 [[ -n "$NVIDIA_SMI_BIN" && -x "$NVIDIA_SMI_BIN" ]] ||
   { echo "ERROR: nvidia-smi is unavailable on the sanitized PATH" >&2; exit 1; }
 NVIDIA_SMI_REALPATH="$("$REALPATH_BIN" -e -- "$NVIDIA_SMI_BIN")"
