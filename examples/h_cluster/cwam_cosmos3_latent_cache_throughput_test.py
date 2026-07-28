@@ -14,7 +14,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 HERE = Path(__file__).resolve().parent
 HELPER_PATH = HERE / "cwam_cosmos3_latent_cache_throughput.py"
 RUNNER_PATH = HERE / "run_cwam_cosmos3_latent_cache_throughput_probe.sh"
