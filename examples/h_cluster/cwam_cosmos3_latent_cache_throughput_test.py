@@ -612,7 +612,18 @@ class ThroughputHelperTest(unittest.TestCase):
             'export LD_LIBRARY_PATH="$H_NVIDIA_DRIVER_LIB:$H_NVIDIA_DRIVER_LIB64"',
             cache_wrapper,
         )
-        self.assertIn('"$H_NVIDIA_DRIVER_BIN/nvidia-smi" -L', cache_wrapper)
+        self.assertIn(
+            'readonly H_WORKER_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"',
+            cache_wrapper,
+        )
+        self.assertIn(
+            '"$H_NVIDIA_DRIVER_LIB"|"$H_NVIDIA_DRIVER_LIB64"',
+            cache_wrapper,
+        )
+        self.assertNotIn('-d "$H_NVIDIA_DRIVER_LIB"', cache_wrapper)
+        self.assertNotIn('-e "$H_NVIDIA_DRIVER_LIB64/libcuda.so.1"', cache_wrapper)
+        self.assertIn('NVIDIA_SMI_BIN="$(type -P nvidia-smi || true)"', cache_wrapper)
+        self.assertIn('"$NVIDIA_SMI_BIN" -L', cache_wrapper)
         self.assertIn('ctypes.CDLL("libcuda.so.1")', cache_wrapper)
         self.assertIn('expected_torch_version = "2.10.0+cu128"', cache_wrapper)
         self.assertIn('expected_torch_cuda = "12.8"', cache_wrapper)

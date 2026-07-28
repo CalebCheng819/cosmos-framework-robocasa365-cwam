@@ -23,6 +23,10 @@ readonly FINDMNT_BIN="/usr/bin/findmnt"
 readonly H_NVIDIA_DRIVER_BIN="/usr/local/nvidia/bin"
 readonly H_NVIDIA_DRIVER_LIB="/usr/local/nvidia/lib"
 readonly H_NVIDIA_DRIVER_LIB64="/usr/local/nvidia/lib64"
+# Capture worker-init's value before sanitizing the process environment.  The H
+# runtime currently injects these allowlisted entries even when one of the
+# conventional directories is not materialized in the container namespace.
+readonly H_WORKER_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable Cosmos source snapshot.}"
 : "${COSMOS_ENV:?Set COSMOS_ENV to the exact runtime environment.}"
@@ -145,16 +149,27 @@ RUNTIME_PYTHON_REALPATH="$("$REALPATH_BIN" -e -- "$RUNTIME_PYTHON")"
 
 export PATH="$COSMOS_ENV_REALPATH/bin:$H_NVIDIA_DRIVER_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PYTHONPATH="$COSMOS_SOURCE_REALPATH"
-# Do not inherit arbitrary shell library paths, but preserve the two paths
-# injected by the H GPU runtime.  Clearing these paths hides libcuda.so.1 from
-# the pinned PyTorch wheel even when the scheduler has allocated all 8 GPUs.
-[[ -d "$H_NVIDIA_DRIVER_BIN" &&
-   -x "$H_NVIDIA_DRIVER_BIN/nvidia-smi" &&
-   -d "$H_NVIDIA_DRIVER_LIB" &&
-   -d "$H_NVIDIA_DRIVER_LIB64" ]] ||
-  { echo "ERROR: H NVIDIA driver library directories are unavailable" >&2; exit 1; }
-[[ -e "$H_NVIDIA_DRIVER_LIB64/libcuda.so.1" ]] ||
-  { echo "ERROR: H NVIDIA driver library libcuda.so.1 is unavailable" >&2; exit 1; }
+# Do not inherit arbitrary shell library paths.  Validate worker-init's input
+# against the two audited H driver locations, then rebuild a canonical value.
+# Do not require either path to have a particular directory/file layout:
+# NVIDIA container injection may expose the driver through the dynamic loader
+# while still advertising these conventional paths.  The nvidia-smi, libcuda,
+# Torch/CUDA, device-count, and H200 checks below are the authoritative
+# fail-closed capability gates.
+[[ -n "$H_WORKER_LD_LIBRARY_PATH" ]] ||
+  { echo "ERROR: H worker-init did not provide LD_LIBRARY_PATH" >&2; exit 1; }
+IFS=: read -r -a H_WORKER_DRIVER_LIBRARY_ENTRIES <<<"$H_WORKER_LD_LIBRARY_PATH"
+[[ "${#H_WORKER_DRIVER_LIBRARY_ENTRIES[@]}" -gt 0 ]] ||
+  { echo "ERROR: H worker-init LD_LIBRARY_PATH is empty" >&2; exit 1; }
+for driver_library_entry in "${H_WORKER_DRIVER_LIBRARY_ENTRIES[@]}"; do
+  case "$driver_library_entry" in
+    "$H_NVIDIA_DRIVER_LIB"|"$H_NVIDIA_DRIVER_LIB64") ;;
+    *)
+      echo "ERROR: H worker-init LD_LIBRARY_PATH contains an unaudited entry" >&2
+      exit 1
+      ;;
+  esac
+done
 export LD_LIBRARY_PATH="$H_NVIDIA_DRIVER_LIB:$H_NVIDIA_DRIVER_LIB64"
 unset BASH_ENV ENV PYTHONHOME PYTHONOPTIMIZE
 PATH_PYTHON="$(type -P python || true)"
@@ -230,7 +245,12 @@ NVME_MOUNT_TARGET="$("$REALPATH_BIN" -e -- "$NVME_MOUNT_TARGET")"
 # directory and exports the exact LD_LIBRARY_PATH required by TorchCodec.
 source "$TORCHCODEC_RUNTIME_HELPER"
 
-"$H_NVIDIA_DRIVER_BIN/nvidia-smi" -L
+NVIDIA_SMI_BIN="$(type -P nvidia-smi || true)"
+[[ -n "$NVIDIA_SMI_BIN" && -x "$NVIDIA_SMI_BIN" ]] ||
+  { echo "ERROR: nvidia-smi is unavailable on the sanitized PATH" >&2; exit 1; }
+NVIDIA_SMI_REALPATH="$("$REALPATH_BIN" -e -- "$NVIDIA_SMI_BIN")"
+echo "NVIDIA_SMI_READY realpath=$NVIDIA_SMI_REALPATH"
+"$NVIDIA_SMI_BIN" -L
 "$RUNTIME_PYTHON" - "$NUM_GPUS" <<'PY'
 import ctypes
 import os

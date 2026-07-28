@@ -27,7 +27,8 @@ test -e "$CWAM_TORCHCODEC_NVIDIA_ROOT/npp/lib/libnppicc.so.12"
 
 # TorchCodec's CUDA build links against the CUDA wheels installed in this
 # exact Python environment.  Login/job shells do not expose those wheel-local
-# libraries after the wrapper deliberately clears inherited LD_LIBRARY_PATH.
+# libraries; the wrapper sanitizes inherited LD_LIBRARY_PATH to the audited H
+# driver entries before this helper prepends the pinned wheel directories.
 # Discover only the pinned ``nvidia/<component>/lib`` directories, in stable
 # order, and carry them into every torchrun child.
 CWAM_TORCHCODEC_NVIDIA_LIBRARY_DIRS=()
