@@ -39,7 +39,35 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     for repo in (demian_repo, robocasa_repo, robosuite_repo):
         repo.mkdir()
     source_manifest = _artifact(tmp_path, "source-manifest", {"files": 1})
-    checkpoint = _artifact(tmp_path, "checkpoint-manifest", {"iteration": 10000})
+    checkpoint_path = "/checkpoints/iter_000010000"
+    checkpoint_tree_sha = "7" * 64
+    checkpoint = _artifact(
+        tmp_path,
+        "checkpoint-manifest",
+        {
+            "schema_version": 1,
+            "kind": "cwam_serving_checkpoint_manifest",
+            "checkpoint_path": checkpoint_path,
+            "files": [
+                {
+                    "relative_path": "weights.bin",
+                    "size_bytes": 1,
+                    "sha256": "8" * 64,
+                }
+            ],
+            "tree_sha256": checkpoint_tree_sha,
+        },
+    )
+    checkpoint_verification = _artifact(
+        tmp_path,
+        "checkpoint-verification",
+        {
+            "status": "passed",
+            "checkpoint_path": checkpoint_path,
+            "file_count": 1,
+            "tree_sha256": checkpoint_tree_sha,
+        },
+    )
     config = _artifact(tmp_path, "training-config", {"recipe": "robocasa365"})
     stats = _artifact(tmp_path, "action-stats", {"global_raw": {}})
     demian_evaluator = _artifact(tmp_path, "demian-evaluator", {"source": "evaluator"})
@@ -50,7 +78,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     receipt = {
         "schema_version": 1,
         "service": "cwam_cosmos3_robocasa365",
-        "checkpoint": "/checkpoints/iter_000010000",
+        "checkpoint": checkpoint_path,
         "action_stats_path": stats["path"],
         "shard_index": 0,
         "checkpoint_manifest_sha256": checkpoint["sha256"],
@@ -95,7 +123,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "logical_run_id": "CWAM-E35-R12-GATE-S42",
         "source_commit": "3" * 40,
         "source_manifest_sha256": source_manifest_sha,
-        "checkpoint_path": "/checkpoints/iter_000010000",
+        "checkpoint_path": checkpoint_path,
         "run_name": "gate",
         "results_dir": str(results_dir.resolve()),
         "demian": {
@@ -141,6 +169,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "source_manifest": source_manifest,
             "cosmos_server_module": cosmos_server_module,
             "checkpoint_manifest": checkpoint,
+            "checkpoint_verification_receipt": checkpoint_verification,
             "training_config": config,
             "action_stats": stats,
             "demian_evaluator": demian_evaluator,
@@ -159,7 +188,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "max_steps": 400,
         "open_loop_horizon": 12,
         "seed": 42,
-        "checkpoint": "/checkpoints/iter_000010000",
+        "checkpoint": checkpoint_path,
         "results_dir": str((tmp_path / "results").resolve()),
         "run_name": "gate",
         "eval_dataset": None,

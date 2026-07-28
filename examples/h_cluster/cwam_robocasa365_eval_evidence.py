@@ -260,6 +260,7 @@ def create_contract(
     cosmos_server_module: Path,
     checkpoint_path: Path,
     checkpoint_manifest: Path,
+    checkpoint_verification_receipt: Path,
     training_config: Path,
     action_stats: Path,
     server_runtime_receipts: list[Path],
@@ -296,6 +297,7 @@ def create_contract(
     cosmos_server_module = cosmos_server_module.expanduser().resolve()
     checkpoint_path = checkpoint_path.expanduser().resolve()
     checkpoint_manifest = checkpoint_manifest.expanduser().resolve()
+    checkpoint_verification_receipt = checkpoint_verification_receipt.expanduser().resolve()
     training_config = training_config.expanduser().resolve()
     action_stats = action_stats.expanduser().resolve()
     server_runtime_receipts = [path.expanduser().resolve() for path in server_runtime_receipts]
@@ -379,6 +381,7 @@ def create_contract(
             "source_manifest": source_artifact,
             "cosmos_server_module": server_module_artifact,
             "checkpoint_manifest": artifact(checkpoint_manifest),
+            "checkpoint_verification_receipt": artifact(checkpoint_verification_receipt),
             "training_config": artifact(training_config),
             "action_stats": artifact(action_stats),
             "demian_evaluator": evaluator_artifact,
@@ -510,6 +513,7 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         "source_manifest",
         "cosmos_server_module",
         "checkpoint_manifest",
+        "checkpoint_verification_receipt",
         "training_config",
         "action_stats",
         "demian_evaluator",
@@ -526,6 +530,52 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     verified["server_runtime_receipts"] = verified_receipts
     if verified["source_manifest"]["sha256"] != contract["source_manifest_sha256"]:
         raise ValueError("source_manifest artifact hash does not match contract.source_manifest_sha256")
+    checkpoint_manifest = _require_dict(
+        _load_json(Path(verified["checkpoint_manifest"]["path"])),
+        "checkpoint_manifest",
+    )
+    if (
+        checkpoint_manifest.get("schema_version") != 1
+        or checkpoint_manifest.get("kind") != "cwam_serving_checkpoint_manifest"
+    ):
+        raise ValueError("checkpoint_manifest has an unsupported schema/kind")
+    if Path(
+        _require_nonempty_str(
+            checkpoint_manifest.get("checkpoint_path"),
+            "checkpoint_manifest.checkpoint_path",
+        )
+    ).resolve() != checkpoint_path.resolve():
+        raise ValueError("checkpoint_manifest checkpoint_path does not match the eval contract")
+    checkpoint_tree_sha256 = _require_sha256(
+        checkpoint_manifest.get("tree_sha256"),
+        "checkpoint_manifest.tree_sha256",
+    )
+    checkpoint_verification = _require_dict(
+        _load_json(Path(verified["checkpoint_verification_receipt"]["path"])),
+        "checkpoint_verification_receipt",
+    )
+    if checkpoint_verification.get("status") != "passed":
+        raise ValueError("checkpoint_verification_receipt status must be passed")
+    if Path(
+        _require_nonempty_str(
+            checkpoint_verification.get("checkpoint_path"),
+            "checkpoint_verification_receipt.checkpoint_path",
+        )
+    ).resolve() != checkpoint_path.resolve():
+        raise ValueError("checkpoint_verification_receipt path does not match the eval contract")
+    _require_int(
+        checkpoint_verification.get("file_count"),
+        "checkpoint_verification_receipt.file_count",
+        minimum=1,
+    )
+    if (
+        _require_sha256(
+            checkpoint_verification.get("tree_sha256"),
+            "checkpoint_verification_receipt.tree_sha256",
+        )
+        != checkpoint_tree_sha256
+    ):
+        raise ValueError("checkpoint verification tree SHA does not match the checkpoint manifest")
     if verified["demian_evaluator"]["sha256"] != demian["evaluator_sha256"]:
         raise ValueError("demian_evaluator artifact hash does not match contract.demian.evaluator_sha256")
     if verified["demian_task_registry"]["sha256"] != demian["task_registry_sha256"]:
@@ -945,6 +995,7 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--cosmos-server-module", type=Path, required=True)
     contract_parser.add_argument("--checkpoint-path", type=Path, required=True)
     contract_parser.add_argument("--checkpoint-manifest", type=Path, required=True)
+    contract_parser.add_argument("--checkpoint-verification-receipt", type=Path, required=True)
     contract_parser.add_argument("--training-config", type=Path, required=True)
     contract_parser.add_argument("--action-stats", type=Path, required=True)
     contract_parser.add_argument("--server-runtime-receipt", type=Path, action="append", required=True)
@@ -994,6 +1045,7 @@ def main() -> None:
             cosmos_server_module=args.cosmos_server_module,
             checkpoint_path=args.checkpoint_path,
             checkpoint_manifest=args.checkpoint_manifest,
+            checkpoint_verification_receipt=args.checkpoint_verification_receipt,
             training_config=args.training_config,
             action_stats=args.action_stats,
             server_runtime_receipts=args.server_runtime_receipt,

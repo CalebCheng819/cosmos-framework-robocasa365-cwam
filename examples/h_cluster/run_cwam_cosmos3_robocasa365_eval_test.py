@@ -23,6 +23,8 @@ def test_runner_pins_causal_eval_and_required_evidence() -> None:
         "summary.csv",
         "task_success_rates.csv",
         "RAW_RESULT_FILES",
+        "cwam_serving_checkpoint_manifest.py",
+        "SERVING_CHECKPOINT_VERIFIED",
         "chmod 0444",
         "ROBOCASA365_EVAL_EXECUTION_SUCCESS",
         "ROBOCASA365_EVAL_EFFECT_GATE_PASSED",
@@ -64,6 +66,9 @@ def test_runner_resolves_cosmos_local_checkpoint_model_subdirectory() -> None:
 
     assert 'if [[ -d "$SERVING_CHECKPOINT_PATH/model" ]]; then' in script
     assert 'SERVING_CHECKPOINT_PATH="$(canonical_existing "$SERVING_CHECKPOINT_PATH/model")"' in script
+    assert script.index('readonly COSMOS_PY="$COSMOS_ENV/bin/python"') < script.index(
+        'PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL"'
+    )
 
 
 def test_runner_rejects_reused_outputs_and_non_nvme_scratch() -> None:

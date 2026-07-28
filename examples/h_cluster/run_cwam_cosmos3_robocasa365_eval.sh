@@ -65,6 +65,7 @@ readonly SERVER_MODULE="cosmos_framework.scripts.action_policy_server_robocasa36
 readonly SERVER_MODULE_REL="cosmos_framework/scripts/action_policy_server_robocasa365.py"
 readonly RECEIPT_HELPER_REL="examples/h_cluster/capture_robocasa365_server_receipt.py"
 readonly EVIDENCE_HELPER_REL="examples/h_cluster/cwam_robocasa365_eval_evidence.py"
+readonly CHECKPOINT_HELPER_REL="examples/h_cluster/cwam_serving_checkpoint_manifest.py"
 
 die() {
     echo "ERROR: $*" >&2
@@ -159,6 +160,7 @@ ALLOWED_OUTPUT_PARENT="$(canonical_existing "$ALLOWED_OUTPUT_PARENT")"
 [[ -f "$COSMOS_SOURCE/$SERVER_MODULE_REL" ]] || die "Missing RoboCasa365 policy server module"
 [[ -f "$COSMOS_SOURCE/$RECEIPT_HELPER_REL" ]] || die "Missing server receipt helper"
 [[ -f "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" ]] || die "Missing eval evidence helper"
+[[ -f "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL" ]] || die "Missing serving checkpoint manifest helper"
 [[ -f "$DEMIAN_REPO/$DEMIAN_EVALUATOR_REL" ]] || die "Missing DeMiAn evaluator"
 [[ -f "$DEMIAN_REPO/$DEMIAN_TASK_REGISTRY_REL" ]] || die "Missing DeMiAn task registry"
 
@@ -190,6 +192,11 @@ verify_sha256 demian_task_registry \
     "$DEMIAN_REPO/$DEMIAN_TASK_REGISTRY_REL" \
     "$EXPECTED_DEMIAN_TASK_REGISTRY_SHA256"
 
+readonly COSMOS_PY="$COSMOS_ENV/bin/python"
+readonly ROBOCASA_PY="$ROBOCASA_ENV/bin/python"
+readonly POLICY_PYTHONPATH="$COSMOS_SOURCE:$DEMIAN_REPO/openpi/src:$DEMIAN_REPO/openpi/packages/openpi-client/src"
+readonly EVAL_PYTHONPATH="$DEMIAN_REPO/demian_wam:$DEMIAN_REPO/openpi/src:$DEMIAN_REPO/openpi/packages/openpi-client/src:$ROBOCASA_REPO:$ROBOSUITE_REPO"
+
 EVAL_OUTPUT_ROOT="$(realpath -m -- "$EVAL_OUTPUT_ROOT")"
 case "$EVAL_OUTPUT_ROOT/" in
     "$ALLOWED_OUTPUT_PARENT"/*/) ;;
@@ -204,7 +211,15 @@ readonly CONTRACT_PATH="$CONTROL_DIR/eval-contract.json"
 readonly SUMMARY_CSV="$RESULTS_DIR/summary.csv"
 readonly TASK_SUCCESS_RATES_CSV="$RESULTS_DIR/task_success_rates.csv"
 readonly EVIDENCE_JSON="$RESULTS_DIR/evaluation_evidence.json"
+readonly CHECKPOINT_VERIFICATION_RECEIPT="$CONTROL_DIR/checkpoint-verification.json"
 mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT"
+
+PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL" \
+    verify \
+    --manifest "$CHECKPOINT_MANIFEST" \
+    --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
+    >"$CHECKPOINT_VERIFICATION_RECEIPT"
+echo "SERVING_CHECKPOINT_VERIFIED receipt=$CHECKPOINT_VERIFICATION_RECEIPT"
 
 EVAL_NVME_ROOT="$(realpath -m -- "$EVAL_NVME_ROOT")"
 case "$EVAL_NVME_ROOT/" in
@@ -216,11 +231,6 @@ esac
 [[ "$(findmnt -n -T /nvme -o FSTYPE)" == xfs ]] || die "/nvme is not xfs"
 [[ ! -e "$EVAL_NVME_ROOT" ]] || die "Refusing to reuse EVAL_NVME_ROOT: $EVAL_NVME_ROOT"
 mkdir -- "$EVAL_NVME_ROOT"
-
-readonly COSMOS_PY="$COSMOS_ENV/bin/python"
-readonly ROBOCASA_PY="$ROBOCASA_ENV/bin/python"
-readonly POLICY_PYTHONPATH="$COSMOS_SOURCE:$DEMIAN_REPO/openpi/src:$DEMIAN_REPO/openpi/packages/openpi-client/src"
-readonly EVAL_PYTHONPATH="$DEMIAN_REPO/demian_wam:$DEMIAN_REPO/openpi/src:$DEMIAN_REPO/openpi/packages/openpi-client/src:$ROBOCASA_REPO:$ROBOSUITE_REPO"
 
 "$COSMOS_PY" - "$NUM_SHARDS" <<'PY'
 import sys
@@ -346,6 +356,7 @@ CONTRACT_ARGS=(
     --cosmos-server-module "$COSMOS_SOURCE/$SERVER_MODULE_REL"
     --checkpoint-path "$SERVING_CHECKPOINT_PATH"
     --checkpoint-manifest "$CHECKPOINT_MANIFEST"
+    --checkpoint-verification-receipt "$CHECKPOINT_VERIFICATION_RECEIPT"
     --training-config "$TRAINING_CONFIG"
     --action-stats "$ACTION_STATS"
     --demian-repo "$DEMIAN_REPO"
@@ -460,6 +471,7 @@ for ((shard = 0; shard < NUM_SHARDS; shard++)); do
 done
 chmod 0444 \
     "$CONTRACT_PATH" \
+    "$CHECKPOINT_VERIFICATION_RECEIPT" \
     "${RECEIPTS[@]}" \
     "${RAW_RESULT_FILES[@]}" \
     "$SUMMARY_CSV" \
