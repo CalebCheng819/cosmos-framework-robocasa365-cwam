@@ -90,8 +90,122 @@ COMPOSITE_TASKS = (
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_NORMALIZED_GPU_UUID_RE = re.compile(r"^[0-9a-f]{32}$")
+_NORMALIZE_DISTRIBUTION_NAME_RE = re.compile(r"[-_.]+")
 _CONTRACT_KIND = "cwam_robocasa365_formal_eval_contract"
 _EVIDENCE_KIND = "cwam_robocasa365_formal_eval_evidence"
+_EXPECTED_H_DRIVER_LIBRARY_PATH = "/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+_EXPECTED_DEMIAN_COMMIT = "2600ece5bf0eeacf010a95f084dcda2de6d30d59"
+_EXPECTED_DEMIAN_EVALUATOR_SHA256 = "c38ed1f4049d079b84c185cb572667a47eaf984c2c22b492efc8985401119836"
+_EXPECTED_DEMIAN_TASK_REGISTRY_SHA256 = "e902311cf435986859ae01920548aba169e085ad6d26187cad9fb0d1f9c315de"
+_CHECKPOINT_MANIFEST_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "checkpoint_path",
+        "files",
+        "tree_sha256",
+    }
+)
+_CHECKPOINT_VERIFICATION_KEYS = frozenset(
+    {
+        "status",
+        "checkpoint_path",
+        "file_count",
+        "tree_sha256",
+    }
+)
+_PYTHON_ENVIRONMENT_MANIFEST_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "interpreter",
+        "distribution_count",
+        "distributions",
+        "distributions_sha256",
+    }
+)
+_PYTHON_ENVIRONMENT_INTERPRETER_KEYS = frozenset(
+    {
+        "resolved_path",
+        "size_bytes",
+        "sha256",
+        "python_version",
+        "version_info",
+        "implementation",
+        "cache_tag",
+        "prefix",
+        "base_prefix",
+    }
+)
+_RUNTIME_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "status",
+        "captured_at_utc",
+        "driver_environment",
+        "inputs",
+        "environment_verification",
+        "cosmos_runtime",
+        "robocasa_runtime",
+        "robocasa_egl",
+        "nvidia_smi",
+        "validation",
+    }
+)
+_RUNTIME_INPUT_KEYS = frozenset(
+    {
+        "experiment_id",
+        "logical_run_id",
+        "capture_nonce",
+        "num_gpus",
+        "interpreters",
+        "environment_manifests",
+        "sources",
+    }
+)
+_RUNTIME_ENVIRONMENT_DESCRIPTOR_KEYS = frozenset(
+    {
+        "path",
+        "size_bytes",
+        "sha256",
+        "expected_sha256",
+        "kind",
+        "schema_version",
+    }
+)
+_RUNTIME_ENVIRONMENT_REPORT_KEYS = frozenset(
+    {
+        "status",
+        "interpreter_resolved_path",
+        "interpreter_sha256",
+        "python_version",
+        "distribution_count",
+        "distributions_sha256",
+    }
+)
+_RUNTIME_SOURCE_KEYS = frozenset(
+    {
+        "root",
+        "expected_commit",
+        "actual_commit",
+        "clean",
+    }
+)
+_RUNTIME_VALIDATION_KEYS = frozenset(
+    {
+        "environment_manifests_match_live_interpreters",
+        "source_commits_match_and_are_clean",
+        "source_module_paths_match_exact_roots",
+        "cuda_available",
+        "gpu_count_matches",
+        "all_gpus_are_h200_compute_capability_9_0",
+        "torch_and_nvidia_smi_uuid_sets_match",
+        "h_driver_library_path_is_exact",
+        "robocasa_egl_contexts_created_per_shard",
+    }
+)
 _CSV_EPISODE_FIELDS = (
     "experiment_id",
     "logical_run_id",
@@ -156,6 +270,15 @@ def _require_dict(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
+def _require_exact_keys(value: dict[str, Any], expected: frozenset[str], label: str) -> None:
+    observed = set(value)
+    if observed != expected:
+        raise ValueError(
+            f"{label} keys mismatch: missing={sorted(expected - observed)}, "
+            f"extra={sorted(repr(key) for key in observed - expected)}"
+        )
+
+
 def _require_nonempty_str(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
@@ -182,6 +305,16 @@ def _require_commit(value: Any, label: str) -> str:
     if _COMMIT_RE.fullmatch(commit) is None:
         raise ValueError(f"{label} must be a full lowercase 40-character Git commit")
     return commit
+
+
+def _normalized_gpu_uuid(value: Any, label: str) -> str:
+    raw = _require_nonempty_str(value, label).lower()
+    if raw.startswith("gpu-"):
+        raw = raw[4:]
+    normalized = raw.replace("-", "")
+    if _NORMALIZED_GPU_UUID_RE.fullmatch(normalized) is None:
+        raise ValueError(f"{label} is not a valid NVIDIA GPU UUID")
+    return normalized
 
 
 def _close_rate(actual: Any, expected: float, label: str) -> None:
@@ -242,6 +375,757 @@ def _verify_file_artifact(artifacts: dict[str, Any], name: str) -> dict[str, str
     return {"path": str(path), "sha256": actual}
 
 
+def _absolute_resolved_path(value: Any, label: str) -> Path:
+    path = Path(_require_nonempty_str(value, label))
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be absolute: {path}")
+    try:
+        return path.expanduser().resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} must resolve to an existing path: {path}") from error
+
+
+def _validated_environment_manifest(
+    descriptor: dict[str, str],
+    label: str,
+) -> dict[str, Any]:
+    manifest = _require_dict(_load_json(Path(descriptor["path"])), label)
+    _require_exact_keys(manifest, _PYTHON_ENVIRONMENT_MANIFEST_KEYS, label)
+    if manifest.get("schema_version") != 1 or manifest.get("kind") != "cwam_python_environment_manifest":
+        raise ValueError(f"{label} has an unsupported schema/kind")
+
+    interpreter = _require_dict(manifest.get("interpreter"), f"{label}.interpreter")
+    _require_exact_keys(
+        interpreter,
+        _PYTHON_ENVIRONMENT_INTERPRETER_KEYS,
+        f"{label}.interpreter",
+    )
+    resolved_interpreter = _absolute_resolved_path(
+        interpreter.get("resolved_path"),
+        f"{label}.interpreter.resolved_path",
+    )
+    _absolute_resolved_path(interpreter.get("prefix"), f"{label}.interpreter.prefix")
+    _absolute_resolved_path(
+        interpreter.get("base_prefix"),
+        f"{label}.interpreter.base_prefix",
+    )
+    interpreter_size = _require_int(
+        interpreter.get("size_bytes"),
+        f"{label}.interpreter.size_bytes",
+        minimum=1,
+    )
+    if resolved_interpreter.stat().st_size != interpreter_size:
+        raise ValueError(f"{label}.interpreter.size_bytes does not match the interpreter file")
+    interpreter_sha256 = _require_sha256(
+        interpreter.get("sha256"),
+        f"{label}.interpreter.sha256",
+    )
+    if _sha256(resolved_interpreter) != interpreter_sha256:
+        raise ValueError(f"{label}.interpreter.sha256 does not match the interpreter file")
+    python_version = _require_nonempty_str(
+        interpreter.get("python_version"),
+        f"{label}.interpreter.python_version",
+    )
+    version_info = _require_dict(
+        interpreter.get("version_info"),
+        f"{label}.interpreter.version_info",
+    )
+    _require_exact_keys(
+        version_info,
+        frozenset({"major", "minor", "micro", "releaselevel", "serial"}),
+        f"{label}.interpreter.version_info",
+    )
+    major = _require_int(version_info.get("major"), f"{label}.interpreter.version_info.major", minimum=0)
+    minor = _require_int(version_info.get("minor"), f"{label}.interpreter.version_info.minor", minimum=0)
+    micro = _require_int(version_info.get("micro"), f"{label}.interpreter.version_info.micro", minimum=0)
+    _require_int(
+        version_info.get("serial"),
+        f"{label}.interpreter.version_info.serial",
+        minimum=0,
+    )
+    _require_nonempty_str(
+        version_info.get("releaselevel"),
+        f"{label}.interpreter.version_info.releaselevel",
+    )
+    if python_version != f"{major}.{minor}.{micro}":
+        raise ValueError(f"{label}.interpreter.python_version does not match version_info")
+    _require_nonempty_str(
+        interpreter.get("implementation"),
+        f"{label}.interpreter.implementation",
+    )
+    _require_nonempty_str(
+        interpreter.get("cache_tag"),
+        f"{label}.interpreter.cache_tag",
+    )
+
+    distributions = _require_dict(manifest.get("distributions"), f"{label}.distributions")
+    distribution_count = _require_int(
+        manifest.get("distribution_count"),
+        f"{label}.distribution_count",
+        minimum=1,
+    )
+    if distribution_count != len(distributions):
+        raise ValueError(
+            f"{label}.distribution_count mismatch: expected={len(distributions)}, actual={distribution_count}"
+        )
+    for name, raw_record in distributions.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{label}.distributions contains an invalid name: {name!r}")
+        record = _require_dict(raw_record, f"{label}.distributions[{name!r}]")
+        _require_exact_keys(
+            record,
+            frozenset({"name", "version"}),
+            f"{label}.distributions[{name!r}]",
+        )
+        recorded_name = _require_nonempty_str(
+            record.get("name"),
+            f"{label}.distributions[{name!r}].name",
+        )
+        canonical_name = _NORMALIZE_DISTRIBUTION_NAME_RE.sub("-", recorded_name).lower()
+        if name != canonical_name:
+            raise ValueError(
+                f"{label}.distributions key is not the canonical form of its recorded name: "
+                f"key={name!r}, recorded_name={recorded_name!r}"
+            )
+        _require_nonempty_str(
+            record.get("version"),
+            f"{label}.distributions[{name!r}].version",
+        )
+    distributions_sha256 = hashlib.sha256(
+        json.dumps(
+            distributions,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    ).hexdigest()
+    if (
+        _require_sha256(
+            manifest.get("distributions_sha256"),
+            f"{label}.distributions_sha256",
+        )
+        != distributions_sha256
+    ):
+        raise ValueError(f"{label}.distributions_sha256 does not match its inventory")
+    return manifest
+
+
+def _validate_environment_runtime_binding(
+    *,
+    name: str,
+    artifact: dict[str, str],
+    manifest: dict[str, Any],
+    receipt_descriptor: Any,
+    receipt_interpreter: Any,
+    verification_report: Any,
+) -> None:
+    descriptor_label = f"eval_runtime_receipt.inputs.environment_manifests.{name}"
+    descriptor = _require_dict(receipt_descriptor, descriptor_label)
+    _require_exact_keys(
+        descriptor,
+        _RUNTIME_ENVIRONMENT_DESCRIPTOR_KEYS,
+        descriptor_label,
+    )
+    if _absolute_resolved_path(descriptor.get("path"), f"{descriptor_label}.path") != Path(artifact["path"]).resolve():
+        raise ValueError(f"{descriptor_label}.path does not match the eval contract")
+    if descriptor.get("kind") != "cwam_python_environment_manifest" or descriptor.get("schema_version") != 1:
+        raise ValueError(f"{descriptor_label} has an unsupported schema/kind")
+    if (
+        _require_sha256(descriptor.get("sha256"), f"{descriptor_label}.sha256") != artifact["sha256"]
+        or _require_sha256(
+            descriptor.get("expected_sha256"),
+            f"{descriptor_label}.expected_sha256",
+        )
+        != artifact["sha256"]
+    ):
+        raise ValueError(f"{descriptor_label} SHA256 does not match the eval contract")
+    if (
+        _require_int(
+            descriptor.get("size_bytes"),
+            f"{descriptor_label}.size_bytes",
+            minimum=1,
+        )
+        != Path(artifact["path"]).stat().st_size
+    ):
+        raise ValueError(f"{descriptor_label}.size_bytes does not match the manifest file")
+
+    interpreter_label = f"eval_runtime_receipt.inputs.interpreters.{name}"
+    interpreter = _require_dict(receipt_interpreter, interpreter_label)
+    _require_exact_keys(
+        interpreter,
+        frozenset({"launch_path", "resolved_path"}),
+        interpreter_label,
+    )
+    launch_path = _absolute_resolved_path(
+        interpreter.get("launch_path"),
+        f"{interpreter_label}.launch_path",
+    )
+    resolved_path = _absolute_resolved_path(
+        interpreter.get("resolved_path"),
+        f"{interpreter_label}.resolved_path",
+    )
+    manifest_interpreter = _require_dict(
+        manifest.get("interpreter"),
+        f"{name}_environment_manifest.interpreter",
+    )
+    manifest_resolved_path = _absolute_resolved_path(
+        manifest_interpreter.get("resolved_path"),
+        f"{name}_environment_manifest.interpreter.resolved_path",
+    )
+    if launch_path != resolved_path or resolved_path != manifest_resolved_path:
+        raise ValueError(f"{interpreter_label} does not resolve to the manifest interpreter")
+
+    report_label = f"eval_runtime_receipt.environment_verification.{name}"
+    report = _require_dict(verification_report, report_label)
+    _require_exact_keys(report, _RUNTIME_ENVIRONMENT_REPORT_KEYS, report_label)
+    expected_report = {
+        "status": "passed",
+        "interpreter_resolved_path": str(manifest_resolved_path),
+        "interpreter_sha256": manifest_interpreter["sha256"],
+        "python_version": manifest_interpreter["python_version"],
+        "distribution_count": manifest["distribution_count"],
+        "distributions_sha256": manifest["distributions_sha256"],
+    }
+    if report != expected_report:
+        raise ValueError(f"{report_label} does not match the environment manifest")
+
+
+def _validate_eval_runtime_receipt(
+    *,
+    contract: dict[str, Any],
+    verified: dict[str, Any],
+    cosmos_environment_manifest: dict[str, Any],
+    robocasa_environment_manifest: dict[str, Any],
+) -> None:
+    receipt = _require_dict(
+        _load_json(Path(verified["eval_runtime_receipt"]["path"])),
+        "eval_runtime_receipt",
+    )
+    _require_exact_keys(receipt, _RUNTIME_RECEIPT_KEYS, "eval_runtime_receipt")
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("kind") != "cwam_robocasa365_eval_runtime_receipt"
+        or receipt.get("status") != "passed"
+    ):
+        raise ValueError("eval_runtime_receipt has an unsupported schema/kind/status")
+    captured_at_utc = _require_nonempty_str(
+        receipt.get("captured_at_utc"),
+        "eval_runtime_receipt.captured_at_utc",
+    )
+    try:
+        captured_at = dt.datetime.fromisoformat(captured_at_utc.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("eval_runtime_receipt.captured_at_utc is not a valid ISO-8601 timestamp") from error
+    if captured_at.tzinfo is None or captured_at.utcoffset() != dt.timedelta(0):
+        raise ValueError("eval_runtime_receipt.captured_at_utc must identify UTC")
+
+    driver_environment = _require_dict(
+        receipt.get("driver_environment"),
+        "eval_runtime_receipt.driver_environment",
+    )
+    _require_exact_keys(
+        driver_environment,
+        frozenset({"ld_library_path", "egl_vendor_library_dirs"}),
+        "eval_runtime_receipt.driver_environment",
+    )
+    if driver_environment.get("ld_library_path") != _EXPECTED_H_DRIVER_LIBRARY_PATH:
+        raise ValueError("eval_runtime_receipt did not use the exact audited H driver library path")
+    egl_vendor_library_dirs = driver_environment.get("egl_vendor_library_dirs")
+    if egl_vendor_library_dirs is not None:
+        _require_nonempty_str(
+            egl_vendor_library_dirs,
+            "eval_runtime_receipt.driver_environment.egl_vendor_library_dirs",
+        )
+
+    inputs = _require_dict(receipt.get("inputs"), "eval_runtime_receipt.inputs")
+    _require_exact_keys(inputs, _RUNTIME_INPUT_KEYS, "eval_runtime_receipt.inputs")
+    if (
+        _require_nonempty_str(
+            inputs.get("experiment_id"),
+            "eval_runtime_receipt.inputs.experiment_id",
+        )
+        != contract["experiment_id"]
+        or _require_nonempty_str(
+            inputs.get("logical_run_id"),
+            "eval_runtime_receipt.inputs.logical_run_id",
+        )
+        != contract["logical_run_id"]
+    ):
+        raise ValueError("eval runtime run identity does not match the eval contract")
+    _require_sha256(
+        inputs.get("capture_nonce"),
+        "eval_runtime_receipt.inputs.capture_nonce",
+    )
+    num_gpus = _require_int(
+        inputs.get("num_gpus"),
+        "eval_runtime_receipt.inputs.num_gpus",
+        minimum=1,
+    )
+    if num_gpus != contract["evaluation"]["num_shards"]:
+        raise ValueError("eval runtime GPU count does not match the eval shard count")
+
+    environment_descriptors = _require_dict(
+        inputs.get("environment_manifests"),
+        "eval_runtime_receipt.inputs.environment_manifests",
+    )
+    interpreters = _require_dict(
+        inputs.get("interpreters"),
+        "eval_runtime_receipt.inputs.interpreters",
+    )
+    environment_verification = _require_dict(
+        receipt.get("environment_verification"),
+        "eval_runtime_receipt.environment_verification",
+    )
+    for value, label in (
+        (environment_descriptors, "eval_runtime_receipt.inputs.environment_manifests"),
+        (interpreters, "eval_runtime_receipt.inputs.interpreters"),
+        (environment_verification, "eval_runtime_receipt.environment_verification"),
+    ):
+        _require_exact_keys(value, frozenset({"cosmos", "robocasa"}), label)
+    for name, manifest in (
+        ("cosmos", cosmos_environment_manifest),
+        ("robocasa", robocasa_environment_manifest),
+    ):
+        _validate_environment_runtime_binding(
+            name=name,
+            artifact=verified[f"{name}_environment_manifest"],
+            manifest=manifest,
+            receipt_descriptor=environment_descriptors[name],
+            receipt_interpreter=interpreters[name],
+            verification_report=environment_verification[name],
+        )
+
+    sources = _require_dict(inputs.get("sources"), "eval_runtime_receipt.inputs.sources")
+    _require_exact_keys(
+        sources,
+        frozenset({"cosmos", "demian", "robocasa", "robosuite"}),
+        "eval_runtime_receipt.inputs.sources",
+    )
+    source_expectations = {
+        "cosmos": (Path(contract["source_root"]).resolve(), contract["source_commit"]),
+        "demian": (Path(contract["demian"]["repo"]).resolve(), contract["demian"]["commit"]),
+        "robocasa": (
+            Path(contract["simulator"]["robocasa_repo"]).resolve(),
+            contract["simulator"]["robocasa_commit"],
+        ),
+        "robosuite": (
+            Path(contract["simulator"]["robosuite_repo"]).resolve(),
+            contract["simulator"]["robosuite_commit"],
+        ),
+    }
+    for name, (expected_root, expected_commit) in source_expectations.items():
+        label = f"eval_runtime_receipt.inputs.sources.{name}"
+        source = _require_dict(sources.get(name), label)
+        _require_exact_keys(source, _RUNTIME_SOURCE_KEYS, label)
+        if _absolute_resolved_path(source.get("root"), f"{label}.root") != expected_root:
+            raise ValueError(f"{label}.root does not match the eval contract")
+        if (
+            _require_commit(source.get("expected_commit"), f"{label}.expected_commit") != expected_commit
+            or _require_commit(source.get("actual_commit"), f"{label}.actual_commit") != expected_commit
+            or source.get("clean") is not True
+        ):
+            raise ValueError(f"{label} does not bind the clean expected source commit")
+
+    cosmos_runtime = _require_dict(
+        receipt.get("cosmos_runtime"),
+        "eval_runtime_receipt.cosmos_runtime",
+    )
+    _require_exact_keys(
+        cosmos_runtime,
+        frozenset({"python", "torch", "cosmos_framework", "gpus"}),
+        "eval_runtime_receipt.cosmos_runtime",
+    )
+    cosmos_python = _require_dict(
+        cosmos_runtime.get("python"),
+        "eval_runtime_receipt.cosmos_runtime.python",
+    )
+    _require_exact_keys(
+        cosmos_python,
+        frozenset({"version", "executable", "prefix", "base_prefix"}),
+        "eval_runtime_receipt.cosmos_runtime.python",
+    )
+    cosmos_manifest_interpreter = _require_dict(
+        cosmos_environment_manifest["interpreter"],
+        "cosmos_environment_manifest.interpreter",
+    )
+    if _absolute_resolved_path(
+        cosmos_python.get("executable"),
+        "eval_runtime_receipt.cosmos_runtime.python.executable",
+    ) != _absolute_resolved_path(
+        cosmos_manifest_interpreter["resolved_path"],
+        "cosmos_environment_manifest.interpreter.resolved_path",
+    ):
+        raise ValueError("Cosmos runtime interpreter does not match its environment manifest")
+    cosmos_runtime_version = _require_nonempty_str(
+        cosmos_python.get("version"),
+        "eval_runtime_receipt.cosmos_runtime.python.version",
+    ).split(maxsplit=1)[0]
+    if cosmos_runtime_version != cosmos_manifest_interpreter["python_version"]:
+        raise ValueError("Cosmos runtime Python version does not match its environment manifest")
+    cosmos_prefix = _absolute_resolved_path(
+        cosmos_python.get("prefix"),
+        "eval_runtime_receipt.cosmos_runtime.python.prefix",
+    )
+    cosmos_base_prefix = _absolute_resolved_path(
+        cosmos_python.get("base_prefix"),
+        "eval_runtime_receipt.cosmos_runtime.python.base_prefix",
+    )
+    if cosmos_prefix != _absolute_resolved_path(
+        cosmos_manifest_interpreter["prefix"],
+        "cosmos_environment_manifest.interpreter.prefix",
+    ) or cosmos_base_prefix != _absolute_resolved_path(
+        cosmos_manifest_interpreter["base_prefix"],
+        "cosmos_environment_manifest.interpreter.base_prefix",
+    ):
+        raise ValueError("Cosmos runtime Python prefixes do not match its environment manifest")
+    torch_record = _require_dict(
+        cosmos_runtime.get("torch"),
+        "eval_runtime_receipt.cosmos_runtime.torch",
+    )
+    _require_exact_keys(
+        torch_record,
+        frozenset(
+            {
+                "version",
+                "cuda_version",
+                "cuda_available",
+                "cuda_device_count",
+                "module_path",
+            }
+        ),
+        "eval_runtime_receipt.cosmos_runtime.torch",
+    )
+    torch_version = _require_nonempty_str(
+        torch_record.get("version"),
+        "eval_runtime_receipt.cosmos_runtime.torch.version",
+    )
+    _require_nonempty_str(
+        torch_record.get("cuda_version"),
+        "eval_runtime_receipt.cosmos_runtime.torch.cuda_version",
+    )
+    torch_module_path = _absolute_resolved_path(
+        torch_record.get("module_path"),
+        "eval_runtime_receipt.cosmos_runtime.torch.module_path",
+    )
+    if cosmos_prefix not in torch_module_path.parents:
+        raise ValueError("Cosmos runtime torch module resolved outside its environment prefix")
+    cosmos_distributions = _require_dict(
+        cosmos_environment_manifest["distributions"],
+        "cosmos_environment_manifest.distributions",
+    )
+    torch_distribution = _require_dict(
+        cosmos_distributions.get("torch"),
+        "cosmos_environment_manifest.distributions.torch",
+    )
+    if torch_distribution.get("version") != torch_version:
+        raise ValueError("Cosmos runtime torch version does not match its environment manifest")
+    if (
+        torch_record.get("cuda_available") is not True
+        or _require_int(
+            torch_record.get("cuda_device_count"),
+            "eval_runtime_receipt.cosmos_runtime.torch.cuda_device_count",
+            minimum=1,
+        )
+        != num_gpus
+    ):
+        raise ValueError("Cosmos runtime CUDA state does not match the eval contract")
+    cosmos_framework = _require_dict(
+        cosmos_runtime.get("cosmos_framework"),
+        "eval_runtime_receipt.cosmos_runtime.cosmos_framework",
+    )
+    _require_exact_keys(
+        cosmos_framework,
+        frozenset({"module_path"}),
+        "eval_runtime_receipt.cosmos_runtime.cosmos_framework",
+    )
+    expected_cosmos_module = Path(contract["source_root"]) / "cosmos_framework" / "__init__.py"
+    if (
+        _absolute_resolved_path(
+            cosmos_framework.get("module_path"),
+            "eval_runtime_receipt.cosmos_runtime.cosmos_framework.module_path",
+        )
+        != expected_cosmos_module.resolve()
+    ):
+        raise ValueError("Cosmos runtime module resolved outside the exact source root")
+    cosmos_gpus = cosmos_runtime.get("gpus")
+    if not isinstance(cosmos_gpus, list) or len(cosmos_gpus) != num_gpus:
+        raise ValueError("Cosmos runtime GPU inventory does not match the eval contract")
+    cosmos_gpu_uuids: set[str] = set()
+    for expected_index, gpu_value in enumerate(cosmos_gpus):
+        label = f"eval_runtime_receipt.cosmos_runtime.gpus[{expected_index}]"
+        gpu = _require_dict(gpu_value, label)
+        _require_exact_keys(
+            gpu,
+            frozenset(
+                {
+                    "index",
+                    "name",
+                    "uuid",
+                    "normalized_uuid",
+                    "capability",
+                    "total_memory_bytes",
+                }
+            ),
+            label,
+        )
+        if (
+            gpu.get("index") != expected_index
+            or "H200" not in _require_nonempty_str(gpu.get("name"), f"{label}.name").upper()
+            or gpu.get("capability") != [9, 0]
+        ):
+            raise ValueError(f"{label} is not the expected H200 device")
+        _require_int(
+            gpu.get("total_memory_bytes"),
+            f"{label}.total_memory_bytes",
+            minimum=1,
+        )
+        normalized_uuid = _require_nonempty_str(
+            gpu.get("normalized_uuid"),
+            f"{label}.normalized_uuid",
+        )
+        if (
+            _NORMALIZED_GPU_UUID_RE.fullmatch(normalized_uuid) is None
+            or _normalized_gpu_uuid(gpu.get("uuid"), f"{label}.uuid") != normalized_uuid
+        ):
+            raise ValueError(f"{label} raw and normalized GPU UUIDs differ")
+        cosmos_gpu_uuids.add(normalized_uuid)
+    if len(cosmos_gpu_uuids) != num_gpus:
+        raise ValueError("Cosmos runtime GPU UUIDs must be unique")
+
+    robocasa_runtime = _require_dict(
+        receipt.get("robocasa_runtime"),
+        "eval_runtime_receipt.robocasa_runtime",
+    )
+    _require_exact_keys(
+        robocasa_runtime,
+        frozenset({"python", "packages", "demian_evaluator"}),
+        "eval_runtime_receipt.robocasa_runtime",
+    )
+    robocasa_python = _require_dict(
+        robocasa_runtime.get("python"),
+        "eval_runtime_receipt.robocasa_runtime.python",
+    )
+    _require_exact_keys(
+        robocasa_python,
+        frozenset({"version", "executable", "prefix", "base_prefix"}),
+        "eval_runtime_receipt.robocasa_runtime.python",
+    )
+    robocasa_manifest_interpreter = _require_dict(
+        robocasa_environment_manifest["interpreter"],
+        "robocasa_environment_manifest.interpreter",
+    )
+    if _absolute_resolved_path(
+        robocasa_python.get("executable"),
+        "eval_runtime_receipt.robocasa_runtime.python.executable",
+    ) != _absolute_resolved_path(
+        robocasa_manifest_interpreter["resolved_path"],
+        "robocasa_environment_manifest.interpreter.resolved_path",
+    ):
+        raise ValueError("RoboCasa runtime interpreter does not match its environment manifest")
+    robocasa_runtime_version = _require_nonempty_str(
+        robocasa_python.get("version"),
+        "eval_runtime_receipt.robocasa_runtime.python.version",
+    ).split(maxsplit=1)[0]
+    if robocasa_runtime_version != robocasa_manifest_interpreter["python_version"]:
+        raise ValueError("RoboCasa runtime Python version does not match its environment manifest")
+    robocasa_prefix = _absolute_resolved_path(
+        robocasa_python.get("prefix"),
+        "eval_runtime_receipt.robocasa_runtime.python.prefix",
+    )
+    robocasa_base_prefix = _absolute_resolved_path(
+        robocasa_python.get("base_prefix"),
+        "eval_runtime_receipt.robocasa_runtime.python.base_prefix",
+    )
+    if robocasa_prefix != _absolute_resolved_path(
+        robocasa_manifest_interpreter["prefix"],
+        "robocasa_environment_manifest.interpreter.prefix",
+    ) or robocasa_base_prefix != _absolute_resolved_path(
+        robocasa_manifest_interpreter["base_prefix"],
+        "robocasa_environment_manifest.interpreter.base_prefix",
+    ):
+        raise ValueError("RoboCasa runtime Python prefixes do not match its environment manifest")
+    runtime_evaluator = _require_dict(
+        robocasa_runtime.get("demian_evaluator"),
+        "eval_runtime_receipt.robocasa_runtime.demian_evaluator",
+    )
+    _require_exact_keys(
+        runtime_evaluator,
+        frozenset({"module_path"}),
+        "eval_runtime_receipt.robocasa_runtime.demian_evaluator",
+    )
+    if (
+        _absolute_resolved_path(
+            runtime_evaluator.get("module_path"),
+            "eval_runtime_receipt.robocasa_runtime.demian_evaluator.module_path",
+        )
+        != Path(verified["demian_evaluator"]["path"]).resolve()
+    ):
+        raise ValueError("RoboCasa runtime did not import the exact DeMiAn evaluator")
+    runtime_packages = _require_dict(
+        robocasa_runtime.get("packages"),
+        "eval_runtime_receipt.robocasa_runtime.packages",
+    )
+    _require_exact_keys(
+        runtime_packages,
+        frozenset({"numpy", "mujoco", "gymnasium", "robocasa", "robosuite"}),
+        "eval_runtime_receipt.robocasa_runtime.packages",
+    )
+    robocasa_distributions = _require_dict(
+        robocasa_environment_manifest["distributions"],
+        "robocasa_environment_manifest.distributions",
+    )
+    expected_source_modules = {
+        "robocasa": (Path(contract["simulator"]["robocasa_repo"]).resolve() / "robocasa" / "__init__.py").resolve(),
+        "robosuite": (Path(contract["simulator"]["robosuite_repo"]).resolve() / "robosuite" / "__init__.py").resolve(),
+    }
+    for name in ("numpy", "mujoco", "gymnasium", "robocasa", "robosuite"):
+        label = f"eval_runtime_receipt.robocasa_runtime.packages.{name}"
+        package = _require_dict(runtime_packages.get(name), label)
+        _require_exact_keys(
+            package,
+            frozenset(
+                {
+                    "distribution_version",
+                    "module_reported_version",
+                    "version_source",
+                    "module_path",
+                }
+            ),
+            label,
+        )
+        distribution_version = _require_nonempty_str(
+            package.get("distribution_version"),
+            f"{label}.distribution_version",
+        )
+        module_reported_version = package.get("module_reported_version")
+        if module_reported_version is not None:
+            _require_nonempty_str(
+                module_reported_version,
+                f"{label}.module_reported_version",
+            )
+        if package.get("version_source") != "importlib.metadata":
+            raise ValueError(f"{label}.version_source must be importlib.metadata")
+        manifest_distribution = _require_dict(
+            robocasa_distributions.get(name),
+            f"robocasa_environment_manifest.distributions.{name}",
+        )
+        if manifest_distribution.get("version") != distribution_version:
+            raise ValueError(f"{label}.distribution_version does not match the environment manifest")
+        module_path = _absolute_resolved_path(package.get("module_path"), f"{label}.module_path")
+        if name in expected_source_modules:
+            if module_path != expected_source_modules[name]:
+                raise ValueError(f"{label}.module_path resolved outside the exact source root")
+        elif robocasa_prefix not in module_path.parents:
+            raise ValueError(f"{label}.module_path resolved outside the RoboCasa environment prefix")
+
+    robocasa_egl = receipt.get("robocasa_egl")
+    if not isinstance(robocasa_egl, list) or len(robocasa_egl) != num_gpus:
+        raise ValueError("eval_runtime_receipt.robocasa_egl must contain one record per shard")
+    expected_robosuite_module = expected_source_modules["robosuite"]
+    for expected_shard, raw_egl in enumerate(robocasa_egl):
+        label = f"eval_runtime_receipt.robocasa_egl[{expected_shard}]"
+        egl = _require_dict(raw_egl, label)
+        _require_exact_keys(
+            egl,
+            frozenset(
+                {
+                    "status",
+                    "shard_index",
+                    "cuda_visible_devices",
+                    "mujoco_egl_device_id",
+                    "mujoco_gl",
+                    "pyopengl_platform",
+                    "ld_library_path",
+                    "egl_vendor_library_dirs",
+                    "robosuite_module_path",
+                }
+            ),
+            label,
+        )
+        expected_device = str(expected_shard)
+        if (
+            egl.get("status") != "passed"
+            or egl.get("shard_index") != expected_shard
+            or egl.get("cuda_visible_devices") != expected_device
+            or egl.get("mujoco_egl_device_id") != expected_device
+            or egl.get("mujoco_gl") != "egl"
+            or egl.get("pyopengl_platform") != "egl"
+            or egl.get("ld_library_path") != _EXPECTED_H_DRIVER_LIBRARY_PATH
+            or egl.get("egl_vendor_library_dirs") != egl_vendor_library_dirs
+        ):
+            raise ValueError(f"{label} does not bind the exact per-shard EGL environment")
+        if (
+            _absolute_resolved_path(
+                egl.get("robosuite_module_path"),
+                f"{label}.robosuite_module_path",
+            )
+            != expected_robosuite_module
+        ):
+            raise ValueError(f"{label} imported robosuite outside the exact source root")
+
+    nvidia_smi = _require_dict(
+        receipt.get("nvidia_smi"),
+        "eval_runtime_receipt.nvidia_smi",
+    )
+    _require_exact_keys(
+        nvidia_smi,
+        frozenset({"executable", "driver_version", "gpus"}),
+        "eval_runtime_receipt.nvidia_smi",
+    )
+    _absolute_resolved_path(
+        nvidia_smi.get("executable"),
+        "eval_runtime_receipt.nvidia_smi.executable",
+    )
+    _require_nonempty_str(
+        nvidia_smi.get("driver_version"),
+        "eval_runtime_receipt.nvidia_smi.driver_version",
+    )
+    nvidia_gpus = nvidia_smi.get("gpus")
+    if not isinstance(nvidia_gpus, list) or len(nvidia_gpus) != num_gpus:
+        raise ValueError("nvidia-smi GPU inventory does not match the eval contract")
+    nvidia_gpu_uuids: set[str] = set()
+    for index, raw_gpu in enumerate(nvidia_gpus):
+        label = f"eval_runtime_receipt.nvidia_smi.gpus[{index}]"
+        gpu = _require_dict(raw_gpu, label)
+        _require_exact_keys(
+            gpu,
+            frozenset({"index", "uuid", "normalized_uuid", "name", "driver_version"}),
+            label,
+        )
+        if (
+            gpu.get("index") != index
+            or "H200" not in _require_nonempty_str(gpu.get("name"), f"{label}.name").upper()
+            or gpu.get("driver_version") != nvidia_smi["driver_version"]
+        ):
+            raise ValueError(f"{label} does not match the expected H200 inventory")
+        normalized_uuid = _require_nonempty_str(
+            gpu.get("normalized_uuid"),
+            f"{label}.normalized_uuid",
+        )
+        if (
+            _NORMALIZED_GPU_UUID_RE.fullmatch(normalized_uuid) is None
+            or _normalized_gpu_uuid(gpu.get("uuid"), f"{label}.uuid") != normalized_uuid
+        ):
+            raise ValueError(f"{label} raw and normalized GPU UUIDs differ")
+        if normalized_uuid in nvidia_gpu_uuids:
+            raise ValueError("nvidia-smi GPU UUIDs must be unique")
+        nvidia_gpu_uuids.add(normalized_uuid)
+    if nvidia_gpu_uuids != cosmos_gpu_uuids:
+        raise ValueError("runtime receipt PyTorch and nvidia-smi GPU UUID sets differ")
+
+    validation = _require_dict(
+        receipt.get("validation"),
+        "eval_runtime_receipt.validation",
+    )
+    _require_exact_keys(
+        validation,
+        _RUNTIME_VALIDATION_KEYS,
+        "eval_runtime_receipt.validation",
+    )
+    if any(value is not True for value in validation.values()):
+        raise ValueError("eval_runtime_receipt.validation must contain only true verdicts")
+
+
 def _expected_formal_tasks(split: str) -> tuple[str, ...]:
     if split == "atomic":
         return ATOMIC_TASKS
@@ -256,6 +1140,7 @@ def create_contract(
     experiment_id: str,
     logical_run_id: str,
     source_commit: str,
+    source_root: Path,
     source_manifest: Path,
     cosmos_server_module: Path,
     checkpoint_path: Path,
@@ -263,6 +1148,9 @@ def create_contract(
     checkpoint_verification_receipt: Path,
     training_config: Path,
     action_stats: Path,
+    cosmos_environment_manifest: Path,
+    robocasa_environment_manifest: Path,
+    eval_runtime_receipt: Path,
     server_runtime_receipts: list[Path],
     demian_repo: Path,
     demian_commit: str,
@@ -293,6 +1181,7 @@ def create_contract(
     output = output.expanduser().resolve()
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite existing eval contract: {output}")
+    source_root = source_root.expanduser().resolve()
     source_manifest = source_manifest.expanduser().resolve()
     cosmos_server_module = cosmos_server_module.expanduser().resolve()
     checkpoint_path = checkpoint_path.expanduser().resolve()
@@ -300,6 +1189,9 @@ def create_contract(
     checkpoint_verification_receipt = checkpoint_verification_receipt.expanduser().resolve()
     training_config = training_config.expanduser().resolve()
     action_stats = action_stats.expanduser().resolve()
+    cosmos_environment_manifest = cosmos_environment_manifest.expanduser().resolve()
+    robocasa_environment_manifest = robocasa_environment_manifest.expanduser().resolve()
+    eval_runtime_receipt = eval_runtime_receipt.expanduser().resolve()
     server_runtime_receipts = [path.expanduser().resolve() for path in server_runtime_receipts]
     demian_repo = demian_repo.expanduser().resolve()
     demian_evaluator = demian_evaluator.expanduser().resolve()
@@ -309,6 +1201,8 @@ def create_contract(
     results_dir = results_dir.expanduser().resolve()
     if not checkpoint_path.is_dir():
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
+    if not source_root.is_dir():
+        raise FileNotFoundError(f"Cosmos source directory not found: {source_root}")
     if not demian_repo.is_dir():
         raise FileNotFoundError(f"DeMiAn repository not found: {demian_repo}")
     if not robocasa_repo.is_dir() or not robosuite_repo.is_dir():
@@ -334,6 +1228,7 @@ def create_contract(
         "experiment_id": experiment_id,
         "logical_run_id": logical_run_id,
         "source_commit": source_commit,
+        "source_root": str(source_root),
         "source_manifest_sha256": source_artifact["sha256"],
         "checkpoint_path": str(checkpoint_path),
         "run_name": run_name,
@@ -384,6 +1279,9 @@ def create_contract(
             "checkpoint_verification_receipt": artifact(checkpoint_verification_receipt),
             "training_config": artifact(training_config),
             "action_stats": artifact(action_stats),
+            "cosmos_environment_manifest": artifact(cosmos_environment_manifest),
+            "robocasa_environment_manifest": artifact(robocasa_environment_manifest),
+            "eval_runtime_receipt": artifact(eval_runtime_receipt),
             "demian_evaluator": evaluator_artifact,
             "demian_task_registry": task_registry_artifact,
             "server_runtime_receipts": [artifact(path) for path in server_runtime_receipts],
@@ -407,6 +1305,9 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     _require_nonempty_str(contract.get("experiment_id"), "contract.experiment_id")
     _require_nonempty_str(contract.get("logical_run_id"), "contract.logical_run_id")
     _require_commit(contract.get("source_commit"), "contract.source_commit")
+    source_root = Path(_require_nonempty_str(contract.get("source_root"), "contract.source_root"))
+    if not source_root.is_absolute() or not source_root.is_dir():
+        raise ValueError(f"contract.source_root must be an existing absolute directory: {source_root}")
     _require_sha256(contract.get("source_manifest_sha256"), "contract.source_manifest_sha256")
     checkpoint_path = Path(_require_nonempty_str(contract.get("checkpoint_path"), "contract.checkpoint_path"))
     results_dir = Path(_require_nonempty_str(contract.get("results_dir"), "contract.results_dir"))
@@ -414,14 +1315,24 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
     if not checkpoint_path.is_absolute() or not results_dir.is_absolute():
         raise ValueError("contract checkpoint_path and results_dir must be absolute")
     if results_dir.name != run_name:
-        raise ValueError(
-            f"contract results_dir must end in run_name: results_dir={results_dir}, run_name={run_name!r}"
-        )
+        raise ValueError(f"contract results_dir must end in run_name: results_dir={results_dir}, run_name={run_name!r}")
 
     demian = _require_dict(contract.get("demian"), "contract.demian")
-    _require_commit(demian.get("commit"), "contract.demian.commit")
-    _require_sha256(demian.get("evaluator_sha256"), "contract.demian.evaluator_sha256")
-    _require_sha256(demian.get("task_registry_sha256"), "contract.demian.task_registry_sha256")
+    demian_commit = _require_commit(demian.get("commit"), "contract.demian.commit")
+    evaluator_sha256 = _require_sha256(
+        demian.get("evaluator_sha256"),
+        "contract.demian.evaluator_sha256",
+    )
+    task_registry_sha256 = _require_sha256(
+        demian.get("task_registry_sha256"),
+        "contract.demian.task_registry_sha256",
+    )
+    if (
+        demian_commit != _EXPECTED_DEMIAN_COMMIT
+        or evaluator_sha256 != _EXPECTED_DEMIAN_EVALUATOR_SHA256
+        or task_registry_sha256 != _EXPECTED_DEMIAN_TASK_REGISTRY_SHA256
+    ):
+        raise ValueError("contract.demian does not match the audited DeMiAn revision and evaluator files")
     demian_repo = Path(_require_nonempty_str(demian.get("repo"), "contract.demian.repo"))
     if not demian_repo.is_absolute() or not demian_repo.is_dir():
         raise ValueError(f"contract.demian.repo must be an existing absolute directory: {demian_repo}")
@@ -445,9 +1356,7 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         raise ValueError("contract.evaluation.split must be atomic or composite")
     expected_role = "primary" if split == "atomic" else "zero_shot_secondary"
     if evaluation.get("role") != expected_role:
-        raise ValueError(
-            f"contract.evaluation.role must be {expected_role!r} for split={split!r}"
-        )
+        raise ValueError(f"contract.evaluation.role must be {expected_role!r} for split={split!r}")
     task_pool = evaluation.get("tasks")
     if not isinstance(task_pool, list) or not task_pool:
         raise ValueError("contract.evaluation.tasks must be a non-empty list")
@@ -516,6 +1425,9 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         "checkpoint_verification_receipt",
         "training_config",
         "action_stats",
+        "cosmos_environment_manifest",
+        "robocasa_environment_manifest",
+        "eval_runtime_receipt",
         "demian_evaluator",
         "demian_task_registry",
     ):
@@ -528,10 +1440,18 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         synthetic = {"receipt": descriptor}
         verified_receipts.append(_verify_file_artifact(synthetic, "receipt"))
     verified["server_runtime_receipts"] = verified_receipts
+    expected_server_module = source_root / "cosmos_framework" / "scripts" / "action_policy_server_robocasa365.py"
+    if Path(verified["cosmos_server_module"]["path"]).resolve() != expected_server_module.resolve():
+        raise ValueError("cosmos_server_module artifact resolved outside the exact source root")
     if verified["source_manifest"]["sha256"] != contract["source_manifest_sha256"]:
         raise ValueError("source_manifest artifact hash does not match contract.source_manifest_sha256")
     checkpoint_manifest = _require_dict(
         _load_json(Path(verified["checkpoint_manifest"]["path"])),
+        "checkpoint_manifest",
+    )
+    _require_exact_keys(
+        checkpoint_manifest,
+        _CHECKPOINT_MANIFEST_KEYS,
         "checkpoint_manifest",
     )
     if (
@@ -539,35 +1459,51 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         or checkpoint_manifest.get("kind") != "cwam_serving_checkpoint_manifest"
     ):
         raise ValueError("checkpoint_manifest has an unsupported schema/kind")
-    if Path(
-        _require_nonempty_str(
-            checkpoint_manifest.get("checkpoint_path"),
-            "checkpoint_manifest.checkpoint_path",
-        )
-    ).resolve() != checkpoint_path.resolve():
+    if (
+        Path(
+            _require_nonempty_str(
+                checkpoint_manifest.get("checkpoint_path"),
+                "checkpoint_manifest.checkpoint_path",
+            )
+        ).resolve()
+        != checkpoint_path.resolve()
+    ):
         raise ValueError("checkpoint_manifest checkpoint_path does not match the eval contract")
     checkpoint_tree_sha256 = _require_sha256(
         checkpoint_manifest.get("tree_sha256"),
         "checkpoint_manifest.tree_sha256",
     )
+    checkpoint_files = checkpoint_manifest.get("files")
+    if not isinstance(checkpoint_files, list) or not checkpoint_files:
+        raise ValueError("checkpoint_manifest.files must be a non-empty list")
     checkpoint_verification = _require_dict(
         _load_json(Path(verified["checkpoint_verification_receipt"]["path"])),
         "checkpoint_verification_receipt",
     )
+    _require_exact_keys(
+        checkpoint_verification,
+        _CHECKPOINT_VERIFICATION_KEYS,
+        "checkpoint_verification_receipt",
+    )
     if checkpoint_verification.get("status") != "passed":
         raise ValueError("checkpoint_verification_receipt status must be passed")
-    if Path(
-        _require_nonempty_str(
-            checkpoint_verification.get("checkpoint_path"),
-            "checkpoint_verification_receipt.checkpoint_path",
-        )
-    ).resolve() != checkpoint_path.resolve():
+    if (
+        Path(
+            _require_nonempty_str(
+                checkpoint_verification.get("checkpoint_path"),
+                "checkpoint_verification_receipt.checkpoint_path",
+            )
+        ).resolve()
+        != checkpoint_path.resolve()
+    ):
         raise ValueError("checkpoint_verification_receipt path does not match the eval contract")
-    _require_int(
+    checkpoint_file_count = _require_int(
         checkpoint_verification.get("file_count"),
         "checkpoint_verification_receipt.file_count",
         minimum=1,
     )
+    if checkpoint_file_count != len(checkpoint_files):
+        raise ValueError("checkpoint verification file_count does not match checkpoint_manifest.files")
     if (
         _require_sha256(
             checkpoint_verification.get("tree_sha256"),
@@ -580,6 +1516,20 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         raise ValueError("demian_evaluator artifact hash does not match contract.demian.evaluator_sha256")
     if verified["demian_task_registry"]["sha256"] != demian["task_registry_sha256"]:
         raise ValueError("demian_task_registry artifact hash does not match contract.demian.task_registry_sha256")
+    cosmos_environment_manifest = _validated_environment_manifest(
+        verified["cosmos_environment_manifest"],
+        "cosmos_environment_manifest",
+    )
+    robocasa_environment_manifest = _validated_environment_manifest(
+        verified["robocasa_environment_manifest"],
+        "robocasa_environment_manifest",
+    )
+    _validate_eval_runtime_receipt(
+        contract=contract,
+        verified=verified,
+        cosmos_environment_manifest=cosmos_environment_manifest,
+        robocasa_environment_manifest=robocasa_environment_manifest,
+    )
     contract["_verified_artifacts"] = verified
     contract["_contract_sha256"] = _sha256(contract_path)
     return contract
@@ -613,8 +1563,7 @@ def _validate_server_receipt(contract: dict[str, Any]) -> None:
             raise ValueError("server runtime receipt has an unsupported service/schema")
         if receipt.get("shard_index") != expected_shard:
             raise ValueError(
-                f"server runtime receipt shard mismatch: expected={expected_shard}, "
-                f"actual={receipt.get('shard_index')}"
+                f"server runtime receipt shard mismatch: expected={expected_shard}, actual={receipt.get('shard_index')}"
             )
         seen_shards.add(expected_shard)
         for key, value in expected.items():
@@ -622,12 +1571,16 @@ def _validate_server_receipt(contract: dict[str, Any]) -> None:
                 raise ValueError(
                     f"server runtime receipt {key} mismatch: expected={value!r}, actual={receipt.get(key)!r}"
                 )
-        source_module_path = Path(
-            _require_nonempty_str(
-                receipt.get("source_module_path"),
-                f"server_runtime_receipt[{expected_shard}].source_module_path",
+        source_module_path = (
+            Path(
+                _require_nonempty_str(
+                    receipt.get("source_module_path"),
+                    f"server_runtime_receipt[{expected_shard}].source_module_path",
+                )
             )
-        ).expanduser().resolve()
+            .expanduser()
+            .resolve()
+        )
         if source_module_path != Path(artifacts["cosmos_server_module"]["path"]).resolve():
             raise ValueError("server runtime receipt source_module_path does not match the eval contract")
         _require_int(
@@ -703,9 +1656,7 @@ def _validate_shard_args(
     }
     for key, value in expected.items():
         if key not in args_json or args_json[key] != value:
-            raise ValueError(
-                f"args shard {shard} {key} mismatch: expected={value!r}, actual={args_json.get(key)!r}"
-            )
+            raise ValueError(f"args shard {shard} {key} mismatch: expected={value!r}, actual={args_json.get(key)!r}")
     for forbidden in (
         "dynamic_instructions_file",
         "gt_reasoning_file",
@@ -720,10 +1671,7 @@ def _validate_shard_args(
         if not isinstance(requested_tasks, list) or not all(isinstance(task, str) for task in requested_tasks):
             raise TypeError(f"args shard {shard} tasks must be a string list")
         flattened_tasks = [
-            task
-            for value in requested_tasks
-            for task in (part.strip() for part in value.split(","))
-            if task
+            task for value in requested_tasks for task in (part.strip() for part in value.split(",")) if task
         ]
         if flattened_tasks != evaluation["tasks"]:
             raise ValueError(f"args shard {shard} explicit task pool does not match contract")
@@ -760,9 +1708,7 @@ def _validate_episode(
         if array is None or len(array) != 7:
             raise ValueError(f"{task} episode {episode_index} step {step_index} action must have width 7")
         if any(
-            isinstance(item, bool)
-            or not isinstance(item, (int, float))
-            or not math.isfinite(float(item))
+            isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(float(item))
             for item in array
         ):
             raise ValueError(f"{task} episode {episode_index} step {step_index} action is non-finite/non-numeric")
@@ -827,9 +1773,7 @@ def _collect_rows(
                 raise ValueError(f"Task {task} episode count field mismatch")
             episode_results = result.get("episode_results")
             if not isinstance(episode_results, list) or len(episode_results) != evaluation["episodes_per_task"]:
-                raise ValueError(
-                    f"Task {task} must contain exactly {evaluation['episodes_per_task']} episode results"
-                )
+                raise ValueError(f"Task {task} must contain exactly {evaluation['episodes_per_task']} episode results")
 
             validated_episodes = [
                 _validate_episode(
@@ -926,9 +1870,8 @@ def summarize(
     successful_tasks = sum(rate > 0.0 for rate in task_success_rates)
     mean_success_rate = sum(task_success_rates) / len(task_success_rates)
     thresholds = contract["evaluation"]["effect_thresholds"]
-    effect_pass = (
-        mean_success_rate >= float(thresholds["minimum_mean_success_rate"])
-        and successful_tasks >= int(thresholds["minimum_successful_tasks"])
+    effect_pass = mean_success_rate >= float(thresholds["minimum_mean_success_rate"]) and successful_tasks >= int(
+        thresholds["minimum_successful_tasks"]
     )
     evidence = {
         "schema_version": 1,
@@ -991,6 +1934,7 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--experiment-id", required=True)
     contract_parser.add_argument("--logical-run-id", required=True)
     contract_parser.add_argument("--source-commit", required=True)
+    contract_parser.add_argument("--source-root", type=Path, required=True)
     contract_parser.add_argument("--source-manifest", type=Path, required=True)
     contract_parser.add_argument("--cosmos-server-module", type=Path, required=True)
     contract_parser.add_argument("--checkpoint-path", type=Path, required=True)
@@ -998,6 +1942,9 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--checkpoint-verification-receipt", type=Path, required=True)
     contract_parser.add_argument("--training-config", type=Path, required=True)
     contract_parser.add_argument("--action-stats", type=Path, required=True)
+    contract_parser.add_argument("--cosmos-environment-manifest", type=Path, required=True)
+    contract_parser.add_argument("--robocasa-environment-manifest", type=Path, required=True)
+    contract_parser.add_argument("--eval-runtime-receipt", type=Path, required=True)
     contract_parser.add_argument("--server-runtime-receipt", type=Path, action="append", required=True)
     contract_parser.add_argument("--demian-repo", type=Path, required=True)
     contract_parser.add_argument("--demian-commit", required=True)
@@ -1041,6 +1988,7 @@ def main() -> None:
             experiment_id=args.experiment_id,
             logical_run_id=args.logical_run_id,
             source_commit=args.source_commit,
+            source_root=args.source_root,
             source_manifest=args.source_manifest,
             cosmos_server_module=args.cosmos_server_module,
             checkpoint_path=args.checkpoint_path,
@@ -1048,6 +1996,9 @@ def main() -> None:
             checkpoint_verification_receipt=args.checkpoint_verification_receipt,
             training_config=args.training_config,
             action_stats=args.action_stats,
+            cosmos_environment_manifest=args.cosmos_environment_manifest,
+            robocasa_environment_manifest=args.robocasa_environment_manifest,
+            eval_runtime_receipt=args.eval_runtime_receipt,
             server_runtime_receipts=args.server_runtime_receipt,
             demian_repo=args.demian_repo,
             demian_commit=args.demian_commit,

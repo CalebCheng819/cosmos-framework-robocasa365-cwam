@@ -25,6 +25,8 @@ export PYTHONNOUSERSITE=1
 : "${TRAINING_CONFIG:?Set TRAINING_CONFIG to the exact training config YAML}"
 : "${ACTION_STATS:?Set ACTION_STATS to the RoboCasa365 quantile_rot stats JSON}"
 : "${SOURCE_MANIFEST:?Set SOURCE_MANIFEST to the immutable source manifest}"
+: "${COSMOS_ENVIRONMENT_MANIFEST:?Set COSMOS_ENVIRONMENT_MANIFEST to the exact Cosmos environment manifest}"
+: "${ROBOCASA_ENVIRONMENT_MANIFEST:?Set ROBOCASA_ENVIRONMENT_MANIFEST to the exact RoboCasa environment manifest}"
 : "${EVAL_OUTPUT_ROOT:?Set EVAL_OUTPUT_ROOT to a new per-experiment directory}"
 : "${EVAL_EXPERIMENT_ID:?Set EVAL_EXPERIMENT_ID}"
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
@@ -34,9 +36,8 @@ export PYTHONNOUSERSITE=1
 : "${EXPECTED_CHECKPOINT_MANIFEST_SHA256:?Set EXPECTED_CHECKPOINT_MANIFEST_SHA256}"
 : "${EXPECTED_TRAINING_CONFIG_SHA256:?Set EXPECTED_TRAINING_CONFIG_SHA256}"
 : "${EXPECTED_ACTION_STATS_SHA256:?Set EXPECTED_ACTION_STATS_SHA256}"
-: "${EXPECTED_DEMIAN_COMMIT:?Set EXPECTED_DEMIAN_COMMIT}"
-: "${EXPECTED_DEMIAN_EVALUATOR_SHA256:?Set EXPECTED_DEMIAN_EVALUATOR_SHA256}"
-: "${EXPECTED_DEMIAN_TASK_REGISTRY_SHA256:?Set EXPECTED_DEMIAN_TASK_REGISTRY_SHA256}"
+: "${EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256:?Set the audited Cosmos environment manifest SHA256}"
+: "${EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256:?Set the audited RoboCasa environment manifest SHA256}"
 : "${EXPECTED_ROBOCASA_COMMIT:?Set EXPECTED_ROBOCASA_COMMIT}"
 : "${EXPECTED_ROBOSUITE_COMMIT:?Set EXPECTED_ROBOSUITE_COMMIT}"
 : "${MINIMUM_MEAN_SUCCESS_RATE:?Pre-register MINIMUM_MEAN_SUCCESS_RATE}"
@@ -66,6 +67,15 @@ readonly SERVER_MODULE_REL="cosmos_framework/scripts/action_policy_server_roboca
 readonly RECEIPT_HELPER_REL="examples/h_cluster/capture_robocasa365_server_receipt.py"
 readonly EVIDENCE_HELPER_REL="examples/h_cluster/cwam_robocasa365_eval_evidence.py"
 readonly CHECKPOINT_HELPER_REL="examples/h_cluster/cwam_serving_checkpoint_manifest.py"
+readonly RUNTIME_RECEIPT_HELPER_REL="examples/h_cluster/capture_robocasa365_eval_runtime.py"
+readonly EXPECTED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
+readonly EXPECTED_DEMIAN_EVALUATOR_SHA256="c38ed1f4049d079b84c185cb572667a47eaf984c2c22b492efc8985401119836"
+readonly EXPECTED_DEMIAN_TASK_REGISTRY_SHA256="e902311cf435986859ae01920548aba169e085ad6d26187cad9fb0d1f9c315de"
+readonly H_NVIDIA_DRIVER_BIN="/usr/local/nvidia/bin"
+readonly H_NVIDIA_DRIVER_LIB="/usr/local/nvidia/lib"
+readonly H_NVIDIA_DRIVER_LIB64="/usr/local/nvidia/lib64"
+readonly H_RUNTIME_PATH="$H_NVIDIA_DRIVER_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+readonly H_WORKER_LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
 
 die() {
     echo "ERROR: $*" >&2
@@ -103,6 +113,22 @@ verify_sha256() {
 canonical_existing() {
     realpath -e -- "$1"
 }
+
+[[ -n "$H_WORKER_LD_LIBRARY_PATH" ]] || die "H worker-init did not provide LD_LIBRARY_PATH"
+[[ "$H_WORKER_LD_LIBRARY_PATH" != :* &&
+    "$H_WORKER_LD_LIBRARY_PATH" != *: &&
+    "$H_WORKER_LD_LIBRARY_PATH" != *::* ]] ||
+    die "H worker-init LD_LIBRARY_PATH contains an empty entry"
+IFS=: read -r -a H_WORKER_DRIVER_LIBRARY_ENTRIES <<<"$H_WORKER_LD_LIBRARY_PATH"
+[[ "${#H_WORKER_DRIVER_LIBRARY_ENTRIES[@]}" -gt 0 ]] ||
+    die "H worker-init LD_LIBRARY_PATH is empty"
+for driver_library_entry in "${H_WORKER_DRIVER_LIBRARY_ENTRIES[@]}"; do
+    case "$driver_library_entry" in
+        "$H_NVIDIA_DRIVER_LIB" | "$H_NVIDIA_DRIVER_LIB64") ;;
+        *) die "H worker-init LD_LIBRARY_PATH contains an unaudited entry: $driver_library_entry" ;;
+    esac
+done
+export LD_LIBRARY_PATH="$H_NVIDIA_DRIVER_LIB:$H_NVIDIA_DRIVER_LIB64"
 
 require_positive_int NUM_SHARDS "$NUM_SHARDS"
 require_positive_int EPISODES_PER_TASK "$EPISODES_PER_TASK"
@@ -152,6 +178,8 @@ CHECKPOINT_MANIFEST="$(canonical_existing "$CHECKPOINT_MANIFEST")"
 TRAINING_CONFIG="$(canonical_existing "$TRAINING_CONFIG")"
 ACTION_STATS="$(canonical_existing "$ACTION_STATS")"
 SOURCE_MANIFEST="$(canonical_existing "$SOURCE_MANIFEST")"
+COSMOS_ENVIRONMENT_MANIFEST="$(canonical_existing "$COSMOS_ENVIRONMENT_MANIFEST")"
+ROBOCASA_ENVIRONMENT_MANIFEST="$(canonical_existing "$ROBOCASA_ENVIRONMENT_MANIFEST")"
 ALLOWED_OUTPUT_PARENT="$(canonical_existing "$ALLOWED_OUTPUT_PARENT")"
 
 [[ -x "$COSMOS_ENV/bin/python" ]] || die "COSMOS_ENV Python is not executable"
@@ -161,6 +189,7 @@ ALLOWED_OUTPUT_PARENT="$(canonical_existing "$ALLOWED_OUTPUT_PARENT")"
 [[ -f "$COSMOS_SOURCE/$RECEIPT_HELPER_REL" ]] || die "Missing server receipt helper"
 [[ -f "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" ]] || die "Missing eval evidence helper"
 [[ -f "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL" ]] || die "Missing serving checkpoint manifest helper"
+[[ -f "$COSMOS_SOURCE/$RUNTIME_RECEIPT_HELPER_REL" ]] || die "Missing eval runtime receipt helper"
 [[ -f "$DEMIAN_REPO/$DEMIAN_EVALUATOR_REL" ]] || die "Missing DeMiAn evaluator"
 [[ -f "$DEMIAN_REPO/$DEMIAN_TASK_REGISTRY_REL" ]] || die "Missing DeMiAn task registry"
 
@@ -185,6 +214,14 @@ verify_sha256 source_manifest "$SOURCE_MANIFEST" "$EXPECTED_SOURCE_MANIFEST_SHA2
 verify_sha256 checkpoint_manifest "$CHECKPOINT_MANIFEST" "$EXPECTED_CHECKPOINT_MANIFEST_SHA256"
 verify_sha256 training_config "$TRAINING_CONFIG" "$EXPECTED_TRAINING_CONFIG_SHA256"
 verify_sha256 action_stats "$ACTION_STATS" "$EXPECTED_ACTION_STATS_SHA256"
+verify_sha256 \
+    cosmos_environment_manifest \
+    "$COSMOS_ENVIRONMENT_MANIFEST" \
+    "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256"
+verify_sha256 \
+    robocasa_environment_manifest \
+    "$ROBOCASA_ENVIRONMENT_MANIFEST" \
+    "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256"
 verify_sha256 demian_evaluator \
     "$DEMIAN_REPO/$DEMIAN_EVALUATOR_REL" \
     "$EXPECTED_DEMIAN_EVALUATOR_SHA256"
@@ -212,6 +249,7 @@ readonly SUMMARY_CSV="$RESULTS_DIR/summary.csv"
 readonly TASK_SUCCESS_RATES_CSV="$RESULTS_DIR/task_success_rates.csv"
 readonly EVIDENCE_JSON="$RESULTS_DIR/evaluation_evidence.json"
 readonly CHECKPOINT_VERIFICATION_RECEIPT="$CONTROL_DIR/checkpoint-verification.json"
+readonly EVAL_RUNTIME_RECEIPT="$CONTROL_DIR/eval-runtime-receipt.json"
 mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT"
 
 PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL" \
@@ -220,6 +258,37 @@ PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL"
     --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
     >"$CHECKPOINT_VERIFICATION_RECEIPT"
 echo "SERVING_CHECKPOINT_VERIFIED receipt=$CHECKPOINT_VERIFICATION_RECEIPT"
+
+EVAL_RUNTIME_CAPTURE_NONCE="$("$COSMOS_PY" -I -c 'import secrets; print(secrets.token_hex(32))')" ||
+    die "Failed to generate eval runtime capture nonce"
+readonly EVAL_RUNTIME_CAPTURE_NONCE
+[[ "$EVAL_RUNTIME_CAPTURE_NONCE" =~ ^[0-9a-f]{64}$ ]] ||
+    die "Eval runtime capture nonce is malformed"
+
+/usr/bin/env \
+    PATH="$H_RUNTIME_PATH" \
+    PYTHONPATH= \
+    "$COSMOS_PY" "$COSMOS_SOURCE/$RUNTIME_RECEIPT_HELPER_REL" \
+    --cosmos-python "$COSMOS_PY" \
+    --robocasa-python "$ROBOCASA_PY" \
+    --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST" \
+    --expected-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256" \
+    --robocasa-environment-manifest "$ROBOCASA_ENVIRONMENT_MANIFEST" \
+    --expected-robocasa-environment-manifest-sha256 "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256" \
+    --cosmos-source-root "$COSMOS_SOURCE" \
+    --expected-cosmos-commit "$EXPECTED_SOURCE_COMMIT" \
+    --demian-source-root "$DEMIAN_REPO" \
+    --expected-demian-commit "$EXPECTED_DEMIAN_COMMIT" \
+    --robocasa-source-root "$ROBOCASA_REPO" \
+    --expected-robocasa-commit "$EXPECTED_ROBOCASA_COMMIT" \
+    --robosuite-source-root "$ROBOSUITE_REPO" \
+    --expected-robosuite-commit "$EXPECTED_ROBOSUITE_COMMIT" \
+    --experiment-id "$EVAL_EXPERIMENT_ID" \
+    --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
+    --capture-nonce "$EVAL_RUNTIME_CAPTURE_NONCE" \
+    --num-gpus "$NUM_SHARDS" \
+    --output "$EVAL_RUNTIME_RECEIPT"
+echo "EVAL_RUNTIME_RECEIPT_READY path=$EVAL_RUNTIME_RECEIPT sha256=$(sha256_file "$EVAL_RUNTIME_RECEIPT")"
 
 EVAL_NVME_ROOT="$(realpath -m -- "$EVAL_NVME_ROOT")"
 case "$EVAL_NVME_ROOT/" in
@@ -352,6 +421,7 @@ CONTRACT_ARGS=(
     --experiment-id "$EVAL_EXPERIMENT_ID"
     --logical-run-id "$EVAL_LOGICAL_RUN_ID"
     --source-commit "$EXPECTED_SOURCE_COMMIT"
+    --source-root "$COSMOS_SOURCE"
     --source-manifest "$SOURCE_MANIFEST"
     --cosmos-server-module "$COSMOS_SOURCE/$SERVER_MODULE_REL"
     --checkpoint-path "$SERVING_CHECKPOINT_PATH"
@@ -359,6 +429,9 @@ CONTRACT_ARGS=(
     --checkpoint-verification-receipt "$CHECKPOINT_VERIFICATION_RECEIPT"
     --training-config "$TRAINING_CONFIG"
     --action-stats "$ACTION_STATS"
+    --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST"
+    --robocasa-environment-manifest "$ROBOCASA_ENVIRONMENT_MANIFEST"
+    --eval-runtime-receipt "$EVAL_RUNTIME_RECEIPT"
     --demian-repo "$DEMIAN_REPO"
     --demian-commit "$EXPECTED_DEMIAN_COMMIT"
     --demian-evaluator "$DEMIAN_REPO/$DEMIAN_EVALUATOR_REL"
@@ -422,7 +495,7 @@ for ((shard = 0; shard < NUM_SHARDS; shard++)); do
     fi
     env \
         CUDA_VISIBLE_DEVICES="$shard" \
-        MUJOCO_EGL_DEVICE_ID=0 \
+        MUJOCO_EGL_DEVICE_ID="$shard" \
         MUJOCO_GL=egl \
         PYOPENGL_PLATFORM=egl \
         PYTHONPATH="$EVAL_PYTHONPATH" \
@@ -472,6 +545,7 @@ done
 chmod 0444 \
     "$CONTRACT_PATH" \
     "$CHECKPOINT_VERIFICATION_RECEIPT" \
+    "$EVAL_RUNTIME_RECEIPT" \
     "${RECEIPTS[@]}" \
     "${RAW_RESULT_FILES[@]}" \
     "$SUMMARY_CSV" \

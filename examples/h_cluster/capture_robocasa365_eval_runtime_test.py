@@ -66,6 +66,9 @@ class FakeRunner:
             stdout = json.dumps(self.fixture["cosmos_probe"])
         elif label == "robocasa-probe":
             stdout = json.dumps(self.fixture["robocasa_probe"])
+        elif label.startswith("robocasa-egl:"):
+            shard_index = int(label.partition(":")[2])
+            stdout = json.dumps(self.fixture["robocasa_egl_probes"][shard_index])
         elif label == "nvidia-smi":
             stdout = self.fixture["nvidia_smi"]
         else:  # pragma: no cover - a new command must be explicitly modeled
@@ -81,14 +84,19 @@ class FakeRunner:
         if Path(argv[0]) == self.fixture["nvidia_smi_executable"]:
             return "nvidia-smi"
         if argv[2] == "-c":
-            return "cosmos-probe" if argv[3] == runtime_receipt._COSMOS_PROBE else "robocasa-probe"
+            if argv[3] == runtime_receipt._COSMOS_PROBE:
+                return "cosmos-probe"
+            if argv[3] == runtime_receipt._ROBOCASA_EGL_PROBE:
+                return f"robocasa-egl:{argv[-1]}"
+            return "robocasa-probe"
         if Path(argv[0]) == self.fixture["cosmos_python"]:
             return "cosmos-environment"
         return "robocasa-environment"
 
 
 @pytest.fixture
-def valid_fixture(tmp_path: Path) -> dict[str, Any]:
+def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    monkeypatch.setenv("LD_LIBRARY_PATH", runtime_receipt.H_DRIVER_LIBRARY_PATH)
     cosmos_python = _write_executable(tmp_path / "cosmos-env" / "bin" / "python")
     robocasa_python = _write_executable(tmp_path / "robocasa-env" / "bin" / "python")
     git = _write_executable(tmp_path / "tools" / "git")
@@ -242,6 +250,20 @@ def valid_fixture(tmp_path: Path) -> dict[str, Any]:
             "packages": packages,
             "demian_evaluator": {"module_path": str(module_paths["demian_evaluator"])},
         },
+        "robocasa_egl_probes": [
+            {
+                "status": "passed",
+                "shard_index": index,
+                "cuda_visible_devices": str(index),
+                "mujoco_egl_device_id": str(index),
+                "mujoco_gl": "egl",
+                "pyopengl_platform": "egl",
+                "ld_library_path": runtime_receipt.H_DRIVER_LIBRARY_PATH,
+                "egl_vendor_library_dirs": None,
+                "robosuite_module_path": str(module_paths["robosuite"]),
+            }
+            for index in range(2)
+        ],
         "nvidia_smi": "\n".join(f"{index}, {_uuid(index)}, NVIDIA H200, 570.133.20" for index in range(2)) + "\n",
         "output": tmp_path / "output" / "runtime-receipt.json",
     }
@@ -266,6 +288,9 @@ def _capture_arguments(fixture: dict[str, Any]) -> dict[str, Any]:
         "expected_robocasa_commit": commits[str(roots["robocasa"])],
         "robosuite_source_root": roots["robosuite"],
         "expected_robosuite_commit": commits[str(roots["robosuite"])],
+        "experiment_id": "CWAM-E35-R12-GATE",
+        "logical_run_id": "CWAM-E35-R12-GATE-S42",
+        "capture_nonce": "e" * 64,
         "num_gpus": 2,
         "output": fixture["output"],
     }
@@ -298,13 +323,21 @@ def test_happy_path_publishes_read_only_receipt_and_uses_only_argv_subprocesses(
     assert receipt["kind"] == runtime_receipt.RECEIPT_KIND
     assert receipt["status"] == "passed"
     assert receipt["captured_at_utc"] == "2026-07-29T01:02:03Z"
+    assert receipt["inputs"]["experiment_id"] == "CWAM-E35-R12-GATE"
+    assert receipt["inputs"]["logical_run_id"] == "CWAM-E35-R12-GATE-S42"
+    assert receipt["inputs"]["capture_nonce"] == "e" * 64
+    assert receipt["driver_environment"] == {
+        "ld_library_path": runtime_receipt.H_DRIVER_LIBRARY_PATH,
+        "egl_vendor_library_dirs": None,
+    }
     assert receipt["cosmos_runtime"]["torch"]["cuda_device_count"] == 2
+    assert [record["shard_index"] for record in receipt["robocasa_egl"]] == [0, 1]
     assert receipt["nvidia_smi"]["driver_version"] == "570.133.20"
     numpy = receipt["robocasa_runtime"]["packages"]["numpy"]
     assert numpy["distribution_version"] == "2.2.5"
     assert numpy["module_reported_version"] == "1.23.5"
     assert numpy["version_source"] == "importlib.metadata"
-    assert len(runner.calls) == 23
+    assert len(runner.calls) == 25
     for argv, kwargs in runner.calls:
         assert isinstance(argv, list)
         assert kwargs["shell"] is False
@@ -312,6 +345,13 @@ def test_happy_path_publishes_read_only_receipt_and_uses_only_argv_subprocesses(
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         assert kwargs["check"] is False
+        if argv[3:4] == [runtime_receipt._ROBOCASA_EGL_PROBE]:
+            shard = argv[-1]
+            assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == shard
+            assert kwargs["env"]["MUJOCO_EGL_DEVICE_ID"] == shard
+            assert kwargs["env"]["MUJOCO_GL"] == "egl"
+            assert kwargs["env"]["PYOPENGL_PLATFORM"] == "egl"
+            assert kwargs["env"]["LD_LIBRARY_PATH"] == runtime_receipt.H_DRIVER_LIBRARY_PATH
 
 
 def test_existing_output_is_rejected_before_any_subprocess(valid_fixture: dict[str, Any]) -> None:
@@ -349,6 +389,43 @@ def test_manifest_sha_mismatch_and_duplicate_keys_fail_before_commands(
     valid_fixture["cosmos_manifest"].write_bytes(duplicate)
     arguments["expected_cosmos_environment_manifest_sha256"] = hashlib.sha256(duplicate).hexdigest()
     with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="duplicate object key"):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(valid_fixture["git"]),
+        )
+    assert runner.calls == []
+    assert not valid_fixture["output"].exists()
+
+
+def test_invalid_run_identity_or_driver_environment_fails_before_commands(
+    valid_fixture: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeRunner(valid_fixture)
+    arguments = _capture_arguments(valid_fixture)
+    arguments["logical_run_id"] = "../escape"
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="logical_run_id"):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(valid_fixture["git"]),
+        )
+    assert runner.calls == []
+
+    arguments["logical_run_id"] = "CWAM-E35-R12-GATE-S42"
+    arguments["capture_nonce"] = "A" * 64
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="capture_nonce"):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(valid_fixture["git"]),
+        )
+    assert runner.calls == []
+
+    arguments["capture_nonce"] = "e" * 64
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/untrusted")
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="exact audited H driver allowlist"):
         runtime_receipt.capture_runtime_receipt(
             **arguments,
             runner=runner,
@@ -505,6 +582,34 @@ def test_environment_report_and_probe_json_are_strict(valid_fixture: dict[str, A
 
     runner = DuplicateProbeRunner(valid_fixture)
     with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="duplicate object key"):
+        runtime_receipt.capture_runtime_receipt(
+            **_capture_arguments(valid_fixture),
+            runner=runner,
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert not valid_fixture["output"].exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("cuda_visible_devices", "0", "cuda_visible_devices mismatch"),
+        ("mujoco_egl_device_id", "0", "mujoco_egl_device_id mismatch"),
+        ("ld_library_path", "/tmp/untrusted", "ld_library_path mismatch"),
+        ("robosuite_module_path", "/tmp/outside/robosuite/__init__.py", "does not exist"),
+    ],
+)
+def test_per_shard_egl_probe_must_bind_exact_device_and_driver_environment(
+    valid_fixture: dict[str, Any],
+    field: str,
+    value: str,
+    match: str,
+) -> None:
+    valid_fixture["robocasa_egl_probes"][1][field] = value
+    runner = FakeRunner(valid_fixture)
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match=match):
         runtime_receipt.capture_runtime_receipt(
             **_capture_arguments(valid_fixture),
             runner=runner,

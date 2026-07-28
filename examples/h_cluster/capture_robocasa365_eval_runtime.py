@@ -8,7 +8,9 @@ The helper is intentionally a separate process from both the policy server and
 the evaluator.  It interrogates each pinned Python interpreter with isolated
 ``argv`` subprocesses, verifies both full Python-environment manifests, binds
 the four source checkouts to exact clean commits, and cross-checks PyTorch's GPU
-inventory against ``nvidia-smi`` before publishing one immutable receipt.
+inventory against ``nvidia-smi``.  It also creates and releases one real
+RoboCasa EGL context under each evaluator shard's exact GPU environment before
+publishing a run-identity-bound immutable receipt.
 """
 
 from __future__ import annotations
@@ -36,9 +38,11 @@ MAX_INPUT_JSON_BYTES = 16 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 ENVIRONMENT_MANIFEST_KIND = "cwam_python_environment_manifest"
 ENVIRONMENT_MANIFEST_HELPER_REL = Path("examples/h_cluster/cwam_python_environment_manifest.py")
+H_DRIVER_LIBRARY_PATH = "/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _DRIVER_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}$")
 _NORMALIZED_GPU_UUID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -167,6 +171,55 @@ payload = {
     "demian_evaluator": {
         "module_path": str(pathlib.Path(demian_evaluator_spec.origin).resolve(strict=True)),
     },
+}
+print(json.dumps(payload, sort_keys=True, allow_nan=False))
+"""
+
+_ROBOCASA_EGL_PROBE = r"""
+import contextlib
+import json
+import os
+import pathlib
+import sys
+
+sys.dont_write_bytecode = True
+robosuite_source_root = pathlib.Path(sys.argv[1]).resolve(strict=True)
+shard_index = int(sys.argv[2])
+expected_device = str(shard_index)
+sys.path.insert(0, str(robosuite_source_root))
+
+expected_environment = {
+    "CUDA_VISIBLE_DEVICES": expected_device,
+    "MUJOCO_EGL_DEVICE_ID": expected_device,
+    "MUJOCO_GL": "egl",
+    "PYOPENGL_PLATFORM": "egl",
+}
+for name, expected in expected_environment.items():
+    actual = os.environ.get(name)
+    if actual != expected:
+        raise RuntimeError(f"{name} mismatch: expected={expected!r}, actual={actual!r}")
+
+context = None
+with contextlib.redirect_stdout(sys.stderr):
+    import robosuite
+    from robosuite.renderers.context.egl_context import EGLGLContext
+
+    context = EGLGLContext(max_width=64, max_height=64, device_id=shard_index)
+    try:
+        context.make_current()
+    finally:
+        context.free()
+
+payload = {
+    "status": "passed",
+    "shard_index": shard_index,
+    "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
+    "mujoco_egl_device_id": os.environ["MUJOCO_EGL_DEVICE_ID"],
+    "mujoco_gl": os.environ["MUJOCO_GL"],
+    "pyopengl_platform": os.environ["PYOPENGL_PLATFORM"],
+    "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
+    "egl_vendor_library_dirs": os.environ.get("__EGL_VENDOR_LIBRARY_DIRS"),
+    "robosuite_module_path": str(pathlib.Path(robosuite.__file__).resolve(strict=True)),
 }
 print(json.dumps(payload, sort_keys=True, allow_nan=False))
 """
@@ -371,6 +424,18 @@ def _require_commit(value: object, label: str) -> str:
     return value
 
 
+def _require_run_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or _RUN_ID_RE.fullmatch(value) is None:
+        raise RuntimeReceiptValidationError(f"{label} must contain only ASCII letters, digits, '.', '_', or '-'")
+    return value
+
+
+def _require_capture_nonce(value: object) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise RuntimeReceiptValidationError("capture_nonce must be exactly 64 lowercase hexadecimal characters")
+    return value
+
+
 def _prepare_environment_manifest(path: Path, expected_sha256: str, label: str) -> dict[str, Any]:
     expected = _require_sha256(expected_sha256, f"expected {label} SHA256")
     canonical = _canonical_path(path, label, kind="file")
@@ -429,6 +494,7 @@ def _run_command(
     label: str,
     runner: CommandRunner,
     timeout_seconds: float,
+    environment_overrides: Mapping[str, str] | None = None,
 ) -> str:
     if isinstance(argv, (str, bytes)) or not argv or any(not isinstance(item, str) or not item for item in argv):
         raise RuntimeReceiptValidationError(f"{label} command must be a non-empty argv sequence")
@@ -441,6 +507,13 @@ def _run_command(
             "PYTHONNOUSERSITE": "1",
         }
     )
+    if environment_overrides is not None:
+        if any(
+            not isinstance(key, str) or not key or not isinstance(value, str)
+            for key, value in environment_overrides.items()
+        ):
+            raise RuntimeReceiptValidationError(f"{label} environment overrides must be non-empty strings")
+        environment.update(environment_overrides)
     try:
         result = runner(
             list(argv),
@@ -828,6 +901,73 @@ def _validate_robocasa_probe(
     }
 
 
+def _validate_robocasa_egl_probe(
+    value: object,
+    *,
+    shard_index: int,
+    robosuite_root: Path,
+) -> dict[str, Any]:
+    label = f"RoboCasa EGL probe shard {shard_index}"
+    probe = _require_mapping(value, label)
+    _require_exact_keys(
+        probe,
+        frozenset(
+            {
+                "status",
+                "shard_index",
+                "cuda_visible_devices",
+                "mujoco_egl_device_id",
+                "mujoco_gl",
+                "pyopengl_platform",
+                "ld_library_path",
+                "egl_vendor_library_dirs",
+                "robosuite_module_path",
+            }
+        ),
+        label,
+    )
+    if probe["status"] != "passed" or probe["shard_index"] != shard_index:
+        raise RuntimeReceiptValidationError(f"{label} did not pass with the expected shard index")
+    expected_device = str(shard_index)
+    expected_values = {
+        "cuda_visible_devices": expected_device,
+        "mujoco_egl_device_id": expected_device,
+        "mujoco_gl": "egl",
+        "pyopengl_platform": "egl",
+        "ld_library_path": H_DRIVER_LIBRARY_PATH,
+    }
+    for key, expected in expected_values.items():
+        if probe[key] != expected:
+            raise RuntimeReceiptValidationError(f"{label}.{key} mismatch: expected={expected!r}, actual={probe[key]!r}")
+    egl_vendor_library_dirs = probe["egl_vendor_library_dirs"]
+    if egl_vendor_library_dirs is not None:
+        egl_vendor_library_dirs = _require_string(
+            egl_vendor_library_dirs,
+            f"{label}.egl_vendor_library_dirs",
+        )
+    robosuite_module_path = _canonical_reported_module_path(
+        probe["robosuite_module_path"],
+        f"{label}.robosuite_module_path",
+    )
+    expected_robosuite_module = _canonical_path(
+        robosuite_root / "robosuite" / "__init__.py",
+        f"{label} expected robosuite module",
+        kind="file",
+    )
+    if robosuite_module_path != expected_robosuite_module:
+        raise RuntimeReceiptValidationError(
+            f"{label} imported robosuite outside the exact source root: "
+            f"expected={expected_robosuite_module}, actual={robosuite_module_path}"
+        )
+    return {
+        "status": "passed",
+        "shard_index": shard_index,
+        **expected_values,
+        "egl_vendor_library_dirs": egl_vendor_library_dirs,
+        "robosuite_module_path": str(robosuite_module_path),
+    }
+
+
 def _parse_nvidia_smi_inventory(stdout: str, *, num_gpus: int, executable: Path) -> dict[str, Any]:
     try:
         rows = list(csv.reader(stdout.splitlines(), skipinitialspace=True))
@@ -1014,6 +1154,9 @@ def capture_runtime_receipt(
     expected_robocasa_commit: str,
     robosuite_source_root: Path,
     expected_robosuite_commit: str,
+    experiment_id: str,
+    logical_run_id: str,
+    capture_nonce: str,
     num_gpus: int,
     output: Path,
     runner: CommandRunner = subprocess.run,
@@ -1027,6 +1170,21 @@ def capture_runtime_receipt(
         raise RuntimeReceiptValidationError(f"num_gpus must be a positive integer, got {num_gpus!r}")
     if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
         raise RuntimeReceiptValidationError("timeout_seconds must be positive")
+    experiment_id = _require_run_id(experiment_id, "experiment_id")
+    logical_run_id = _require_run_id(logical_run_id, "logical_run_id")
+    capture_nonce = _require_capture_nonce(capture_nonce)
+    driver_library_path = os.environ.get("LD_LIBRARY_PATH")
+    if driver_library_path != H_DRIVER_LIBRARY_PATH:
+        raise RuntimeReceiptValidationError(
+            "LD_LIBRARY_PATH must be the exact audited H driver allowlist: "
+            f"expected={H_DRIVER_LIBRARY_PATH!r}, actual={driver_library_path!r}"
+        )
+    egl_vendor_library_dirs = os.environ.get("__EGL_VENDOR_LIBRARY_DIRS")
+    if egl_vendor_library_dirs is not None:
+        egl_vendor_library_dirs = _require_string(
+            egl_vendor_library_dirs,
+            "__EGL_VENDOR_LIBRARY_DIRS",
+        )
     # Fail before launching any subprocess if the output target is obviously unsafe.
     output_path = _lexical_absolute(output, "output path")
     output_parent = _canonical_path(output_path.parent, "output parent", kind="directory")
@@ -1141,6 +1299,37 @@ def capture_runtime_receipt(
         robocasa_root=robocasa_root,
         robosuite_root=robosuite_root,
     )
+    robocasa_egl = []
+    for shard_index in range(num_gpus):
+        egl_stdout = _run_command(
+            [
+                str(robocasa_python_launch),
+                "-I",
+                "-c",
+                _ROBOCASA_EGL_PROBE,
+                str(robosuite_root),
+                str(shard_index),
+            ],
+            label=f"RoboCasa EGL probe shard {shard_index}",
+            runner=runner,
+            timeout_seconds=float(timeout_seconds),
+            environment_overrides={
+                "CUDA_VISIBLE_DEVICES": str(shard_index),
+                "MUJOCO_EGL_DEVICE_ID": str(shard_index),
+                "MUJOCO_GL": "egl",
+                "PYOPENGL_PLATFORM": "egl",
+            },
+        )
+        robocasa_egl.append(
+            _validate_robocasa_egl_probe(
+                _strict_json_text(
+                    egl_stdout,
+                    f"RoboCasa EGL probe shard {shard_index} stdout",
+                ),
+                shard_index=shard_index,
+                robosuite_root=robosuite_root,
+            )
+        )
 
     if environment_verification["cosmos"]["interpreter_resolved_path"] != cosmos_runtime["python"]["executable"]:
         raise RuntimeReceiptValidationError(
@@ -1224,7 +1413,14 @@ def capture_runtime_receipt(
         "kind": RECEIPT_KIND,
         "status": "passed",
         "captured_at_utc": _utc_timestamp(clock),
+        "driver_environment": {
+            "ld_library_path": driver_library_path,
+            "egl_vendor_library_dirs": egl_vendor_library_dirs,
+        },
         "inputs": {
+            "experiment_id": experiment_id,
+            "logical_run_id": logical_run_id,
+            "capture_nonce": capture_nonce,
             "num_gpus": num_gpus,
             "interpreters": {
                 "cosmos": {
@@ -1245,6 +1441,7 @@ def capture_runtime_receipt(
         "environment_verification": environment_verification,
         "cosmos_runtime": cosmos_runtime,
         "robocasa_runtime": robocasa_runtime,
+        "robocasa_egl": robocasa_egl,
         "nvidia_smi": nvidia_inventory,
         "validation": {
             "environment_manifests_match_live_interpreters": True,
@@ -1254,6 +1451,8 @@ def capture_runtime_receipt(
             "gpu_count_matches": True,
             "all_gpus_are_h200_compute_capability_9_0": True,
             "torch_and_nvidia_smi_uuid_sets_match": True,
+            "h_driver_library_path_is_exact": True,
+            "robocasa_egl_contexts_created_per_shard": True,
         },
     }
     digest = write_json_atomic_exclusive(output_path, receipt)
@@ -1276,6 +1475,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-robocasa-commit", required=True)
     parser.add_argument("--robosuite-source-root", type=Path, required=True)
     parser.add_argument("--expected-robosuite-commit", required=True)
+    parser.add_argument("--experiment-id", required=True)
+    parser.add_argument("--logical-run-id", required=True)
+    parser.add_argument("--capture-nonce", required=True)
     parser.add_argument("--num-gpus", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=COMMAND_TIMEOUT_SECONDS)
@@ -1300,6 +1502,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_robocasa_commit=arguments.expected_robocasa_commit,
             robosuite_source_root=arguments.robosuite_source_root,
             expected_robosuite_commit=arguments.expected_robosuite_commit,
+            experiment_id=arguments.experiment_id,
+            logical_run_id=arguments.logical_run_id,
+            capture_nonce=arguments.capture_nonce,
             num_gpus=arguments.num_gpus,
             output=arguments.output,
             timeout_seconds=arguments.timeout_seconds,
