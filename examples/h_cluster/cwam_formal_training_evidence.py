@@ -1889,15 +1889,25 @@ def verify_formal(
     template_command = scheduler_container.get("command")
     worker_command = worker_spec.get("command")
     worker_init_prefix = worker_spec.get("worker_init_prefix")
-    audited_worker_init_prefix = [
-        "/kubebrain/worker-init",
-        "run",
-        "--enable-pid-monitor",
-        "--",
+    audited_worker_init_prefixes = [
+        [],
+        [
+            "/kubebrain/worker-init",
+            "run",
+            "--enable-pid-monitor",
+            "--",
+        ],
+        [
+            "/kubebrain/worker-init",
+            "run",
+            "--enable-pid-monitor",
+            "--metrics-addr=",
+            "--",
+        ],
     ]
     if not isinstance(template_command, list) or not all(isinstance(item, str) for item in template_command):
         raise EvidenceError("normalized scheduler template command is invalid")
-    if worker_init_prefix not in ([], audited_worker_init_prefix):
+    if worker_init_prefix not in audited_worker_init_prefixes:
         raise EvidenceError("normalized expanded worker-init prefix mismatch")
     _require_equal(
         worker_command,

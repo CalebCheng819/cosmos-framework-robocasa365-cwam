@@ -42,7 +42,16 @@ _PRIORITY_ANNOTATION = "volcano.brainpp.cn/priority"
 _SCHEDULING_GROUP_KEY = "scheduling.k8s.io/group-name"
 _GPFS_MOUNT_ANNOTATION = "mount.brainpp.cn/gpfs"
 _REPLICA_INDEX_LABEL = "kubebrain.brainpp.cn/replica"
-_WORKER_INIT_PREFIX = ["/kubebrain/worker-init", "run", "--enable-pid-monitor", "--"]
+_WORKER_INIT_PREFIXES = (
+    ("/kubebrain/worker-init", "run", "--enable-pid-monitor", "--"),
+    (
+        "/kubebrain/worker-init",
+        "run",
+        "--enable-pid-monitor",
+        "--metrics-addr=",
+        "--",
+    ),
+)
 _API_REQUEST_TIMEOUT_SECONDS = (5.0, 15.0)
 _PLATFORM_INJECTED_LIMIT_KEYS = frozenset(
     {
@@ -476,13 +485,21 @@ def _validate_expanded_worker_command(
     if normalized_command == template_command:
         worker_init_prefix: list[str] = []
         command_suffix = normalized_command
-    elif normalized_command[: len(_WORKER_INIT_PREFIX)] == _WORKER_INIT_PREFIX:
-        worker_init_prefix = normalized_command[: len(_WORKER_INIT_PREFIX)]
-        command_suffix = normalized_command[len(_WORKER_INIT_PREFIX) :]
     else:
-        raise ReceiptValidationError(
-            "expanded worker command must be the formal command with only the audited worker-init prefix"
+        matched_prefix = next(
+            (
+                list(prefix)
+                for prefix in _WORKER_INIT_PREFIXES
+                if normalized_command[: len(prefix)] == list(prefix)
+            ),
+            None,
         )
+        if matched_prefix is None:
+            raise ReceiptValidationError(
+                "expanded worker command must be the formal command with only an audited worker-init prefix"
+            )
+        worker_init_prefix = matched_prefix
+        command_suffix = normalized_command[len(matched_prefix) :]
     validated_suffix = _validate_command(command_suffix, expected)
     _require_exact(
         validated_suffix,

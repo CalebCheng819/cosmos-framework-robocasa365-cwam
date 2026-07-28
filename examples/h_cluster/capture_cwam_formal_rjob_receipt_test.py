@@ -519,6 +519,24 @@ def test_expanded_worker_allows_only_audited_platform_injections() -> None:
     receipt = validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
     assert receipt["replicas"][0]["worker_spec"]["worker_init_prefix"] == []
 
+    replicas = _raw_replicas()
+    worker = replicas["items"][0]["spec"]["containers"][0]
+    worker["command"].insert(3, "--metrics-addr=")
+    receipt = validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
+    assert receipt["replicas"][0]["worker_spec"]["worker_init_prefix"] == [
+        "/kubebrain/worker-init",
+        "run",
+        "--enable-pid-monitor",
+        "--metrics-addr=",
+        "--",
+    ]
+
+    replicas = _raw_replicas()
+    worker = replicas["items"][0]["spec"]["containers"][0]
+    worker["command"].insert(3, "--metrics-addr=127.0.0.1:9999")
+    with pytest.raises(ReceiptValidationError, match="audited worker-init prefix"):
+        validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
+
 
 @pytest.mark.parametrize(
     "command",
