@@ -17,6 +17,9 @@ readonly PINNED_FORMAL_MIN_FREE_BYTES="5497558138880"
 readonly PINNED_FORMAL_ESTIMATED_REQUIRED_BYTES="4398046511104"
 readonly PINNED_RJOB_QUOTA_GROUP="eailabagent_gpu"
 readonly PINNED_RJOB_EXCLUDED_NODE_TAG="node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn"
+readonly SCHEDULER_RECEIPT_ATTEMPTS=86400
+readonly SCHEDULER_RECEIPT_RETRY_SECONDS=1
+readonly SCHEDULER_RECEIPT_TIMEOUT_SECONDS=90000
 
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the clean immutable formal snapshot.}"
 : "${FORMAL_EXPERIMENT_ID:?Set FORMAL_EXPERIMENT_ID.}"
@@ -329,6 +332,7 @@ echo "COSMOS_SOURCE=$COSMOS_SOURCE"
 echo "FORMAL_MANIFEST_SHA256=$FORMAL_MANIFEST_SHA256"
 echo "EXPECTED_SNAPSHOT_MANIFEST_SHA256=$EXPECTED_SNAPSHOT_MANIFEST_SHA256"
 echo "SUBMISSION_RESERVATION_PATH=$SUBMISSION_RESERVATION_PATH"
+echo "SCHEDULER_RECEIPT_WAIT=${SCHEDULER_RECEIPT_ATTEMPTS}x${SCHEDULER_RECEIPT_RETRY_SECONDS}s"
 
 if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then
     rjob "${SUBMIT_ARGS[@]}" -- bash -lc "$FORMAL_COMMAND"
@@ -484,13 +488,13 @@ with os.fdopen(descriptor, "w") as handle:
 PY
 
 set +e
-timeout --foreground --kill-after=10s 180s \
+timeout --foreground --kill-after=10s "${SCHEDULER_RECEIPT_TIMEOUT_SECONDS}s" \
     python3 "$COSMOS_SOURCE/examples/h_cluster/capture_cwam_formal_rjob_receipt.py" \
         --scheduler-rjob-name "$SCHEDULER_RJOB_NAME" \
         --expected-json "$SCHEDULER_EXPECTED_CONTRACT_PATH" \
         --output "$SCHEDULER_RECEIPT_PATH" \
-        --attempts 60 \
-        --retry-seconds 1 2>&1 |
+        --attempts "$SCHEDULER_RECEIPT_ATTEMPTS" \
+        --retry-seconds "$SCHEDULER_RECEIPT_RETRY_SECONDS" 2>&1 |
     python3 "$SECURE_TEE_HELPER" \
         --root "$FORMAL_OUTPUT_ROOT" \
         --path "$SCHEDULER_CAPTURE_LOG_PATH" \

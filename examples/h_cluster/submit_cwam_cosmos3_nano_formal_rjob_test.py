@@ -71,6 +71,8 @@ parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--attempts")
 parser.add_argument("--retry-seconds")
 args = parser.parse_args()
+if args.attempts != "86400" or args.retry_seconds != "1":
+    raise SystemExit(18)
 if int(os.environ.get("FAKE_SCHEDULER_CAPTURE_EXIT", "0")):
     raise SystemExit(int(os.environ["FAKE_SCHEDULER_CAPTURE_EXIT"]))
 expected = json.loads(args.expected_json.read_text())
