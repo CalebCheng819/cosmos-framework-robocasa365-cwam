@@ -15,6 +15,31 @@ _RESOLUTION_768_SHAPES: tuple[tuple[int, int], ...] = (
 )
 
 
+def resolve_vision_batch_key(
+    data_batch: dict[str, Any],
+    *,
+    image_key: str = "images",
+    video_key: str = "video",
+    video_latent_key: str = "video_latent",
+) -> tuple[str, bool]:
+    """Return the one active vision key and whether it represents images.
+
+    Raw images, raw videos, and precomputed video latents are mutually
+    exclusive representations of the same model input. Centralizing this
+    check keeps training statistics and callbacks from silently assuming that
+    every video batch still carries decoded pixels.
+    """
+
+    present = [key for key in (image_key, video_key, video_latent_key) if key in data_batch]
+    if len(present) != 1:
+        raise ValueError(
+            "A vision batch must contain exactly one of "
+            f"{image_key!r}, {video_key!r}, or {video_latent_key!r}; got {present}."
+        )
+    active_key = present[0]
+    return active_key, active_key == image_key
+
+
 def read_positive_int_metadata(
     data_batch: dict[str, Any],
     key: str,

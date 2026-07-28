@@ -16,6 +16,7 @@ import torch
 import torch.distributed as dist
 
 from cosmos_framework.utils.callback import Callback
+from cosmos_framework.utils.generator.data_utils import resolve_vision_batch_key
 
 
 def _evaluate_memory_rows(
@@ -351,9 +352,10 @@ class ProductionBatchMemoryGate(Callback):
             return
         if int(iteration) != self._start_iteration:
             return
+        input_key, _ = resolve_vision_batch_key(data_batch)
         self._microbatches.append(
             {
-                "input_sample_count": _sequence_length(data_batch.get("video")),
+                "input_sample_count": _sequence_length(data_batch[input_key]),
                 "unique_identity_count": _unique_identity_count(data_batch),
                 "model_batch_size": _integer_metric(output_batch, "batch_size"),
                 "und_token_length": _integer_metric(output_batch, "und_token_length"),

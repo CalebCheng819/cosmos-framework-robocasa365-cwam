@@ -4,6 +4,7 @@
 """Cosmos3-Nano action-policy SFT recipe for the CWAM RoboCasa365 view."""
 
 import copy
+import os
 
 from hydra.core.config_store import ConfigStore
 
@@ -14,6 +15,7 @@ from cosmos_framework.data.generator.action.datasets.action_sft_dataset import (
     get_action_robocasa365_sft_dataset,
 )
 from cosmos_framework.data.generator.joint_dataloader import PackingDataLoader, RankPartitionedDataLoader
+from cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2 import PrecomputedWan2pt2LatentTokenizer
 from cosmos_framework.utils.lazy_config import LazyCall as L
 from cosmos_framework.utils.lazy_config import LazyDict
 
@@ -24,11 +26,47 @@ def _action_policy_robocasa365_nano_model_config() -> dict:
     """Return the Nano action-policy model settings used by this recipe."""
     cfg = copy.deepcopy(NANO_MODEL_CONFIG)
     cfg["max_num_tokens_after_packing"] = 74000
-    cfg["activation_checkpointing"]["mode"] = "selective"
+    activation_checkpointing_mode = os.environ.get("CWAM_ACTIVATION_CHECKPOINTING_MODE", "selective")
+    if activation_checkpointing_mode not in {"selective", "full", "none"}:
+        raise ValueError(
+            "CWAM_ACTIVATION_CHECKPOINTING_MODE must be one of selective/full/none, "
+            f"got {activation_checkpointing_mode!r}."
+        )
+    cfg["activation_checkpointing"]["mode"] = activation_checkpointing_mode
     cfg["diffusion_expert_config"]["load_weights_from_pretrained"] = False
     cfg["rectified_flow_training_config"]["loss_scale"] = 10.0
     cfg["rectified_flow_training_config"]["image_loss_scale"] = None
-    # Preserve the public Cosmos3-Nano tokenizer contract.
+    latent_cache_root = os.environ.get("ROBOCASA365_LATENT_CACHE_ROOT") or None
+    latent_cache_mode = os.environ.get(
+        "ROBOCASA365_LATENT_CACHE_MODE",
+        "required" if latent_cache_root else "disabled",
+    )
+    if latent_cache_mode not in {"disabled", "required"}:
+        raise ValueError(
+            f"ROBOCASA365_LATENT_CACHE_MODE must be disabled or required, got {latent_cache_mode!r}."
+        )
+    if latent_cache_mode == "required" and not latent_cache_root:
+        raise ValueError("ROBOCASA365_LATENT_CACHE_ROOT is required when latent cache mode is required.")
+    metadata_only_raw = os.environ.get("CWAM_METADATA_ONLY_VIDEO_TOKENIZER", "0")
+    if metadata_only_raw not in {"0", "1"}:
+        raise ValueError("CWAM_METADATA_ONLY_VIDEO_TOKENIZER must be exactly 0 or 1.")
+    metadata_only_tokenizer = metadata_only_raw == "1"
+    if metadata_only_tokenizer and latent_cache_mode != "required":
+        raise ValueError(
+            "CWAM_METADATA_ONLY_VIDEO_TOKENIZER=1 requires "
+            "ROBOCASA365_LATENT_CACHE_MODE=required."
+        )
+    if metadata_only_tokenizer:
+        # The strict cache reader validates the Wan weights/config/code hashes.
+        # Keep only shape/time metadata in the training process so the unused
+        # 2.8 GB Wan VAE does not occupy every GPU.
+        cfg["tokenizer"]["_target_"] = (
+            f"{PrecomputedWan2pt2LatentTokenizer.__module__}.{PrecomputedWan2pt2LatentTokenizer.__qualname__}"
+        )
+        cfg["tokenizer"]["latent_ch"] = 48
+    # Preserve the public Cosmos3-Nano online-tokenizer contract in both
+    # modes; the metadata-only implementation accepts this field without
+    # loading weights.
     cfg["tokenizer"]["encode_exact_durations"] = [17, 61, 73]
     # H-cluster GPU workers are offline. Require an explicitly staged local
     # Qwen processor instead of allowing a latent Hugging Face download.
@@ -47,6 +85,23 @@ def _robocasa365_packing_dataloader(
     restart_on_iter: bool = False,
 ):
     """Build a train/validation loader with one shared causal data contract."""
+    latent_cache_root = os.environ.get("ROBOCASA365_LATENT_CACHE_ROOT") or None
+    latent_cache_mode = os.environ.get(
+        "ROBOCASA365_LATENT_CACHE_MODE",
+        "required" if latent_cache_root else "disabled",
+    )
+    if latent_cache_mode not in {"disabled", "required"}:
+        raise ValueError(
+            f"ROBOCASA365_LATENT_CACHE_MODE must be disabled or required, got {latent_cache_mode!r}."
+        )
+    if latent_cache_mode == "disabled":
+        # Allow a raw-video A/B cell to override an inherited cache root with
+        # ROBOCASA365_LATENT_CACHE_MODE=disabled. The dataset contract
+        # deliberately rejects a dormant cache root in disabled mode.
+        latent_cache_root = None
+    fixed_index_trace_path = (
+        (os.environ.get("ROBOCASA365_FIXED_INDEX_TRACE_PATH") or None) if split == "train" else None
+    )
     return L(PackingDataLoader)(
         audio_sample_rate=48000,
         dataset_name=f"action_robocasa365_{split}",
@@ -81,8 +136,11 @@ def _robocasa365_packing_dataloader(
                         action_normalization="quantile_rot",
                         embodiment_type="robocasa365",
                         video_backend="lerobot",
+                        latent_cache_root=latent_cache_root,
+                        latent_cache_mode=latent_cache_mode,
                         iterable_shuffle=iterable_shuffle,
                         episode_shuffle_seed=episode_shuffle_seed,
+                        fixed_index_trace_path=fixed_index_trace_path,
                         resolution=None,
                         max_action_dim="${model.config.max_action_dim}",
                         cfg_dropout_rate=cfg_dropout_rate,
@@ -198,16 +256,16 @@ action_policy_robocasa365_nano = LazyDict(
                     every_n=50,
                     fail_on_first_step=True,
                 ),
-                # Preserve an acquired 6/8-H200 allocation: the first real
-                # production step either proves per-rank headroom and the same
-                # process continues, or fails closed before a long run.
+                # This experiment is explicitly single-node 8xH200: the first
+                # real production step either proves per-rank headroom and the
+                # same process continues, or fails closed before a long run.
                 production_batch_memory_gate=L(ProductionBatchMemoryGate)(
                     max_peak_reserved_fraction=0.94,
                     max_driver_used_fraction=0.94,
                     expected_samples_per_microbatch=128,
                     expected_grad_accum_iter=2,
                     expected_action_tokens_per_sample=16,
-                    allowed_world_sizes=[6, 8],
+                    allowed_world_sizes=[8],
                     required=True,
                 ),
             ),
@@ -248,7 +306,7 @@ action_policy_robocasa365_nano = LazyDict(
             cfg_dropout_rate=0.1,
             iterable_shuffle=True,
             episode_shuffle_seed=42,
-            num_workers=4,
+            num_workers=int(os.environ.get("ROBOCASA365_TRAIN_NUM_WORKERS", "4")),
             # Stable cross-worker ordering is required for reproducible traces
             # and is a prerequisite for any future exact cursor resume.
             in_order=True,
@@ -258,7 +316,7 @@ action_policy_robocasa365_nano = LazyDict(
             cfg_dropout_rate=0.0,
             iterable_shuffle=True,
             episode_shuffle_seed=4242,
-            num_workers=2,
+            num_workers=int(os.environ.get("ROBOCASA365_VAL_NUM_WORKERS", "2")),
             in_order=True,
             restart_on_iter=True,
         ),

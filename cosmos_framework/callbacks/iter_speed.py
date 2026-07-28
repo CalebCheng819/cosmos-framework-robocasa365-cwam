@@ -13,6 +13,7 @@ from cosmos_framework.trainer import ImaginaireTrainer
 from cosmos_framework.utils import log
 from cosmos_framework.utils.distributed import rank0_only
 from cosmos_framework.utils.easy_io import easy_io
+from cosmos_framework.utils.generator.data_utils import resolve_vision_batch_key
 
 
 class IterSpeed(EveryN):
@@ -80,12 +81,16 @@ class IterSpeed(EveryN):
         per_sample_batch_counter = dict()
         # for VFM
         if hasattr(model, "is_image_batch") and hasattr(model, "input_image_key") and hasattr(model, "input_video_key"):
-            is_image_batch = model.is_image_batch(data_batch)
+            input_key, is_image_batch = resolve_vision_batch_key(
+                data_batch,
+                image_key=model.input_image_key,
+                video_key=model.input_video_key,
+            )
             if is_image_batch:
-                image_batch_size = len(data_batch[model.input_image_key])
+                image_batch_size = len(data_batch[input_key])
                 per_sample_batch_counter["image_batch_size"] = image_batch_size
             else:
-                video_batch_size = len(data_batch[model.input_video_key])
+                video_batch_size = len(data_batch[input_key])
                 per_sample_batch_counter["video_batch_size"] = video_batch_size
         # for LLM training only
         elif "input_ids" in data_batch:

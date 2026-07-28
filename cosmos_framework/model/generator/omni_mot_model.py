@@ -69,7 +69,11 @@ from cosmos_framework.model.generator.utils.safetensors_loader import (
 from cosmos_framework.utils import log, misc
 from cosmos_framework.utils.count_params import count_params
 from cosmos_framework.utils.flags import DEVICE, TRAINING, Device
-from cosmos_framework.utils.generator.data_utils import get_vision_data_resolution, read_positive_int_metadata
+from cosmos_framework.utils.generator.data_utils import (
+    get_vision_data_resolution,
+    read_positive_int_metadata,
+    resolve_vision_batch_key,
+)
 from cosmos_framework.utils.generator.dtensor_helper import DTensorFastEmaModelUpdater
 from cosmos_framework.utils.generator.model_weights_stats import WeightTrainingStat
 from cosmos_framework.utils.generator.parallelism import ParallelDims
@@ -1272,8 +1276,11 @@ class OmniMoTModel(ImaginaireModel):
         return total_loss, losses_dict
 
     def _update_train_stats(self, data_batch: dict[str, torch.Tensor]) -> None:
-        is_image = self.is_image_batch(data_batch)
-        input_key = self.input_image_key if is_image else self.input_video_key
+        input_key, is_image = resolve_vision_batch_key(
+            data_batch,
+            image_key=self.input_image_key,
+            video_key=self.input_video_key,
+        )
         if isinstance(self.net, WeightTrainingStat):
             val = data_batch[input_key]
             # For image editing data_batch[input_key] is a list-of-lists, not a tensor.
@@ -3452,10 +3459,23 @@ class OmniMoTModel(ImaginaireModel):
                 Leaving it ``None`` (the default, used during training) encodes every
                 frame — the original behavior.
         """
-        # Detect whether any sample has multiple vision items (e.g. image editing).
-        # If so, track the count per sample before all vision items from this batch are flattened into a list.
-        is_image_batch = self.is_image_batch(data_batch)
-        sample_vision_list = data_batch[self.input_image_key if is_image_batch else self.input_video_key]
+        # ``video_latent`` is a strict, contract-validated cache of the exact
+        # post-crop Wan encoder output. It is mutually exclusive with raw
+        # image/video pixels and is currently a training-only fast path.
+        has_precomputed_vision = "video_latent" in data_batch
+        if has_precomputed_vision:
+            if self.input_image_key in data_batch or self.input_video_key in data_batch:
+                raise ValueError("video_latent is mutually exclusive with raw image/video inputs.")
+            if vision_condition_indexes is not None:
+                raise ValueError("video_latent does not support the inference prefix-encode path.")
+            is_image_batch = False
+            sample_vision_list = data_batch["video_latent"]
+        else:
+            # Detect whether any sample has multiple vision items (e.g. image editing).
+            # If so, track the count per sample before all vision items from this
+            # batch are flattened into a list.
+            is_image_batch = self.is_image_batch(data_batch)
+            sample_vision_list = data_batch[self.input_image_key if is_image_batch else self.input_video_key]
 
         # we should always get this information here during training. If we can read this field
         # from data_batch it means we are in the visualization callback:
@@ -3463,7 +3483,7 @@ class OmniMoTModel(ImaginaireModel):
             # Each element must be a list/tuple of tensors (not a bare tensor) to count
             # as multi-vision.  A bare tensor's len() returns its first dim size (e.g. C=3),
             # which would incorrectly trigger the multi-vision path for regular video batches.
-            has_multiple_vision_per_sample = any(
+            has_multiple_vision_per_sample = not has_precomputed_vision and any(
                 isinstance(v, (list, tuple)) and len(v) > 1 for v in sample_vision_list
             )
             num_vision_items_per_sample: list[int] | None = (
@@ -3491,7 +3511,7 @@ class OmniMoTModel(ImaginaireModel):
 
         log_enc_time = False
         timer = None
-        if TRAINING and self.training:
+        if TRAINING and self.training and not has_precomputed_vision:
             import wandb
 
             log_enc_time = iteration % self.log_enc_time_every_n == 0 and wandb.run
@@ -3499,33 +3519,63 @@ class OmniMoTModel(ImaginaireModel):
                 timer = Timer(unit="s")
                 timer.start()
 
-        # Vision (image/video) raw state and tokenized latent state
-        self._normalize_video_databatch_inplace(data_batch)
-        self._augment_image_dim_inplace(data_batch)  # converts each image tensor to (1, C, 1, H, W)
-        raw_state_vision = data_batch[self.input_image_key if is_image_batch else self.input_video_key]
-        num_views_per_vision_item, frames_per_vision_item = self._get_multiview_vae_metadata(
-            data_batch,
-            num_vision_items_per_sample,
-            batch_size,
-        )
-        x0_tokens_vision = self._encode_vision_x0_tokens(
-            raw_state_vision,
-            num_vision_items_per_sample,
-            vision_condition_indexes,
-            num_views_per_vision_item,
-            frames_per_vision_item,
-        )
+        # Vision (image/video) raw state and tokenized latent state.
+        if has_precomputed_vision:
+            if self.config.diffusion_expert_config.vision_temporal_position_mode != "latent_index":
+                raise ValueError(
+                    "video_latent currently requires vision_temporal_position_mode='latent_index'."
+                )
+            cached = unwrap_and_densify(data_batch["video_latent"], self.tensor_kwargs_fp32)
+            if cached is None or len(cached) != batch_size:
+                raise ValueError(
+                    f"Expected {batch_size} cached vision latents, got {0 if cached is None else len(cached)}."
+                )
+            x0_tokens_vision = []
+            for latent in cached:
+                if latent.ndim == 4:
+                    latent = latent.unsqueeze(0)
+                if latent.ndim != 5 or latent.shape[0] != 1:
+                    raise ValueError(
+                        "Cached vision latents must have shape [C,T,H,W] or [1,C,T,H,W], "
+                        f"got {tuple(latent.shape)}."
+                    )
+                if latent.shape[1] != self.tokenizer_vision_gen.latent_ch:
+                    raise ValueError(
+                        "Cached vision latent channel mismatch: "
+                        f"cache={latent.shape[1]}, tokenizer={self.tokenizer_vision_gen.latent_ch}."
+                    )
+                x0_tokens_vision.append(latent.contiguous().float())
+            raw_state_vision = None
+            num_views_per_vision_item = None
+            frames_per_vision_item = None
+            temporal_positions_vision = None
+        else:
+            self._normalize_video_databatch_inplace(data_batch)
+            self._augment_image_dim_inplace(data_batch)  # converts each image tensor to (1, C, 1, H, W)
+            raw_state_vision = data_batch[self.input_image_key if is_image_batch else self.input_video_key]
+            num_views_per_vision_item, frames_per_vision_item = self._get_multiview_vae_metadata(
+                data_batch,
+                num_vision_items_per_sample,
+                batch_size,
+            )
+            x0_tokens_vision = self._encode_vision_x0_tokens(
+                raw_state_vision,
+                num_vision_items_per_sample,
+                vision_condition_indexes,
+                num_views_per_vision_item,
+                frames_per_vision_item,
+            )
 
-        frame_size = data_batch.get("image_size", None)
-        if frame_size is not None:
-            x0_tokens_vision = self._remove_padding_from_latent(x0_tokens_vision, frame_size)
+            frame_size = data_batch.get("image_size", None)
+            if frame_size is not None:
+                x0_tokens_vision = self._remove_padding_from_latent(x0_tokens_vision, frame_size)
 
-        temporal_positions_vision = self._get_temporal_positions_vision(
-            raw_state_vision=raw_state_vision,
-            x0_tokens_vision=x0_tokens_vision,
-            num_views_per_vision_item=num_views_per_vision_item,
-            frames_per_vision_item=frames_per_vision_item,
-        )
+            temporal_positions_vision = self._get_temporal_positions_vision(
+                raw_state_vision=raw_state_vision,
+                x0_tokens_vision=x0_tokens_vision,
+                num_views_per_vision_item=num_views_per_vision_item,
+                frames_per_vision_item=frames_per_vision_item,
+            )
 
         # Action – extract dense action / domain_id without mutating data_batch,
         # so downstream callbacks can still read the original per-sample domain_ids.
@@ -3567,7 +3617,13 @@ class OmniMoTModel(ImaginaireModel):
         else:
             fps_sound = None
 
-        if TRAINING and self.training and log_enc_time and timer is not None:
+        if (
+            TRAINING
+            and self.training
+            and log_enc_time
+            and timer is not None
+            and raw_state_vision is not None
+        ):
             timer.end()
             elapsed = timer.get_cuda_time()
             h, w = raw_state_vision[0].shape[-2], raw_state_vision[0].shape[-1]
@@ -3981,16 +4037,16 @@ class OmniMoTModel(ImaginaireModel):
         return {"total_learnable_param_num": self._param_count}
 
     def is_image_batch(self, data_batch: dict[str, torch.Tensor]) -> bool:
-        """Check if the data_batch contains images (vs. videos).
+        """Check if the batch contains images rather than video or video latents.
 
         We handle two types of data_batch: one from a joint_dataloader where "dataset_name" can
         differentiate image_batch and video_batch, another from a single dataloader which we
         assume as video_data by default.
         """
-        is_image = self.input_image_key in data_batch
-        is_video = self.input_video_key in data_batch
-        assert is_image != is_video, (
-            "Only one of the input_image_key or input_video_key should be present in the data_batch."
+        _, is_image = resolve_vision_batch_key(
+            data_batch,
+            image_key=self.input_image_key,
+            video_key=self.input_video_key,
         )
         return is_image
 

@@ -587,6 +587,13 @@ class TrainerConfig(BaseModel):
         default=500,
         description="Total number of optimizer steps the run will execute.",
     )
+    save_final_checkpoint: bool = Field(
+        default=True,
+        description=(
+            "Save a final checkpoint when max_iter is not aligned with checkpoint.save_iter. "
+            "Disable only for explicitly disposable throughput probes."
+        ),
+    )
     callbacks: TrainerCallbacksConfig = Field(default_factory=TrainerCallbacksConfig)
 
 

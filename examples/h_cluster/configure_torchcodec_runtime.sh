@@ -19,8 +19,33 @@ fi
 
 CWAM_TORCHCODEC_SITE_PACKAGES="$COSMOS_ENV/lib/python3.13/site-packages"
 CWAM_TORCHCODEC_AV_LIBS="$CWAM_TORCHCODEC_SITE_PACKAGES/av.libs"
+CWAM_TORCHCODEC_NVIDIA_ROOT="$CWAM_TORCHCODEC_SITE_PACKAGES/nvidia"
 test -d "$CWAM_TORCHCODEC_AV_LIBS"
+test -d "$CWAM_TORCHCODEC_NVIDIA_ROOT"
 test -f "$CWAM_TORCHCODEC_SITE_PACKAGES/torchcodec/libtorchcodec_core8.so"
+test -e "$CWAM_TORCHCODEC_NVIDIA_ROOT/npp/lib/libnppicc.so.12"
+
+# TorchCodec's CUDA build links against the CUDA wheels installed in this
+# exact Python environment.  Login/job shells do not expose those wheel-local
+# libraries after the wrapper deliberately clears inherited LD_LIBRARY_PATH.
+# Discover only the pinned ``nvidia/<component>/lib`` directories, in stable
+# order, and carry them into every torchrun child.
+CWAM_TORCHCODEC_NVIDIA_LIBRARY_DIRS=()
+mapfile -t CWAM_TORCHCODEC_NVIDIA_LIBRARY_DIRS < <(
+    find "$CWAM_TORCHCODEC_NVIDIA_ROOT" \
+        -mindepth 2 -maxdepth 2 -type d -name lib -print |
+        LC_ALL=C sort
+)
+if [[ "${#CWAM_TORCHCODEC_NVIDIA_LIBRARY_DIRS[@]}" -eq 0 ]]; then
+    echo "ERROR: no pinned NVIDIA wheel library directories found under $CWAM_TORCHCODEC_NVIDIA_ROOT" >&2
+    return 1
+fi
+CWAM_TORCHCODEC_NVIDIA_LIBRARY_PATH="$(
+    IFS=:
+    echo "${CWAM_TORCHCODEC_NVIDIA_LIBRARY_DIRS[*]}"
+)"
+export NVRTC_HOME="${NVRTC_HOME:-$CWAM_TORCHCODEC_NVIDIA_ROOT/cuda_nvrtc}"
+export CURAND_HOME="${CURAND_HOME:-$CWAM_TORCHCODEC_NVIDIA_ROOT/curand}"
 
 CWAM_TORCHCODEC_FFMPEG_DIR="$(
     mktemp -d "${TMPDIR:-/tmp}/cwam-torchcodec-ffmpeg8.XXXXXX"
@@ -50,7 +75,9 @@ _cwam_link_ffmpeg_library libswresample.so.6 "libswresample-*.so.6.*"
 unset -f _cwam_link_ffmpeg_library
 
 export CWAM_TORCHCODEC_FFMPEG_DIR
-export LD_LIBRARY_PATH="$CWAM_TORCHCODEC_FFMPEG_DIR:$CWAM_TORCHCODEC_AV_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export CWAM_TORCHCODEC_NVIDIA_ROOT
+export CWAM_TORCHCODEC_NVIDIA_LIBRARY_PATH
+export LD_LIBRARY_PATH="$CWAM_TORCHCODEC_FFMPEG_DIR:$CWAM_TORCHCODEC_AV_LIBS:$CWAM_TORCHCODEC_NVIDIA_LIBRARY_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 PYTHONNOUSERSITE=1 "$COSMOS_ENV/bin/python" - <<'PY'
 import importlib.metadata as md

@@ -330,7 +330,7 @@ class ImaginaireTrainer:
         log.success("Done with training.")
         if sm_carveout:
             torch._C._set_sm_carveout_experimental(None)
-        if iteration % self.config.checkpoint.save_iter != 0:
+        if self.config.trainer.save_final_checkpoint and iteration % self.config.checkpoint.save_iter != 0:
             self.checkpointer.save(model, optimizer, scheduler, grad_scaler, iteration=iteration)
         self.callbacks.on_train_end(model, iteration=iteration)
         self.checkpointer.finalize()

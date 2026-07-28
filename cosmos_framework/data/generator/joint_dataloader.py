@@ -40,6 +40,7 @@ def custom_collate_fn(batch):
         "text_token_ids",
         "images",
         "video",
+        "video_latent",
         "action",
         "action_raw",
         "domain_id",
@@ -338,7 +339,15 @@ class JointDataLoader(webdataset.WebLoader):
             # into the buffer — identical to the splitting logic in
             # _get_next_sample — so the samples are not wasted.
             is_image_batch = "images" in batch
-            input_images_or_videos = batch["images" if is_image_batch else "video"]
+            if is_image_batch:
+                media_key = "images"
+            elif "video" in batch:
+                media_key = "video"
+            elif "video_latent" in batch:
+                media_key = "video_latent"
+            else:
+                raise KeyError("Batch must contain one of 'images', 'video', or 'video_latent'.")
+            input_images_or_videos = batch[media_key]
             batch_size = len(input_images_or_videos)
 
             for j in range(batch_size):
@@ -403,7 +412,54 @@ class JointDataLoader(webdataset.WebLoader):
 
         # Vision part
         is_image_batch = "images" in data_batch
-        input_images_or_videos = data_batch["images" if is_image_batch else "video"]
+        has_video = "video" in data_batch
+        has_video_latent = "video_latent" in data_batch
+        if sum((is_image_batch, has_video, has_video_latent)) != 1:
+            raise ValueError("A sample must contain exactly one of 'images', 'video', or 'video_latent'.")
+        input_images_or_videos = (
+            data_batch["images"]
+            if is_image_batch
+            else data_batch["video"] if has_video else data_batch["video_latent"]
+        )
+        media_items = (
+            input_images_or_videos if isinstance(input_images_or_videos, list) else [input_images_or_videos]
+        )
+        raw_frame_sizes = data_batch.get("image_size")
+        if raw_frame_sizes is None:
+            frame_sizes: list[torch.Tensor | None] = [None] * len(media_items)
+        else:
+            while (
+                isinstance(raw_frame_sizes, list)
+                and len(raw_frame_sizes) == 1
+                and isinstance(raw_frame_sizes[0], list)
+            ):
+                raw_frame_sizes = raw_frame_sizes[0]
+            if isinstance(raw_frame_sizes, torch.Tensor):
+                if raw_frame_sizes.ndim == 1:
+                    frame_sizes = [raw_frame_sizes]
+                elif raw_frame_sizes.ndim == 2:
+                    frame_sizes = list(raw_frame_sizes)
+                else:
+                    raise ValueError(
+                        f"image_size must have shape [4] or [N,4], got {tuple(raw_frame_sizes.shape)}."
+                    )
+            elif isinstance(raw_frame_sizes, list):
+                frame_sizes = []
+                for frame_size in raw_frame_sizes:
+                    while isinstance(frame_size, list):
+                        if len(frame_size) != 1:
+                            raise ValueError("Nested image_size entries must be singleton wrappers.")
+                        frame_size = frame_size[0]
+                    if not isinstance(frame_size, torch.Tensor):
+                        raise TypeError(f"image_size entries must be tensors, got {type(frame_size).__name__}.")
+                    frame_sizes.append(frame_size)
+            else:
+                raise TypeError(f"image_size must be a tensor or list, got {type(raw_frame_sizes).__name__}.")
+            if len(frame_sizes) != len(media_items):
+                raise ValueError(
+                    "image_size entries must align with vision media items: "
+                    f"sizes={len(frame_sizes)}, media={len(media_items)}."
+                )
         if "enable_per_camera_vae_encoding" in data_batch:
             sample_n_views_values = read_positive_int_metadata(data_batch, "sample_n_views", expected_count=1)
             frames_per_view_values = read_positive_int_metadata(
@@ -421,16 +477,44 @@ class JointDataLoader(webdataset.WebLoader):
             sample_n_views = None
             frames_per_view = None
 
-        # iterate over all the media in the batch
-        for media in input_images_or_videos if isinstance(input_images_or_videos, list) else [input_images_or_videos]:
+        # Iterate over all media in the sample. Cached latents are already
+        # temporally/spatially compressed and cropped, so count them directly.
+        for media, frame_size in zip(media_items, frame_sizes, strict=True):
+            if has_video_latent:
+                if not isinstance(media, torch.Tensor) or media.ndim != 4:
+                    raise ValueError(
+                        "video_latent must have shape [C,T,H,W], "
+                        f"got {type(media).__name__} {getattr(media, 'shape', None)}."
+                    )
+                _, latent_t_shape, latent_h_shape, latent_w_shape = media.shape
+                patch_h_shape = math.ceil(latent_h_shape / self.patch_spatial)
+                patch_w_shape = math.ceil(latent_w_shape / self.patch_spatial)
+                num_vision_tokens = patch_h_shape * patch_w_shape * latent_t_shape
+                if has_text_tokens:
+                    num_vision_tokens += 2
+                num_tokens += num_vision_tokens
+                continue
             if is_image_batch:
                 _, H, W = media.shape
                 T = 1
             else:
                 _, T, H, W = media.shape
 
-            latent_h_shape = H // self.tokenizer_spatial_compression_factor
-            latent_w_shape = W // self.tokenizer_spatial_compression_factor
+            # The action transform reflection-pads video pixels, but the model
+            # crops the encoded latent back to image_size[2:4]. Count the
+            # post-crop shape so raw-video and equivalent cached-latent samples
+            # have identical packing metrics.
+            latent_source_h, latent_source_w = H, W
+            if frame_size is not None:
+                if frame_size.ndim == 2 and frame_size.shape[0] == 1:
+                    frame_size = frame_size[0]
+                if frame_size.shape != (4,):
+                    raise ValueError(f"image_size must have shape [4], got {tuple(frame_size.shape)}.")
+                latent_source_h = int(frame_size[2].item())
+                latent_source_w = int(frame_size[3].item())
+
+            latent_h_shape = max(latent_source_h // self.tokenizer_spatial_compression_factor, 1)
+            latent_w_shape = max(latent_source_w // self.tokenizer_spatial_compression_factor, 1)
             patch_h_shape = math.ceil(latent_h_shape / self.patch_spatial)
             patch_w_shape = math.ceil(latent_w_shape / self.patch_spatial)
             if sample_n_views is not None and frames_per_view is not None and not is_image_batch:
@@ -503,7 +587,15 @@ class JointDataLoader(webdataset.WebLoader):
     # Keys where each sample may hold multiple tensors (e.g. multiple video
     # clips in a packed sequence).  Kept as single-element lists per sample
     # via v[i:i+1] so that _update_output_batch yields list[list[Tensor]].
-    _MULTI_ITEM_KEYS = {"text_token_ids", "images", "video", "action", "action_raw", "sound"}
+    _MULTI_ITEM_KEYS = {
+        "text_token_ids",
+        "images",
+        "video",
+        "video_latent",
+        "action",
+        "action_raw",
+        "sound",
+    }
 
     def _get_next_sample(self, index_id: int) -> dict:
         """Pop the next single-sample dict from the buffer for the given dataloader.
@@ -544,7 +636,15 @@ class JointDataLoader(webdataset.WebLoader):
                 raise
 
             is_image_batch = "images" in batch
-            input_images_or_videos = batch["images" if is_image_batch else "video"]
+            if is_image_batch:
+                media_key = "images"
+            elif "video" in batch:
+                media_key = "video"
+            elif "video_latent" in batch:
+                media_key = "video_latent"
+            else:
+                raise KeyError("Batch must contain one of 'images', 'video', or 'video_latent'.")
+            input_images_or_videos = batch[media_key]
             batch_size = len(input_images_or_videos)
 
             for i in range(batch_size):

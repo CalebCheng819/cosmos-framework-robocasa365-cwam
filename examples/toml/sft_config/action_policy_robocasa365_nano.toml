@@ -22,7 +22,7 @@ data_parallel_shard_degree     = 8
 data_parallel_replicate_degree = 1
 
 [model.activation_checkpointing]
-mode           = "selective"
+mode           = "${oc.env:CWAM_ACTIVATION_CHECKPOINTING_MODE,selective}"
 save_ops_regex = ["fmha"]
 
 [model.tokenizer]

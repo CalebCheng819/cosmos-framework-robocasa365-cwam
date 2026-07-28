@@ -643,8 +643,27 @@ class ActionTransformPipeline:
         mode = data_dict.get("mode")
         assert mode is not None, "mode is required"
 
-        # 1. Resize + reflection-pad spatial dimensions to the closest predefined target from ``VIDEO_RES_SIZE_INFO[resolution]``.
-        data_dict = self.video_resize(data_dict, resolution)
+        # 1. Resize + reflection-pad pixels, unless the dataset supplied a
+        # contract-validated, post-padding/post-crop Wan latent. Cached samples
+        # already carry the exact image_size metadata from the online path.
+        cached_latent = data_dict.get("video_latent")
+        if cached_latent is None:
+            data_dict = self.video_resize(data_dict, resolution)
+        else:
+            if "video" in data_dict:
+                raise ValueError("A sample cannot contain both 'video' and 'video_latent'.")
+            if not isinstance(cached_latent, torch.Tensor) or cached_latent.ndim != 4:
+                raise ValueError(
+                    "video_latent must have shape [C,T,H,W], "
+                    f"got {type(cached_latent).__name__} "
+                    f"{getattr(cached_latent, 'shape', None)}."
+                )
+            image_size = data_dict.get("image_size")
+            if not isinstance(image_size, torch.Tensor) or image_size.shape != (4,):
+                raise ValueError("Cached samples require image_size metadata with shape [4].")
+            num_frames = data_dict.get("video_num_frames")
+            if not isinstance(num_frames, torch.Tensor) or num_frames.numel() != 1:
+                raise ValueError("Cached samples require scalar video_num_frames metadata.")
 
         # 2. Format the caption as structured JSON when requested; otherwise run the legacy string appenders.
         if self.prompt_json_formatter is not None:
@@ -681,8 +700,13 @@ class ActionTransformPipeline:
         # 8. Build a ``SequencePlan`` from the ``"mode"`` key (if present).
         video = data_dict.get("video")
         action = data_dict.get("action")
-        assert video is not None, "video is required"
-        video_length = video.shape[1]  # [C,T,H,W] -> T
+        if video is not None:
+            video_length = video.shape[1]  # [C,T,H,W] -> T
+        else:
+            video_num_frames = data_dict.get("video_num_frames")
+            if not isinstance(video_num_frames, torch.Tensor) or video_num_frames.numel() != 1:
+                raise ValueError("video or scalar video_num_frames is required")
+            video_length = int(video_num_frames.item())
         action_length = action.shape[0] if isinstance(action, torch.Tensor) else max(video_length - 1, 0)
 
         # Prepend history action frames (ground-truth conditioning) if present.

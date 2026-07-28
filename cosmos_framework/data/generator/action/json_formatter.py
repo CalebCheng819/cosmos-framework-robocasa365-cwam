@@ -33,6 +33,7 @@ class ActionPromptJsonFormatter:
         caption_key: str = "ai_caption",
         viewpoint_key: str = "viewpoint",
         video_key: str = "video",
+        video_num_frames_key: str = "video_num_frames",
         fps_key: str = "conditioning_fps",
         image_size_key: str = "image_size",
         idle_frames_key: str = "idle_frames",
@@ -44,6 +45,7 @@ class ActionPromptJsonFormatter:
         self.caption_key: str = caption_key
         self.viewpoint_key: str = viewpoint_key
         self.video_key: str = video_key
+        self.video_num_frames_key: str = video_num_frames_key
         self.fps_key: str = fps_key
         self.image_size_key: str = image_size_key
         self.idle_frames_key: str = idle_frames_key
@@ -67,12 +69,19 @@ class ActionPromptJsonFormatter:
             raise ValueError(f"ActionPromptJsonFormatter: '{self.fps_key}' must be positive, got {fps}")
 
         video = data_dict.get(self.video_key)
-        if not isinstance(video, torch.Tensor) or video.ndim < 2:
-            raise ValueError(
-                f"ActionPromptJsonFormatter: expected '{self.video_key}' to be a video tensor with shape "
-                f"(C, T, H, W), got {type(video).__name__}"
+        if isinstance(video, torch.Tensor) and video.ndim >= 2:
+            num_frames = int(video.shape[1])
+        else:
+            num_frames = self._get_optional_scalar_int(
+                data_dict.get(self.video_num_frames_key),
+                self.video_num_frames_key,
             )
-        duration_seconds = video.shape[1] / fps
+            if num_frames is None or num_frames <= 0:
+                raise ValueError(
+                    f"ActionPromptJsonFormatter: expected '{self.video_key}' with shape (C, T, H, W) "
+                    f"or positive '{self.video_num_frames_key}' metadata."
+                )
+        duration_seconds = num_frames / fps
         duration = self._truncate_seconds(duration_seconds)
         action_end_time = self._round_time_seconds(duration_seconds)
 

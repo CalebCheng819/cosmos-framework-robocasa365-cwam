@@ -475,6 +475,10 @@ class TrainerConfig:
 
     # Whether to save the checkpoint at iteration 0.
     save_zero_checkpoint: bool = False
+    # Whether to save a final checkpoint when max_iter is not aligned with
+    # checkpoint.save_iter. Keep enabled for training; short throughput probes
+    # can disable it to avoid writing a throwaway multi-hundred-GB DCP.
+    save_final_checkpoint: bool = True
 
 
 @make_freezable
