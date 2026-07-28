@@ -229,8 +229,8 @@ NODE_EVIDENCE_JSON="$EVIDENCE_DIR/rjob-node-eight-h200.json"
     --requested-cpus "$REQUESTED_CPUS" \
     --rjob-show-name "$RJOB_NAME" >/dev/null
 
-NVME_MOUNT_ROOT="$(realpath -e -- "$NVME_MOUNT_ROOT")"
 CURRENT_PHASE=nvme_validation_and_stage
+NVME_MOUNT_ROOT="$(realpath -e -- "$NVME_MOUNT_ROOT")"
 [[ -d "$NVME_MOUNT_ROOT" && -w "$NVME_MOUNT_ROOT" ]] ||
     { echo "ERROR: NVME_MOUNT_ROOT must be a writable directory" >&2; exit 1; }
 NVME_MOUNT_TARGET="$(findmnt -n -T "$NVME_MOUNT_ROOT" -o TARGET)"

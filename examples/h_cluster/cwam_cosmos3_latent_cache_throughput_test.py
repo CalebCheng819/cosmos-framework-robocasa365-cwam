@@ -605,6 +605,10 @@ class ThroughputHelperTest(unittest.TestCase):
             runner.index('export PYTHONPATH="$COSMOS_SOURCE"'),
             runner.index('"$PYTHON" "$HELPER" validate-cache'),
         )
+        self.assertLess(
+            runner.index("CURRENT_PHASE=nvme_validation_and_stage"),
+            runner.index('NVME_MOUNT_ROOT="$(realpath -e -- "$NVME_MOUNT_ROOT")"'),
+        )
         self.assertNotIn("lsblk -sno", runner)
         self.assertNotIn("command -v lsblk", runner)
         self.assertIn("text_token_ids", helper)
@@ -632,6 +636,7 @@ class ThroughputHelperTest(unittest.TestCase):
             'readonly H_NVIDIA_SYSTEM_PATH="$H_NVIDIA_DRIVER_BIN:/usr/local/sbin:',
             cache_wrapper,
         )
+
         self.assertIn(
             '"$H_WORKER_LD_LIBRARY_PATH" != *::*',
             cache_wrapper,
@@ -654,6 +659,39 @@ class ThroughputHelperTest(unittest.TestCase):
         self.assertIn("expected_device_count", cache_wrapper)
         self.assertIn("NVME_MOUNT_ROOT:=/nvme", submitter)
         self.assertIn("RJOB_PREDICT_ONLY", submitter)
+
+    def test_runner_nvme_mount_options_gate_accepts_rw_and_rejects_ro(self) -> None:
+        runner = RUNNER_PATH.read_text()
+        start = runner.index('case ",$NVME_MOUNT_OPTIONS," in')
+        end = runner.index("\nesac", start) + len("\nesac")
+        gate = runner[start:end]
+
+        accepted = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -u; NVME_MOUNT_OPTIONS="$1"; {gate}',
+                "nvme-options-gate",
+                "rw,relatime,attr2,inode64",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+        rejected = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -u; NVME_MOUNT_OPTIONS="$1"; {gate}',
+                "nvme-options-gate",
+                "ro,relatime,attr2,inode64",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("host-NVMe mount is not read-write", rejected.stderr)
 
 
 if __name__ == "__main__":
