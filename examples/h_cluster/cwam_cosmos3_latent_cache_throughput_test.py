@@ -585,6 +585,7 @@ class ThroughputHelperTest(unittest.TestCase):
             "passed_with_no_ac_fallback",
             "EXPECTED_SNAPSHOT_MANIFEST_SHA256",
             'export PATH="$COSMOS_ENV/bin:$PATH"',
+            'export PYTHONPATH="$COSMOS_SOURCE"',
             "minimum-cpus \"$MINIMUM_EFFECTIVE_CPUS\"",
             "NVME_MOUNT_ROOT:=/nvme",
             "NVME_MOUNT_SOURCE\" == /dev/nvme1n1",
@@ -595,6 +596,10 @@ class ThroughputHelperTest(unittest.TestCase):
         )
         for fragment in required_runner_fragments:
             self.assertIn(fragment, runner)
+        self.assertLess(
+            runner.index('export PYTHONPATH="$COSMOS_SOURCE"'),
+            runner.index('"$PYTHON" "$HELPER" validate-cache'),
+        )
         self.assertIn("text_token_ids", helper)
         self.assertIn("readonly RJOB_CPU=160", submitter)
         self.assertIn("--store-host-nvme", submitter)

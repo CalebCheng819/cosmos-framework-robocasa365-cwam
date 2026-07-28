@@ -164,6 +164,13 @@ if [[ -e "$COSMOS_SOURCE/.git" ]]; then
         { echo "ERROR: COSMOS_SOURCE commit mismatch" >&2; exit 1; }
 fi
 
+# The fixed environment contains third-party dependencies but does not install
+# this immutable source snapshot as a package.  Bind imports to the exact
+# snapshot before any helper imports cosmos_framework; replacing (rather than
+# extending) an ambient PYTHONPATH also prevents a shared editable checkout
+# from silently winning import precedence.
+export PYTHONPATH="$COSMOS_SOURCE"
+
 test -d "$ROBOCASA365_ROOT"
 test -d "$ROBOCASA365_SOURCE_ROOT/videos"
 test -f "$BASE_CHECKPOINT_PATH/model/.metadata"
