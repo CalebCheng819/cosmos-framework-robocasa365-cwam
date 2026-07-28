@@ -592,6 +592,25 @@ class FormalShellContractTest(unittest.TestCase):
             runtime.index("export PYTHONDONTWRITEBYTECODE=1"),
             runtime.index('python3 "$COSMOS_SOURCE/examples/h_cluster/cwam_formal_provenance.py"'),
         )
+        self.assertIn(
+            'audited_worker_init_prefixes = [\n'
+            '    [],\n'
+            '    [\n'
+            '        "/kubebrain/worker-init",\n'
+            '        "run",\n'
+            '        "--enable-pid-monitor",\n'
+            '        "--",\n'
+            '    ],\n'
+            '    [\n'
+            '        "/kubebrain/worker-init",\n'
+            '        "run",\n'
+            '        "--enable-pid-monitor",\n'
+            '        "--metrics-addr=",\n'
+            '        "--",\n'
+            "    ],\n"
+            "]",
+            runtime,
+        )
         self.assertIn("create-dir-exclusive", submit)
         self.assertIn("create-dir-exclusive", runtime)
         self.assertIn("path-security.json", runtime)

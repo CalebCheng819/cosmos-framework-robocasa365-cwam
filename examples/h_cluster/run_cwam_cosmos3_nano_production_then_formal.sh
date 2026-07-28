@@ -470,11 +470,21 @@ if worker_resources != {
 template_command = scheduler_container.get("command")
 worker_command = worker_spec.get("command")
 worker_init_prefix = worker_spec.get("worker_init_prefix")
-audited_worker_init_prefix = [
-    "/kubebrain/worker-init",
-    "run",
-    "--enable-pid-monitor",
-    "--",
+audited_worker_init_prefixes = [
+    [],
+    [
+        "/kubebrain/worker-init",
+        "run",
+        "--enable-pid-monitor",
+        "--",
+    ],
+    [
+        "/kubebrain/worker-init",
+        "run",
+        "--enable-pid-monitor",
+        "--metrics-addr=",
+        "--",
+    ],
 ]
 if not isinstance(template_command, list) or not all(isinstance(item, str) for item in template_command):
     raise SystemExit("normalized scheduler template command is invalid")
@@ -488,7 +498,7 @@ if (
     != expected_command_sha256
 ):
     raise SystemExit("normalized scheduler formal-command SHA-256 mismatch")
-if worker_init_prefix not in ([], audited_worker_init_prefix):
+if worker_init_prefix not in audited_worker_init_prefixes:
     raise SystemExit("normalized expanded worker-init prefix mismatch")
 if worker_command != worker_init_prefix + template_command:
     raise SystemExit("normalized expanded worker command mismatch")
