@@ -584,6 +584,14 @@ class FormalShellContractTest(unittest.TestCase):
         self.assertIn("--source-root", runtime)
         self.assertIn("cwam_secure_paths.py", submit)
         self.assertIn("cwam_secure_paths.py", runtime)
+        self.assertLess(
+            submit.index("export PYTHONDONTWRITEBYTECODE=1"),
+            submit.index('python3 "$COSMOS_SOURCE/examples/h_cluster/cwam_formal_provenance.py"'),
+        )
+        self.assertLess(
+            runtime.index("export PYTHONDONTWRITEBYTECODE=1"),
+            runtime.index('python3 "$COSMOS_SOURCE/examples/h_cluster/cwam_formal_provenance.py"'),
+        )
         self.assertIn("create-dir-exclusive", submit)
         self.assertIn("create-dir-exclusive", runtime)
         self.assertIn("path-security.json", runtime)

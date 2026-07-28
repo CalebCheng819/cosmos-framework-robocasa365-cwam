@@ -9,6 +9,8 @@
 
 set -Eeuo pipefail
 umask 022
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
 
 readonly PINNED_CONTAINER_IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
 readonly PINNED_PERSONAL_GPFS_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
@@ -695,8 +697,6 @@ PY
 
 export PATH="$COSMOS_ENV/bin:$PATH"
 export PYTHONPATH="$COSMOS_SOURCE"
-export PYTHONNOUSERSITE=1
-export PYTHONDONTWRITEBYTECODE=1
 unset PYTHONOPTIMIZE
 export COSMOS_DEVICE=cuda
 export COSMOS_INTERNAL=0
