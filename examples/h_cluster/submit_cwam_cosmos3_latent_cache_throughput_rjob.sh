@@ -16,7 +16,9 @@ readonly PINNED_QUOTA_GROUP="eailabagent_gpu"
 readonly PINNED_EXCLUDED_NODE_TAG="node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn"
 readonly PINNED_OUTPUT_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-cosmos3-latent-cache-throughput"
 readonly NPROC_REQUIRED=8
-readonly RJOB_CPU=192
+# H200 nodes expose 186 allocatable CPUs to Kubernetes. The 160-CPU request is
+# schedulable and still leaves 1.25 cores per loader at the 8 x 16-worker cell.
+readonly RJOB_CPU=160
 readonly RJOB_MEMORY_MIB=1500000
 readonly SNAPSHOT_ALLOWED_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/run_snapshots"
 
@@ -236,7 +238,7 @@ payload = {
     "run_id": sys.argv[3],
     "rjob_show_name": sys.argv[4],
     "gpu": 8,
-    "cpu": 192,
+    "cpu": 160,
     "memory_mib": 1500000,
     "private_machine": "group",
     "container_image": sys.argv[5],

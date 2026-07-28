@@ -1952,7 +1952,7 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--expected-gpus", type=int, default=8)
     node.add_argument("--rjob-show-name", required=True)
     node.add_argument("--minimum-cpus", type=int, default=160)
-    node.add_argument("--requested-cpus", type=int, default=192)
+    node.add_argument("--requested-cpus", type=int, default=160)
 
     sampler = subparsers.add_parser("sample-gpu", help="write timestamped GPU telemetry NDJSON")
     sampler.add_argument("--output", required=True)

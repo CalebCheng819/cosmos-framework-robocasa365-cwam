@@ -24,7 +24,10 @@ readonly PERSONAL_GPFS_MOUNT="gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-st
 readonly PUBLIC_GPFS_MOUNT="gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public"
 readonly RJOB_REPLICAS=1
 readonly NPROC_REQUIRED=8
-readonly RJOB_CPU=192
+# H200 nodes expose 186 allocatable CPUs to Kubernetes. 128 CPUs leave
+# headroom for the node services while supplying two cores per loader worker
+# at the fixed 8 ranks x 8 workers/rank cache-build setting.
+readonly RJOB_CPU=128
 readonly RJOB_MEMORY_MIB=1500000
 readonly SCHEDULER_RECEIPT_ATTEMPTS=86400
 readonly SCHEDULER_RECEIPT_RETRY_SECONDS=1
@@ -500,7 +503,7 @@ payload = {
         "backoff_limit": 1,
         "replicas": 1,
         "image": image,
-        "cpu": 192,
+        "cpu": 128,
         "memory_mib": 1500000,
         "gpu": 8,
         "negative_tags": ["node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn"],
