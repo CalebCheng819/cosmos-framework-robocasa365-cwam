@@ -244,7 +244,12 @@ def _validate_protocol_scalars(config: dict[str, Any], protocol: TrainingProtoco
     )
 
 
-def _validate_callback_config(config: dict[str, Any], *, gradient_every_n: int) -> None:
+def _validate_callback_config(
+    config: dict[str, Any],
+    *,
+    world_size: int,
+    gradient_every_n: int,
+) -> None:
     callbacks = _require_mapping(
         _require_mapping(config.get("trainer"), "trainer config").get("callbacks"),
         "trainer callbacks",
@@ -265,7 +270,7 @@ def _validate_callback_config(config: dict[str, Any], *, gradient_every_n: int) 
         "expected_samples_per_microbatch": _BATCH_PER_RANK,
         "expected_grad_accum_iter": _GRAD_ACCUM,
         "expected_action_tokens_per_sample": _ACTION_TOKENS_PER_SAMPLE,
-        "allowed_world_sizes": [6, 8],
+        "allowed_world_sizes": [world_size],
         "required": True,
     }
     for key, expected in memory_contract.items():
@@ -719,7 +724,7 @@ def _validate_memory_report(
         _ACTION_TOKENS_PER_SAMPLE,
         "expected action tokens per sample",
     )
-    _require_equal(contract.get("allowed_world_sizes"), [6, 8], "allowed production world sizes")
+    _require_equal(contract.get("allowed_world_sizes"), [world_size], "allowed production world sizes")
     thresholds = _require_mapping(report.get("thresholds"), "production memory thresholds")
     _require_exact_keys(
         thresholds,
@@ -894,7 +899,7 @@ def verify_probe(
         protocol.validation_iter,
         "production-probe validation frequency",
     )
-    _validate_callback_config(config, gradient_every_n=1)
+    _validate_callback_config(config, world_size=world_size, gradient_every_n=1)
 
     cpu_batch = _load_json(cpu_batch_path, "CPU production-batch evidence")
     _require_equal(cpu_batch.get("status"), "passed", "CPU production-batch status")
@@ -1007,7 +1012,7 @@ def verify_resume(
         protocol.validation_iter,
         "resume-probe validation frequency",
     )
-    _validate_callback_config(config, gradient_every_n=1)
+    _validate_callback_config(config, world_size=world_size, gradient_every_n=1)
     memory_path = run_dir / "production_batch_memory_gate" / "iteration_000000002.json"
     gradient_path = run_dir / "action_gradient_evidence" / "iteration_000000002.json"
     _require_exact_regular_files(
@@ -1216,7 +1221,7 @@ def verify_formal(
     )
     _validate_protocol_scalars(config, protocol)
     _require_equal(config["trainer"].get("validation_iter"), protocol.validation_iter, "validation frequency")
-    _validate_callback_config(config, gradient_every_n=50)
+    _validate_callback_config(config, world_size=world_size, gradient_every_n=50)
 
     memory_dir = run_dir / "production_batch_memory_gate"
     memory_files = sorted(path.name for path in memory_dir.glob("iteration_*.json"))
@@ -2493,7 +2498,7 @@ def verify_formal_continuation(
         protocol.validation_iter,
         "continuation validation frequency",
     )
-    _validate_callback_config(config, gradient_every_n=50)
+    _validate_callback_config(config, world_size=world_size, gradient_every_n=50)
     checkpoint_config = _require_mapping(config.get("checkpoint"), "checkpoint config")
     for key, expected in {
         "load_training_state": True,

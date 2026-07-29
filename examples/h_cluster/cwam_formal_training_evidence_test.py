@@ -17,7 +17,9 @@ from examples.h_cluster.cwam_formal_training_evidence import (
     TrainingProtocol,
     _expected_continuation_gradient_iterations,
     _expected_gradient_iterations,
+    _validate_callback_config,
     _validate_dcp,
+    _validate_memory_report,
     _validate_validation_summaries,
     protocol_for_world_size,
     verify_formal,
@@ -49,7 +51,7 @@ def _config(*, world_size: int, max_iter: int, gradient_every_n: int = 1) -> dic
                     "expected_samples_per_microbatch": 128,
                     "expected_grad_accum_iter": 2,
                     "expected_action_tokens_per_sample": 16,
-                    "allowed_world_sizes": [6, 8],
+                    "allowed_world_sizes": [world_size],
                     "required": True,
                 },
             },
@@ -168,7 +170,7 @@ def _memory_report(
             "expected_samples_per_microbatch": 128,
             "expected_grad_accum_iter": 2,
             "expected_action_tokens_per_sample": 16,
-            "allowed_world_sizes": [6, 8],
+            "allowed_world_sizes": [world_size],
         },
         "thresholds": {
             "max_peak_reserved_fraction": 0.94,
@@ -206,6 +208,48 @@ def _gradient_report(*, world_size: int, iteration: int) -> dict:
             "final_microbatch_flow_matching_loss_action_rank_mean": 0.5,
         },
     }
+
+
+def test_memory_gate_contract_requires_exact_requested_world_size(tmp_path: Path) -> None:
+    config = _config(world_size=8, max_iter=1)
+    _validate_callback_config(config, world_size=8, gradient_every_n=1)
+
+    config["trainer"]["callbacks"]["production_batch_memory_gate"]["allowed_world_sizes"] = [6, 8]
+    with pytest.raises(
+        EvidenceError,
+        match=r"memory-gate callback allowed_world_sizes mismatch: expected=\[8\], actual=\[6, 8\]",
+    ):
+        _validate_callback_config(config, world_size=8, gradient_every_n=1)
+
+    memory_path = tmp_path / "iteration_000000001.json"
+    report = _memory_report(
+        world_size=8,
+        iteration=1,
+        initial_validation=True,
+        checkpoint_save=False,
+    )
+    memory_path.write_text(json.dumps(report))
+    _validate_memory_report(
+        memory_path,
+        world_size=8,
+        iteration=1,
+        included_initial_validation=True,
+        included_checkpoint_save=False,
+    )
+
+    report["production_batch_contract"]["allowed_world_sizes"] = [6, 8]
+    memory_path.write_text(json.dumps(report))
+    with pytest.raises(
+        EvidenceError,
+        match=r"allowed production world sizes mismatch: expected=\[8\], actual=\[6, 8\]",
+    ):
+        _validate_memory_report(
+            memory_path,
+            world_size=8,
+            iteration=1,
+            included_initial_validation=True,
+            included_checkpoint_save=False,
+        )
 
 
 def _sampled_memory(*, world_size: int) -> dict:
