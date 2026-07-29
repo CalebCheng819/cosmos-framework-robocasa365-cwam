@@ -28,8 +28,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import cwam_serving_checkpoint_manifest
+    from . import cwam_python_environment_manifest, cwam_serving_checkpoint_manifest
 except ImportError:  # pragma: no cover - direct script execution
+    import cwam_python_environment_manifest
     import cwam_serving_checkpoint_manifest
 
 SCHEMA_VERSION = 1
@@ -322,12 +323,42 @@ def _verify_source_dcp_selection_receipt(
     return descriptor
 
 
-def _path_is_within(path: Path, root: Path) -> bool:
+def _resolve_environment_launcher(
+    root: Path,
+    label: str,
+) -> tuple[
+    Path,
+    Path,
+    tuple[int, int, int, int, int, int],
+    tuple[int, int, int, int, int, int],
+]:
+    bin_directory = _canonical_existing(
+        root / "bin",
+        f"{label} bin directory",
+        directory=True,
+    )
+    launcher = bin_directory / "python"
     try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+        before = launcher.lstat()
+    except OSError as error:
+        raise EvalIntentError(f"cannot inspect {label} launcher: {launcher}: {error}") from error
+    if not (stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)):
+        raise EvalIntentError(f"{label} launcher must be a regular file or symbolic link: {launcher}")
+    try:
+        resolved = launcher.resolve(strict=True)
+        after = launcher.lstat()
+    except (OSError, RuntimeError) as error:
+        raise EvalIntentError(f"{label} launcher does not resolve safely: {launcher}: {error}") from error
+    if _stable_identity(before) != _stable_identity(after):
+        raise EvalIntentError(f"{label} launcher changed while resolving: {launcher}")
+    interpreter = _canonical_existing(
+        resolved,
+        f"{label} launcher target",
+        directory=False,
+    )
+    if not os.access(launcher, os.X_OK) or not os.access(interpreter, os.X_OK):
+        raise EvalIntentError(f"{label} launcher and target must be executable: {launcher}")
+    return launcher, interpreter, _stable_identity(after), _stable_identity(interpreter.lstat())
 
 
 def _verify_environment(
@@ -342,11 +373,23 @@ def _verify_environment(
         expected_manifest_sha256,
         f"{label} manifest",
     )
-    if manifest.get("schema_version") != 1 or manifest.get("kind") != "cwam_python_environment_manifest":
-        raise EvalIntentError(f"{label} manifest schema/kind mismatch")
+    try:
+        manifest = cwam_python_environment_manifest._validated_manifest(manifest)
+    except cwam_python_environment_manifest.PythonEnvironmentManifestError as error:
+        raise EvalIntentError(f"{label} manifest contract is invalid: {error}") from error
     interpreter = manifest.get("interpreter")
     if not isinstance(interpreter, dict):
         raise EvalIntentError(f"{label} manifest interpreter must be an object")
+    prefix = interpreter.get("prefix")
+    if not isinstance(prefix, str):
+        raise EvalIntentError(f"{label} manifest interpreter.prefix must be a string")
+    prefix_path = _canonical_existing(
+        Path(prefix),
+        f"{label} manifest interpreter.prefix",
+        directory=True,
+    )
+    if prefix_path != root:
+        raise EvalIntentError(f"{label} manifest interpreter.prefix does not match its environment root")
     resolved_path = interpreter.get("resolved_path")
     if not isinstance(resolved_path, str):
         raise EvalIntentError(f"{label} manifest interpreter.resolved_path must be a string")
@@ -355,8 +398,9 @@ def _verify_environment(
         f"{label} interpreter",
         directory=False,
     )
-    if not _path_is_within(interpreter_path, root):
-        raise EvalIntentError(f"{label} interpreter is outside its environment root")
+    launcher, launcher_target, launcher_identity, interpreter_identity = _resolve_environment_launcher(root, label)
+    if launcher_target != interpreter_path:
+        raise EvalIntentError(f"{label} launcher target does not match its manifest interpreter")
     interpreter_sha256 = _require_sha256(
         interpreter.get("sha256"),
         f"{label} manifest interpreter.sha256",
@@ -369,6 +413,22 @@ def _verify_environment(
     )
     if type(interpreter_size) is not int or interpreter_size != live_descriptor["size_bytes"]:
         raise EvalIntentError(f"{label} interpreter size does not match its manifest")
+    try:
+        launcher_before_resolve = launcher.lstat()
+        launcher_target_after = launcher.resolve(strict=True)
+        launcher_after_resolve = launcher.lstat()
+        interpreter_after = interpreter_path.lstat()
+    except (OSError, RuntimeError) as error:
+        raise EvalIntentError(f"{label} launcher changed while hashing: {launcher}: {error}") from error
+    if (
+        _stable_identity(launcher_before_resolve) != launcher_identity
+        or _stable_identity(launcher_after_resolve) != launcher_identity
+        or launcher_target_after != interpreter_path
+        or _stable_identity(interpreter_after) != interpreter_identity
+        or not os.access(launcher, os.X_OK)
+        or not os.access(interpreter_path, os.X_OK)
+    ):
+        raise EvalIntentError(f"{label} launcher changed while hashing: {launcher}")
     return str(root), descriptor
 
 

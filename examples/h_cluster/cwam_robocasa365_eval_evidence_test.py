@@ -68,10 +68,13 @@ def _environment_manifest(
     base_prefix: Path,
     versions: dict[str, str],
 ) -> dict[str, object]:
-    interpreter = prefix / "bin" / "python"
+    interpreter = base_prefix / f"{prefix.name}-toolchain" / "python3"
     interpreter.parent.mkdir(parents=True)
     interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     interpreter.chmod(0o755)
+    launcher = prefix / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    os.symlink(interpreter, launcher)
     distributions = {
         name: {
             "name": name,
@@ -345,6 +348,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
 
     cosmos_python = cosmos_environment_value["interpreter"]["resolved_path"]
     robocasa_python = robocasa_environment_value["interpreter"]["resolved_path"]
+    cosmos_python_launch = str((cosmos_prefix / "bin" / "python").absolute())
+    robocasa_python_launch = str((robocasa_prefix / "bin" / "python").absolute())
     gpu_uuid = "00000000000000000000000000000001"
     source_records = {
         "cosmos": (cosmos_repo, source_commit),
@@ -774,11 +779,11 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
                 ),
                 "interpreters": {
                     "cosmos": {
-                        "launch_path": cosmos_python,
+                        "launch_path": cosmos_python_launch,
                         "resolved_path": cosmos_python,
                     },
                     "robocasa": {
-                        "launch_path": robocasa_python,
+                        "launch_path": robocasa_python_launch,
                         "resolved_path": robocasa_python,
                     },
                 },
@@ -2178,6 +2183,36 @@ def test_runtime_receipt_must_bind_the_exact_environment_manifest(tmp_path: Path
     _mutate_contract_artifact(contract_path, "eval_runtime_receipt", mutate)
 
     with pytest.raises(ValueError, match="SHA256 does not match"):
+        evidence._validate_contract(contract_path)
+
+
+def test_runtime_receipt_must_preserve_the_exact_environment_launcher(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+
+    def mutate(receipt: dict[str, object]) -> None:
+        inputs = receipt["inputs"]
+        assert isinstance(inputs, dict)
+        interpreters = inputs["interpreters"]
+        assert isinstance(interpreters, dict)
+        cosmos = interpreters["cosmos"]
+        assert isinstance(cosmos, dict)
+        cosmos["launch_path"] = cosmos["resolved_path"]
+
+    _mutate_contract_artifact(contract_path, "eval_runtime_receipt", mutate)
+
+    with pytest.raises(ValueError, match="not the exact environment launcher"):
+        evidence._validate_contract(contract_path)
+
+
+def test_environment_interpreter_must_remain_executable(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    environment_path = Path(contract["artifacts"]["cosmos_environment_manifest"]["path"])
+    environment = json.loads(environment_path.read_text(encoding="utf-8"))
+    interpreter = Path(environment["interpreter"]["resolved_path"])
+    interpreter.chmod(0o644)
+
+    with pytest.raises(ValueError, match="must be executable"):
         evidence._validate_contract(contract_path)
 
 

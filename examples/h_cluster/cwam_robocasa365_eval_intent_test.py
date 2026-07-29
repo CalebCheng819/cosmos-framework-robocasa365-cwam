@@ -48,7 +48,21 @@ def _git_repo(path: Path) -> tuple[Path, str]:
 
 def _environment(tmp_path: Path, name: str) -> tuple[Path, Path]:
     root = (tmp_path / name).resolve()
-    interpreter = _write(root / "bin" / "python", b"fixture interpreter\n")
+    interpreter = _write(tmp_path / f"{name}-toolchain" / "python3", b"fixture interpreter\n")
+    interpreter.chmod(0o755)
+    base_prefix = interpreter.parent.resolve()
+    launcher = root / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    os.symlink(interpreter, launcher)
+    distributions: dict[str, dict[str, str]] = {}
+    distributions_sha256 = hashlib.sha256(
+        json.dumps(
+            distributions,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    ).hexdigest()
     manifest = _write(
         tmp_path / f"{name}-manifest.json",
         {
@@ -58,7 +72,22 @@ def _environment(tmp_path: Path, name: str) -> tuple[Path, Path]:
                 "resolved_path": str(interpreter),
                 "size_bytes": interpreter.stat().st_size,
                 "sha256": _sha(interpreter),
+                "python_version": "3.11.14",
+                "version_info": {
+                    "major": 3,
+                    "minor": 11,
+                    "micro": 14,
+                    "releaselevel": "final",
+                    "serial": 0,
+                },
+                "implementation": "cpython",
+                "cache_tag": "cpython-311",
+                "prefix": str(root),
+                "base_prefix": str(base_prefix),
             },
+            "distribution_count": 0,
+            "distributions": distributions,
+            "distributions_sha256": distributions_sha256,
         },
     )
     return root, manifest
@@ -254,6 +283,82 @@ def test_confirmatory_unpushed_is_rejected(tmp_path: Path) -> None:
     values = _fixture(tmp_path, "formal")
     values["evaluation_class"] = "confirmatory"
     with pytest.raises(intent.EvalIntentError, match="git_pushed=true"):
+        intent.build_intent(_args(values))
+
+
+def test_environment_prefix_must_match_the_supplied_root(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    manifest_path = Path(values["cosmos_environment_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["interpreter"]["prefix"] = str(tmp_path.resolve())
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    values["expected_cosmos_environment_manifest_sha256"] = _sha(manifest_path)
+
+    with pytest.raises(intent.EvalIntentError, match="prefix does not match"):
+        intent.build_intent(_args(values))
+
+
+def test_environment_launcher_must_resolve_to_the_manifest_interpreter(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    root = Path(values["cosmos_env_root"])
+    launcher = root / "bin" / "python"
+    manifest = json.loads(Path(values["cosmos_environment_manifest"]).read_text(encoding="utf-8"))
+    trusted = Path(manifest["interpreter"]["resolved_path"])
+    alternate = _write(tmp_path / "alternate-toolchain" / "python3", trusted.read_bytes())
+    alternate.chmod(0o755)
+    launcher.unlink()
+    os.symlink(alternate, launcher)
+
+    with pytest.raises(intent.EvalIntentError, match="launcher target does not match"):
+        intent.build_intent(_args(values))
+
+
+def test_environment_launcher_must_exist(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    launcher = Path(values["cosmos_env_root"]) / "bin" / "python"
+    launcher.unlink()
+
+    with pytest.raises(intent.EvalIntentError, match="cannot inspect Cosmos environment launcher"):
+        intent.build_intent(_args(values))
+
+
+def test_environment_launcher_target_must_be_executable(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    manifest_path = Path(values["cosmos_environment_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    interpreter = Path(manifest["interpreter"]["resolved_path"])
+    interpreter.chmod(0o644)
+
+    with pytest.raises(intent.EvalIntentError, match="launcher and target must be executable"):
+        intent.build_intent(_args(values))
+
+
+def test_environment_manifest_must_have_the_complete_v1_schema(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    manifest_path = Path(values["cosmos_environment_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("distributions_sha256")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    values["expected_cosmos_environment_manifest_sha256"] = _sha(manifest_path)
+
+    with pytest.raises(intent.EvalIntentError, match="manifest contract is invalid"):
+        intent.build_intent(_args(values))
+
+
+def test_environment_bin_directory_must_not_be_a_symlink(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    root = Path(values["cosmos_env_root"])
+    bin_directory = root / "bin"
+    launcher = bin_directory / "python"
+    target_directory = tmp_path / "aliased-bin"
+    target_directory.mkdir()
+    target_launcher = target_directory / "python"
+    os.symlink(launcher.resolve(), target_launcher)
+    launcher.unlink()
+    bin_directory.rmdir()
+    os.symlink(target_directory, bin_directory)
+
+    with pytest.raises(intent.EvalIntentError, match="bin directory.*symlink components"):
         intent.build_intent(_args(values))
 
 

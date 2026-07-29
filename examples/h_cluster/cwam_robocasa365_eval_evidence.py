@@ -1200,6 +1200,108 @@ def _absolute_resolved_path(value: Any, label: str) -> Path:
         raise ValueError(f"{label} must resolve to an existing path: {path}") from error
 
 
+def _absolute_lexical_path(value: Any, label: str) -> Path:
+    text = _require_nonempty_str(value, label)
+    path = Path(text)
+    if not path.is_absolute() or os.path.normpath(text) != text or os.fspath(path) != text:
+        raise ValueError(f"{label} must be an exact canonical-form absolute path: {path}")
+    return path
+
+
+def _absolute_canonical_existing_path(
+    value: Any,
+    label: str,
+    *,
+    directory: bool,
+) -> Path:
+    supplied = _absolute_lexical_path(value, label)
+    try:
+        resolved = supplied.resolve(strict=True)
+        metadata = supplied.lstat()
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} must resolve to an existing path: {supplied}") from error
+    expected_kind = stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
+    if supplied != resolved or stat.S_ISLNK(metadata.st_mode) or not expected_kind:
+        kind = "directory" if directory else "regular file"
+        raise ValueError(f"{label} must be a canonical non-symlink {kind}: {supplied}")
+    return resolved
+
+
+def _validated_environment_launcher(
+    *,
+    root: Path,
+    manifest_interpreter: dict[str, Any],
+    label: str,
+) -> tuple[Path, Path]:
+    bin_directory = _absolute_canonical_existing_path(
+        str(root / "bin"),
+        f"{label} bin directory",
+        directory=True,
+    )
+    launcher = bin_directory / "python"
+    try:
+        before = launcher.lstat()
+        resolved = launcher.resolve(strict=True)
+        after = launcher.lstat()
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} launcher must resolve safely: {launcher}") from error
+    if not (stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)):
+        raise ValueError(f"{label} launcher must be a regular file or leaf symlink: {launcher}")
+    if _stable_file_identity(before) != _stable_file_identity(after):
+        raise ValueError(f"{label} launcher changed while resolving: {launcher}")
+    resolved = _absolute_canonical_existing_path(
+        str(resolved),
+        f"{label} launcher target",
+        directory=False,
+    )
+    manifest_resolved = _absolute_canonical_existing_path(
+        manifest_interpreter.get("resolved_path"),
+        f"{label} manifest interpreter.resolved_path",
+        directory=False,
+    )
+    if resolved != manifest_resolved:
+        raise ValueError(f"{label} launcher target does not match the environment manifest")
+    if not os.access(launcher, os.X_OK) or not os.access(resolved, os.X_OK):
+        raise ValueError(f"{label} launcher and target must be executable: {launcher}")
+    launcher_identity = _stable_file_identity(after)
+    target_identity = _stable_file_identity(resolved.lstat())
+    _payload, target_descriptor = _read_stable_regular_file(
+        resolved,
+        f"{label} launcher target",
+    )
+    expected_size = _require_int(
+        manifest_interpreter.get("size_bytes"),
+        f"{label} manifest interpreter.size_bytes",
+        minimum=1,
+    )
+    expected_sha256 = _require_sha256(
+        manifest_interpreter.get("sha256"),
+        f"{label} manifest interpreter.sha256",
+    )
+    if (
+        target_descriptor["size_bytes"] != expected_size
+        or target_descriptor["sha256"] != expected_sha256
+    ):
+        raise ValueError(f"{label} launcher target bytes do not match the environment manifest")
+    try:
+        launcher_before_resolve = launcher.lstat()
+        launcher_target_after = launcher.resolve(strict=True)
+        launcher_after_resolve = launcher.lstat()
+        target_after = resolved.lstat()
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} launcher changed while hashing: {launcher}") from error
+    if (
+        _stable_file_identity(launcher_before_resolve) != launcher_identity
+        or _stable_file_identity(launcher_after_resolve) != launcher_identity
+        or launcher_target_after != manifest_resolved
+        or _stable_file_identity(target_after) != target_identity
+        or not os.access(launcher, os.X_OK)
+        or not os.access(resolved, os.X_OK)
+    ):
+        raise ValueError(f"{label} launcher or target changed while hashing: {launcher}")
+    return launcher, resolved
+
+
 def _parse_utc(value: Any, label: str) -> dt.datetime:
     text = _require_nonempty_str(value, label)
     try:
@@ -1388,15 +1490,23 @@ def _validated_environment_manifest(
         _PYTHON_ENVIRONMENT_INTERPRETER_KEYS,
         f"{label}.interpreter",
     )
-    resolved_interpreter = _absolute_resolved_path(
+    resolved_interpreter = _absolute_canonical_existing_path(
         interpreter.get("resolved_path"),
         f"{label}.interpreter.resolved_path",
+        directory=False,
     )
-    _absolute_resolved_path(interpreter.get("prefix"), f"{label}.interpreter.prefix")
-    _absolute_resolved_path(
+    _absolute_canonical_existing_path(
+        interpreter.get("prefix"),
+        f"{label}.interpreter.prefix",
+        directory=True,
+    )
+    _absolute_canonical_existing_path(
         interpreter.get("base_prefix"),
         f"{label}.interpreter.base_prefix",
+        directory=True,
     )
+    if not os.access(resolved_interpreter, os.X_OK):
+        raise ValueError(f"{label}.interpreter.resolved_path must be executable")
     interpreter_size = _require_int(
         interpreter.get("size_bytes"),
         f"{label}.interpreter.size_bytes",
@@ -1549,23 +1659,32 @@ def _validate_environment_runtime_binding(
         frozenset({"launch_path", "resolved_path"}),
         interpreter_label,
     )
-    launch_path = _absolute_resolved_path(
+    launch_path = _absolute_lexical_path(
         interpreter.get("launch_path"),
         f"{interpreter_label}.launch_path",
     )
-    resolved_path = _absolute_resolved_path(
+    resolved_path = _absolute_canonical_existing_path(
         interpreter.get("resolved_path"),
         f"{interpreter_label}.resolved_path",
+        directory=False,
     )
     manifest_interpreter = _require_dict(
         manifest.get("interpreter"),
         f"{name}_environment_manifest.interpreter",
     )
-    manifest_resolved_path = _absolute_resolved_path(
-        manifest_interpreter.get("resolved_path"),
-        f"{name}_environment_manifest.interpreter.resolved_path",
+    environment_root = _absolute_canonical_existing_path(
+        manifest_interpreter.get("prefix"),
+        f"{name}_environment_manifest.interpreter.prefix",
+        directory=True,
     )
-    if launch_path != resolved_path or resolved_path != manifest_resolved_path:
+    expected_launch_path, manifest_resolved_path = _validated_environment_launcher(
+        root=environment_root,
+        manifest_interpreter=manifest_interpreter,
+        label=f"{name} environment",
+    )
+    if launch_path != expected_launch_path:
+        raise ValueError(f"{interpreter_label}.launch_path is not the exact environment launcher")
+    if resolved_path != manifest_resolved_path:
         raise ValueError(f"{interpreter_label} does not resolve to the manifest interpreter")
 
     report_label = f"eval_runtime_receipt.environment_verification.{name}"
@@ -2330,13 +2449,23 @@ def _validate_eval_intent_binding(
             manifest.get("interpreter"),
             f"{name}_environment_manifest.interpreter",
         )
-        environment_root = _absolute_resolved_path(environment.get("root"), f"{label}.root")
-        interpreter_path = _absolute_resolved_path(
-            interpreter.get("resolved_path"),
-            f"{name}_environment_manifest.interpreter.resolved_path",
+        environment_root = _absolute_canonical_existing_path(
+            environment.get("root"),
+            f"{label}.root",
+            directory=True,
         )
-        if environment_root not in interpreter_path.parents:
-            raise ValueError(f"{label}.root does not contain the verified interpreter")
+        manifest_prefix = _absolute_canonical_existing_path(
+            interpreter.get("prefix"),
+            f"{name}_environment_manifest.interpreter.prefix",
+            directory=True,
+        )
+        if environment_root != manifest_prefix:
+            raise ValueError(f"{label}.root does not match the environment manifest prefix")
+        _validated_environment_launcher(
+            root=environment_root,
+            manifest_interpreter=interpreter,
+            label=label,
+        )
         _validate_post_file_descriptor(
             environment.get("manifest"),
             expected=stable_artifacts[f"{name}_environment_manifest"],
