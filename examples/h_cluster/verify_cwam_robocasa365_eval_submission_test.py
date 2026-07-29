@@ -66,6 +66,87 @@ def valid_records(tmp_path: Path) -> dict[str, object]:
             "Z",
         )
     )
+    repositories = {}
+    for index, name in enumerate(("demian", "robocasa", "robosuite"), start=1):
+        commit = str(index) * 40
+        repositories[name] = {
+            "root": str(tmp_path / name),
+            "expected_commit": commit,
+            "actual_commit": commit,
+            "clean": True,
+            "tracked_files": {
+                "all_tracked_regular_files_match_head_blobs": True,
+            },
+        }
+    preflight = {
+        "asset_tree": {
+            "schema_version": 1,
+            "kind": "cwam_robocasa_asset_tree_verification_receipt",
+            "status": "passed",
+            "manifest_sha256": "4" * 64,
+            "publisher_receipt_sha256": "5" * 64,
+        },
+        "repositories": repositories,
+        "validation": {
+            "asset_tree_full_hash_match": True,
+            "repository_heads_clean": True,
+            "tracked_regular_files_match_head_blobs": True,
+        },
+    }
+    preflight_sha256 = hashlib.sha256(
+        json.dumps(preflight, separators=(",", ":"), sort_keys=True).encode(),
+    ).hexdigest()
+    intent_value = {
+        "schema_version": 1,
+        "kind": "cwam_robocasa365_eval_intent",
+        "identity": {
+            "experiment_id": "CWAM-E35-EVAL-GATE",
+            "logical_run_id": "CWAM-E35-EVAL-GATE-S42",
+            "run_name": "CWAM-E35-EVAL-GATE-S42",
+            "stage": "one_episode_gate",
+            "evaluation_class": "exploratory",
+        },
+        "protocol": {
+            "split": "atomic",
+            "tasks": ["OpenDrawer"],
+            "episodes_per_task": 1,
+            "num_shards": 1,
+            "base_seed": 42,
+        },
+        "thresholds": {
+            "minimum_mean_success_rate": 0.0,
+            "minimum_successful_tasks": 0,
+        },
+        "source": {
+            "root": str(tmp_path / "source"),
+            "commit": "b" * 40,
+            "git_pushed": False,
+            "manifest": {
+                "path": str(tmp_path / "source" / "SNAPSHOT_MANIFEST.json"),
+                "size_bytes": 1,
+                "sha256": "c" * 64,
+            },
+        },
+        "serving_checkpoint": {},
+        "artifacts": {},
+        "repositories": {},
+        "runtime": {},
+        "resources": {
+            "cpu": 16,
+            "memory_mib": 187_500,
+            "gpu": 1,
+            "quota_group": "eailabagent_gpu",
+            "negative_tag": submission.PINNED_NEGATIVE_TAGS[0],
+            "task_type": "normal",
+            "private_machine": "group",
+            "priority": 9,
+            "restart_policy": "never",
+            "backoff_limit": 1,
+            "replicas": 1,
+        },
+        "prior_gate": None,
+    }
+    intent_path, _ = _write_json(tmp_path / "intent" / "eval-intent.json", intent_value)
     reservation_value = {
         "schema_version": 1,
         "kind": submission.RESERVATION_KIND,
@@ -86,7 +167,11 @@ def valid_records(tmp_path: Path) -> dict[str, object]:
             "episodes_per_task": 1,
             "num_shards": 1,
             "base_seed": 42,
+            "prior_gate_evidence": None,
         },
+        "eval_intent_manifest": _descriptor(intent_path),
+        "preflight": preflight,
+        "preflight_sha256": preflight_sha256,
         "scheduler_expected": scheduler_expected,
     }
     reservation, reservation_sha = _write_json(
@@ -157,6 +242,7 @@ def _arguments(records: dict[str, object]) -> dict[str, object]:
         "reservation_path": records["reservation"],
         "expected_reservation_sha256": records["reservation_sha"],
         "scheduler_readback_receipt_path": records["readback"],
+        "submission_unknown_path": records["readback"].with_name("submission-unknown.json"),
         "experiment_id": reservation["experiment_id"],
         "logical_run_id": reservation["logical_run_id"],
         "run_name": reservation["run_name"],
@@ -187,6 +273,9 @@ def test_happy_path_seals_external_identity_and_scheduler_artifacts(
         "freshness_window_passed": True,
         "scheduler_readback_matches": True,
         "scheduler_artifact_hashes_match": True,
+        "eval_intent_manifest_matches": True,
+        "pre_submission_full_inputs_passed": True,
+        "submission_unknown_absent": True,
     }
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     assert stat.S_IMODE(output.stat().st_mode) == 0o444
@@ -354,7 +443,7 @@ def test_run_identity_is_strict_and_namespaced(
         submission.verify_submission(**arguments)
 
 
-def test_phase_evaluation_contracts_are_exact() -> None:
+def test_phase_evaluation_contracts_are_exact(tmp_path: Path) -> None:
     assert submission.ATOMIC_TASKS == frozenset(evidence.ATOMIC_TASKS)
     assert len(submission.ATOMIC_TASKS) == 17
 
@@ -365,9 +454,14 @@ def test_phase_evaluation_contracts_are_exact() -> None:
         "episodes_per_task": 1,
         "num_shards": 1,
         "base_seed": 42,
+        "prior_gate_evidence": None,
     }
     assert submission._validate_evaluation(gate, "gate") == gate
 
+    gate_evidence, _ = _write_json(
+        tmp_path / "evaluation_evidence.json",
+        {"schema_version": 1, "execution_complete": True},
+    )
     formal = {
         "stage": "formal",
         "split": "atomic",
@@ -375,6 +469,7 @@ def test_phase_evaluation_contracts_are_exact() -> None:
         "episodes_per_task": 20,
         "num_shards": 8,
         "base_seed": 42,
+        "prior_gate_evidence": _descriptor(gate_evidence),
     }
     assert submission._validate_evaluation(formal, "formal") == formal
 
@@ -392,6 +487,18 @@ def test_phase_evaluation_contracts_are_exact() -> None:
     ):
         with pytest.raises(submission.SubmissionVerificationError):
             submission._validate_evaluation(invalid_gate, "gate")
+
+
+def test_submission_unknown_terminal_record_is_rejected(
+    valid_records: dict[str, object],
+) -> None:
+    readback = valid_records["readback"]
+    assert isinstance(readback, Path)
+    unknown = readback.with_name("submission-unknown.json")
+    _write_json(unknown, {"schema_version": 1, "status": "unknown"})
+
+    with pytest.raises(submission.SubmissionVerificationError, match="submission-unknown"):
+        submission.verify_submission(**_arguments(valid_records))
 
 
 def test_scheduler_acceptance_cannot_predate_start(

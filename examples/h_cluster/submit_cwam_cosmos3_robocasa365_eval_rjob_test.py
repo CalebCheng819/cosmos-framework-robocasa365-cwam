@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -33,8 +35,12 @@ def _gate_environment() -> dict[str, str]:
         "SOURCE_MANIFEST": "/not/reached/snapshot-manifest.json",
         "COSMOS_ENVIRONMENT_MANIFEST": "/not/reached/cosmos-environment.json",
         "ROBOCASA_ENVIRONMENT_MANIFEST": "/not/reached/robocasa-environment.json",
+        "EVAL_INTENT_MANIFEST": "/not/reached/eval-intent.json",
+        "SOURCE_DCP_EXPORT_RECEIPT": "/not/reached/source-dcp-export-receipt.json",
         "EVAL_EXPERIMENT_ID": "CWAM-E35-GATE",
         "EVAL_LOGICAL_RUN_ID": "CWAM-E35-GATE-S42",
+        "EVAL_EVALUATION_CLASS": "exploratory",
+        "SOURCE_GIT_PUSHED": "false",
         "EXPECTED_SOURCE_COMMIT": "1" * 40,
         "EXPECTED_SNAPSHOT_MANIFEST_SHA256": digest,
         "EXPECTED_SOURCE_MANIFEST_SHA256": digest,
@@ -43,6 +49,9 @@ def _gate_environment() -> dict[str, str]:
         "EXPECTED_ACTION_STATS_SHA256": digest,
         "EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256": digest,
         "EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256": digest,
+        "EXPECTED_EVAL_INTENT_MANIFEST_SHA256": digest,
+        "EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256": digest,
+        "EXPECTED_EGL_VENDOR_JSON_SHA256": digest,
         "EXPECTED_ROBOCASA_COMMIT": "29f7ce8814c1547f5af762a0997fbd4b64848dd7",
         "EXPECTED_ROBOSUITE_COMMIT": "2" * 40,
         "MINIMUM_MEAN_SUCCESS_RATE": "0.0",
@@ -50,6 +59,8 @@ def _gate_environment() -> dict[str, str]:
         "EVAL_STAGE": "one_episode_gate",
         "EVAL_SPLIT": "atomic",
         "EVAL_TASKS_CSV": "OpenDrawer",
+        "PRIOR_GATE_EVIDENCE": "",
+        "EXPECTED_PRIOR_GATE_EVIDENCE_SHA256": "",
         "EPISODES_PER_TASK": "1",
         "NUM_SHARDS": "1",
         "BASE_SEED": "42",
@@ -71,6 +82,55 @@ def _run_early(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         ["/usr/bin/bash", str(SUBMITTER)],
         cwd=SUBMITTER.parent,
         env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+def _unknown_publisher_program() -> str:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    marker = "\"$SCHEDULER_TEXT_READBACK\" <<'PY'\n"
+    start = script.index(marker) + len(marker)
+    end = script.index("\nPY\n}", start)
+    return script[start:end]
+
+
+def _run_unknown_publisher(
+    *,
+    parent: Path,
+    program: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    paths = {
+        "pending": parent / "submission-pending.json",
+        "accepted": parent / "scheduler-readback-receipt.json",
+        "unknown": parent / "submission-unknown.json",
+        "submit_log": parent / "rjob-submit.log",
+        "scheduler_expected": parent / "rjob-expected-contract.json",
+        "worker_env": parent / "worker-env-contract.json",
+        "capture_log": parent / "rjob-scheduler-capture.log",
+        "structured": parent / "rjob-scheduler-receipt.json",
+        "readback": parent / "rjob-get.log",
+    }
+    return subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-c",
+            program or _unknown_publisher_program(),
+            str(paths["pending"]),
+            str(paths["accepted"]),
+            str(paths["unknown"]),
+            str(parent),
+            "injected_failure",
+            "",
+            str(paths["submit_log"]),
+            str(paths["scheduler_expected"]),
+            str(paths["worker_env"]),
+            str(paths["capture_log"]),
+            str(paths["structured"]),
+            str(paths["readback"]),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -170,15 +230,59 @@ def test_real_mode_uses_dual_exclusive_reservations_and_preserves_tombstones() -
     assert "reservation retained" in script
     assert "submission-unknown.json" in script
     assert "os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW" in script
-    assert "trap 'post_accept_failure \"$?\"' ERR" in script
-    assert "trap 'post_accept_exit \"$?\"' EXIT" in script
-    assert 'mark_submission_unknown "unexpected_post_accept_failure"' in script
-    assert 'mark_submission_unknown "unexpected_post_accept_exit"' in script
-    assert script.index("trap 'post_accept_failure \"$?\"' ERR") < script.index('"$CHMOD_BIN" 0444 "$SUBMISSION_LOG"')
-    assert script.index("trap 'post_accept_failure \"$?\"' ERR") < script.index(
-        '"$PYTHON3_BIN" - \\\n    "$SCHEDULER_EXPECTED_CONTRACT"'
+    assert "refusing to publish unknown after accepted" in script
+    assert "refusing to publish accepted after submission-unknown" in script
+    assert "accepted and unknown submission terminal records both exist" in script
+    assert "SUBMISSION_TERMINAL_COMPLETE=0" in script
+    assert "trap 'submission_exit \"$?\"' EXIT" in script
+    assert "trap 'submission_signal INT 130' INT" in script
+    assert "trap 'submission_signal TERM 143' TERM" in script
+    experiment_lock = script.index('/usr/bin/mkdir --mode=0700 -- "$EXPERIMENT_RESERVATION_DIR"')
+    exit_trap = script.index("trap 'submission_exit \"$?\"' EXIT")
+    run_lock = script.index('/usr/bin/mkdir --mode=0700 -- "$RUN_RESERVATION_DIR"')
+    assert experiment_lock < exit_trap < run_lock
+    assert script.index("trap 'submission_exit \"$?\"' EXIT") < script.index(
+        '"$TIMEOUT_BIN" --foreground --kill-after=10s 180s'
     )
-    assert "POST_ACCEPT_COMPLETE=1\ntrap - ERR EXIT" in script
+    assert "os.link(temporary, target, follow_symlinks=False)" in script
+    assert "if published:\n        target.unlink(missing_ok=True)" in script
+    assert "SUBMISSION_TERMINAL_COMPLETE=1\ntrap - EXIT HUP INT TERM" in script
+
+
+def test_unknown_publisher_handles_failure_before_pending_exists(tmp_path: Path) -> None:
+    parent = tmp_path / "reservation"
+    parent.mkdir(mode=0o700)
+
+    result = _run_unknown_publisher(parent=parent)
+
+    assert result.returncode == 0, result.stderr
+    unknown = parent / "submission-unknown.json"
+    payload = json.loads(unknown.read_text(encoding="utf-8"))
+    assert payload["submission_reservation"] is None
+    assert payload["available_artifacts"] == {}
+    assert stat.S_IMODE(unknown.stat().st_mode) == 0o444
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o555
+
+
+def test_unknown_publisher_removes_partial_terminal_on_post_link_failure(tmp_path: Path) -> None:
+    parent = tmp_path / "reservation"
+    parent.mkdir(mode=0o700)
+    pending = parent / "submission-pending.json"
+    pending.write_text('{"status":"submitting"}\n', encoding="utf-8")
+    program = _unknown_publisher_program().replace(
+        "    published = True\n",
+        "    published = True\n    raise RuntimeError('injected post-link failure')\n",
+        1,
+    )
+
+    result = _run_unknown_publisher(parent=parent, program=program)
+
+    assert result.returncode != 0
+    assert "injected post-link failure" in result.stderr
+    assert not (parent / "submission-unknown.json").exists()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(pending.stat().st_mode) == 0o444
+    assert not any(path.name.startswith(".submission-unknown.json.") for path in parent.iterdir())
 
 
 def test_submitter_has_no_unscoped_caller_environment_dependency() -> None:
@@ -212,3 +316,140 @@ def test_all_embedded_python_programs_compile() -> None:
     assert len(programs) >= 10
     for index, program in enumerate(programs, start=1):
         compile(program, f"{SUBMITTER.name}:heredoc-{index}", "exec")
+
+
+def test_task_registry_bootstrap_import_is_cwd_independent() -> None:
+    helper = SUBMITTER.with_name("cwam_robocasa365_eval_evidence.py").resolve()
+    program = f"""
+import importlib.util
+import pathlib
+import sys
+
+helper = pathlib.Path({str(helper)!r})
+sys.path.insert(0, str(helper.parent))
+spec = importlib.util.spec_from_file_location("cwam_eval_submit_contract", helper)
+assert spec is not None and spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert len(module.ATOMIC_TASKS) == 17
+"""
+    result = subprocess.run(
+        ["/usr/bin/python3", "-c", program],
+        cwd="/",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_formal_prior_gate_is_verified_before_any_reservation_or_submission() -> None:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    verification = "verify-prior-gate \\\n"
+    reservation = '/usr/bin/mkdir --mode=0700 -- "$EXPERIMENT_RESERVATION_DIR"'
+    submission = '"$TIMEOUT_BIN" --foreground --kill-after=10s 180s'
+
+    assert verification in script
+    assert '--current-checkpoint-manifest-sha256 "$EXPECTED_CHECKPOINT_MANIFEST_SHA256"' in script
+    assert '--current-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"' in script
+    asset_manifest_arg = '--current-asset-manifest-sha256 "$PINNED_ASSET_MANIFEST_SHA256"'
+    asset_receipt_arg = '--current-asset-publisher-receipt-sha256 "$PINNED_ASSET_RECEIPT_SHA256"'
+    assert asset_manifest_arg in script
+    assert asset_receipt_arg in script
+    assert script.index("readonly PINNED_ASSET_MANIFEST_SHA256=") < script.index(asset_manifest_arg)
+    assert script.index("readonly PINNED_ASSET_RECEIPT_SHA256=") < script.index(asset_receipt_arg)
+    assert script.index(verification) < script.index(reservation)
+    assert script.index(verification) < script.index(submission)
+
+
+def test_all_live_model_inputs_and_repository_heads_are_verified_before_reservation() -> None:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    reservation = script.index('/usr/bin/mkdir --mode=0700 -- "$EXPERIMENT_RESERVATION_DIR"')
+
+    for token in (
+        '"checkpoint_manifest|$CHECKPOINT_MANIFEST|$EXPECTED_CHECKPOINT_MANIFEST_SHA256"',
+        '"training_config|$TRAINING_CONFIG|$EXPECTED_TRAINING_CONFIG_SHA256"',
+        '"action_stats|$ACTION_STATS|$EXPECTED_ACTION_STATS_SHA256"',
+        '"cosmos_environment_manifest|$COSMOS_ENVIRONMENT_MANIFEST|$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256"',
+        '"robocasa_environment_manifest|$ROBOCASA_ENVIRONMENT_MANIFEST|$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256"',
+        '"$CHECKPOINT_HELPER" verify',
+        '"DeMiAn|$DEMIAN_REPO|$PINNED_DEMIAN_COMMIT"',
+        '"RoboCasa|$ROBOCASA_REPO|$EXPECTED_ROBOCASA_COMMIT"',
+        '"robosuite|$ROBOSUITE_REPO|$EXPECTED_ROBOSUITE_COMMIT"',
+        "status --porcelain --untracked-files=all",
+    ):
+        assert token in script
+        assert script.index(token) < reservation
+
+
+def test_full_asset_repository_and_intent_preflights_precede_reservation() -> None:
+    script = SUBMITTER.read_text(encoding="utf-8")
+
+    asset_preflight = script.index('ASSET_PREFLIGHT_JSON="$(')
+    full_asset_verify = script.index(
+        '"$PYTHON3_BIN" "$ASSET_VERIFY_HELPER" verify \\\n        --asset-root "$ROBOCASA_REPO"',
+        asset_preflight,
+    )
+    repository_preflight = script.index('TRACKED_REPOSITORY_PREFLIGHT_JSON="$(')
+    tracked_file_verification = script.index(
+        "reports[name] = module._verify_git_repository(",
+        repository_preflight,
+    )
+    verify_all_tracked_files = script.index(
+        "verify_tracked_files=True",
+        tracked_file_verification,
+    )
+    combined_preflight = script.index('SUBMISSION_PREFLIGHT_JSON="$(')
+    intent_arguments = script.index("INTENT_VERIFY_ARGS=(")
+    intent_verification = script.index(
+        '"$PYTHON3_BIN" "$INTENT_HELPER" "${INTENT_VERIFY_ARGS[@]}"',
+        intent_arguments,
+    )
+    reservation = script.index('/usr/bin/mkdir --mode=0700 -- "$EXPERIMENT_RESERVATION_DIR"')
+    submission = script.index('"$TIMEOUT_BIN" --foreground --kill-after=10s 180s')
+
+    assert (
+        asset_preflight
+        < full_asset_verify
+        < repository_preflight
+        < tracked_file_verification
+        < verify_all_tracked_files
+        < combined_preflight
+        < intent_arguments
+        < intent_verification
+        < reservation
+        < submission
+    )
+    for token in (
+        'if asset.get("status") != "passed":',
+        '"asset_tree_full_hash_match": True',
+        '"tracked_regular_files_match_head_blobs": True',
+        '--manifest "$EVAL_INTENT_MANIFEST"',
+        '--expected-manifest-sha256 "$EXPECTED_EVAL_INTENT_MANIFEST_SHA256"',
+        '--source-dcp-export-receipt "$SOURCE_DCP_EXPORT_RECEIPT"',
+        '--expected-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"',
+    ):
+        assert token in script
+        assert script.index(token) < reservation
+
+
+def test_eval_intent_and_source_export_receipt_are_forwarded_to_worker() -> None:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    worker_block = re.search(
+        r"readonly WORKER_ENV_NAMES=\(\n(.*?)\n\)",
+        script,
+        re.DOTALL,
+    )
+
+    assert worker_block is not None
+    forwarded = set(re.findall(r"^\s+([A-Z0-9_]+)\s*$", worker_block.group(1), re.MULTILINE))
+    assert {
+        "EVAL_INTENT_MANIFEST",
+        "EXPECTED_EVAL_INTENT_MANIFEST_SHA256",
+        "SOURCE_DCP_EXPORT_RECEIPT",
+        "EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256",
+    } <= forwarded
+    assert 'for name in "${WORKER_ENV_NAMES[@]}"; do' in script
+    assert 'WORKER_SCRIPT+="export $name=$quoted"' in script
+    assert script.index("readonly WORKER_ENV_NAMES=(") < script.index('WORKER_SCRIPT+="export $name=$quoted"')

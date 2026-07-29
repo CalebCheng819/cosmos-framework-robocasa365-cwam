@@ -114,6 +114,8 @@ def test_runner_verifies_submission_and_assets_before_egl_or_servers() -> None:
     for token in (
         "EXPECTED_EVAL_SUBMISSION_PENDING_SHA256",
         "EVAL_SCHEDULER_READBACK_RECEIPT",
+        "EVAL_SUBMISSION_UNKNOWN_PATH",
+        "submission-unknown terminal record exists",
         "KUBEBRAIN_RJOB_NAME",
         "KUBEBRAIN_RJOB_UID",
         "cwam_robocasa_asset_manifest.py",
@@ -144,6 +146,24 @@ def test_runner_reverifies_all_live_inputs_after_rollouts_before_summary() -> No
     assert '"$POST_ROLLOUT_VERIFICATION_RECEIPT" \\' in script
 
 
+def test_runner_reaggregates_only_after_raw_results_are_sealed() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+    raw_seal = script.index('chmod 0555 "$RESULTS_DIR"')
+    final_verify = script.index("verify-sealed-evidence")
+    success = script.index("ROBOCASA365_EVAL_EXECUTION_SUCCESS")
+
+    assert raw_seal < final_verify < success
+    assert '--output "$SEALED_EVIDENCE_VERIFICATION_RECEIPT"' in script[final_verify:success]
+    assert "sealed evidence verification receipt is not mode 0444" in script
+    assert script.index("require_accepted_submission_terminal_state", final_verify) < success
+    directory_seal = script.index('chmod 0555 \\\n    "$CONTROL_DIR"', final_verify)
+    stable_read = script.index('"O_NOFOLLOW"', directory_seal)
+    effect_read = script.index('effect_pass = receipt.get("evaluation", {}).get("effect_pass")', stable_read)
+    assert final_verify < directory_seal < stable_read < effect_read < success
+    assert "receipt changed during final verdict read" in script
+    assert "receipt SHA-256 changed after directory sealing" in script
+
+
 def test_runner_hard_pins_episode_reset_demian_revision() -> None:
     script = RUNNER.read_text(encoding="utf-8")
 
@@ -170,6 +190,9 @@ def test_runner_rejects_reused_outputs_and_non_nvme_scratch() -> None:
     assert "EVAL_NVME_ROOT must be a strict child of /nvme" in script
     assert "/nvme is not backed by /dev/nvme1n1" in script
     assert "/nvme/.cwam-robocasa365-eval/$EVAL_LOGICAL_RUN_ID" in script
+    assert '/usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_ROOT"' in script
+    assert "scoped NVMe cleanup did not remove" in script
+    assert script.index("trap 'cleanup $?' EXIT") < script.index('mkdir -- "$EVAL_NVME_ROOT"')
 
 
 def test_formal_mode_can_select_the_complete_split() -> None:
@@ -179,6 +202,33 @@ def test_formal_mode_can_select_the_complete_split() -> None:
     assert ': "${EVAL_TASKS_CSV:=OpenDrawer}"' not in script
     assert "formal evaluation must use the complete canonical split" in script
     assert "formal evaluation requires NUM_SHARDS=8" in script
+
+
+def test_formal_prior_gate_is_reverified_before_output_or_egl() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+    verification = "verify-prior-gate \\\n"
+
+    assert verification in script
+    assert '--prior-gate-evidence "$PRIOR_GATE_EVIDENCE"' in script
+    assert '--expected-prior-gate-evidence-sha256 "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256"' in script
+    assert '--current-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"' in script
+    assert '--current-asset-manifest-sha256 "$EXPECTED_ROBOCASA_ASSET_MANIFEST_SHA256"' in script
+    assert '--current-asset-publisher-receipt-sha256 "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256"' in script
+    assert script.index(verification) < script.index('mkdir -- "$EXPERIMENT_OUTPUT_ROOT"')
+    assert script.index(verification) < script.index("MUJOCO_GL=egl")
+
+
+def test_contract_directly_binds_intent_and_source_dcp_receipt() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+    contract = script.index("CONTRACT_ARGS=(")
+    rollout = script.index("EVALUATOR_ARGS=(")
+    contract_block = script[contract:rollout]
+
+    for token in (
+        '--eval-intent-manifest "$EVAL_INTENT_MANIFEST"',
+        '--source-dcp-export-receipt "$SOURCE_DCP_EXPORT_RECEIPT"',
+    ):
+        assert token in contract_block
 
 
 def test_runner_has_no_hidden_phase_or_resource_defaults() -> None:
@@ -220,6 +270,6 @@ def test_all_embedded_python_programs_compile() -> None:
     script = RUNNER.read_text(encoding="utf-8")
     programs = re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|\Z)", script, re.DOTALL)
 
-    assert len(programs) == 3
+    assert len(programs) == 4
     for index, program in enumerate(programs, start=1):
         compile(program, f"{RUNNER.name}:heredoc-{index}", "exec")

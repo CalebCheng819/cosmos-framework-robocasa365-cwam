@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -19,7 +20,14 @@ from examples.h_cluster import cwam_robocasa365_eval_evidence as evidence
 
 def _write_json(path: Path, value: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    prior_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    if prior_mode is not None and not prior_mode & stat.S_IWUSR:
+        path.chmod(prior_mode | stat.S_IWUSR)
+    try:
+        path.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    finally:
+        if prior_mode is not None:
+            path.chmod(prior_mode)
     return path
 
 
@@ -120,6 +128,29 @@ def _mutate_contract_artifact(
     _write_json(contract_path, contract)
 
 
+def _rewrite_submission_and_runtime_binding(
+    contract_path: Path,
+    mutation,
+) -> None:
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    submission_path = Path(contract["artifacts"]["submission_verification_receipt"]["path"])
+    submission = json.loads(submission_path.read_text(encoding="utf-8"))
+    mutation(submission)
+    _write_json(submission_path, submission)
+    submission_sha256 = _sha256(submission_path)
+    contract["artifacts"]["submission_verification_receipt"]["sha256"] = submission_sha256
+
+    runtime_path = Path(contract["artifacts"]["eval_runtime_receipt"]["path"])
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    descriptor = runtime["inputs"]["submission_verification_receipt"]
+    descriptor["size_bytes"] = submission_path.stat().st_size
+    descriptor["sha256"] = submission_sha256
+    descriptor["expected_sha256"] = submission_sha256
+    _write_json(runtime_path, runtime)
+    contract["artifacts"]["eval_runtime_receipt"]["sha256"] = _sha256(runtime_path)
+    _write_json(contract_path, contract)
+
+
 def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     logical_run_id = "CWAM-E35-R12-GATE-S42"
     results_dir = tmp_path / "results" / logical_run_id
@@ -136,7 +167,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         cosmos_repo / "SNAPSHOT_MANIFEST.json",
         {"files": 1},
     )
-    checkpoint_path = "/checkpoints/iter_000010000"
+    source_checkpoint_root = tmp_path / "checkpoints" / "iter_000010000"
+    checkpoint_root = source_checkpoint_root / "model"
+    checkpoint_root.mkdir(parents=True)
+    checkpoint_path = str(checkpoint_root.resolve())
     checkpoint_tree_sha = "7" * 64
     checkpoint = _artifact(
         tmp_path,
@@ -356,6 +390,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
                 "episodes_per_task": 1,
                 "num_shards": 1,
                 "base_seed": 42,
+                "prior_gate_evidence": None,
             },
             "scheduler": {
                 "rjob_name": "cwam-e35-r12-gate-abc123",
@@ -376,6 +411,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
                 "freshness_window_passed": True,
                 "scheduler_readback_matches": True,
                 "scheduler_artifact_hashes_match": True,
+                "submission_unknown_absent": True,
             },
         },
     )
@@ -389,6 +425,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         provenance_dir / "asset-tree-receipt.json",
         {"payload": "publisher-receipt"},
     )
+    asset_manifest_path.chmod(evidence.cwam_robocasa_asset_manifest.PROVENANCE_FILE_MODE)
+    publisher_receipt_path.chmod(evidence.cwam_robocasa_asset_manifest.PROVENANCE_FILE_MODE)
     asset_verification = _artifact(
         tmp_path,
         "asset-verification",
@@ -500,6 +538,210 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "renderer": "NVIDIA H200",
         },
     }
+
+    source_dcp_export_receipt = _artifact(
+        tmp_path,
+        "source-dcp-export-receipt",
+        {
+            "schema_version": 1,
+            "kind": "cwam_serving_dcp_selection_receipt",
+            "status": "passed",
+            "source_checkpoint_path": str(source_checkpoint_root.resolve()),
+            "source_checkpoint_iteration": 10_000,
+            "serving_checkpoint_path": checkpoint_path,
+            "checkpoint_manifest_sha256": checkpoint["sha256"],
+            "checkpoint_tree_sha256": checkpoint_tree_sha,
+            "validation": {
+                "source_iteration_path_matches": True,
+                "serving_checkpoint_is_exact_model_child": True,
+                "serving_checkpoint_manifest_matches": True,
+            },
+        },
+    )
+    Path(source_dcp_export_receipt["path"]).chmod(0o444)
+
+    def file_descriptor(artifact: dict[str, str]) -> dict[str, object]:
+        return {
+            "path": artifact["path"],
+            "size_bytes": Path(artifact["path"]).stat().st_size,
+            "sha256": artifact["sha256"],
+        }
+
+    def tracked_repository_report(root: Path, commit: str) -> dict[str, object]:
+        return {
+            "root": str(root.resolve()),
+            "expected_commit": commit,
+            "actual_commit": commit,
+            "clean": True,
+            "tracked_files": {
+                "object_format": "sha1",
+                "head_tree_oid": "d" * 40,
+                "tracked_entry_count": 1,
+                "tracked_regular_file_count": 1,
+                "tracked_non_regular_entry_count": 0,
+                "tracked_regular_total_bytes": 1,
+                "tracked_regular_manifest_sha256": "f" * 64,
+                "all_tracked_regular_files_match_head_blobs": True,
+            },
+        }
+
+    repository_preflight = {
+        "demian": tracked_repository_report(demian_repo, demian_commit),
+        "robocasa": tracked_repository_report(robocasa_repo, robocasa_commit),
+        "robosuite": tracked_repository_report(robosuite_repo, robosuite_commit),
+    }
+    asset_verification_value = json.loads(Path(asset_verification["path"]).read_text(encoding="utf-8"))
+    preflight = {
+        "asset_tree": asset_verification_value,
+        "repositories": repository_preflight,
+        "validation": {
+            "asset_tree_full_hash_match": True,
+            "repository_heads_clean": True,
+            "tracked_regular_files_match_head_blobs": True,
+        },
+    }
+    preflight_sha256 = hashlib.sha256(
+        json.dumps(
+            preflight,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    intent = _artifact(
+        tmp_path,
+        "eval-intent",
+        {
+            "schema_version": 1,
+            "kind": "cwam_robocasa365_eval_intent",
+            "identity": {
+                "experiment_id": "CWAM-E35-R12-GATE",
+                "logical_run_id": logical_run_id,
+                "run_name": logical_run_id,
+                "stage": "one_episode_gate",
+                "evaluation_class": "exploratory",
+            },
+            "protocol": {
+                "split": "atomic",
+                "tasks": ["OpenDrawer"],
+                "task_count": 1,
+                "episodes_per_task": 1,
+                "expected_episode_count": 1,
+                "num_shards": 1,
+                "base_seed": 42,
+                "max_steps": 400,
+                "open_loop_horizon": 12,
+                "policy_sampler": "unipc",
+                "policy_seed": 42,
+                "policy_guidance": 1.0,
+                "policy_num_steps": 30,
+                "base_port": 16000,
+                "server_ready_timeout_seconds": 1800,
+            },
+            "thresholds": {
+                "minimum_mean_success_rate": 0.0,
+                "minimum_successful_tasks": 0,
+            },
+            "source": {
+                "root": str(cosmos_repo.resolve()),
+                "commit": source_commit,
+                "git_pushed": False,
+                "manifest": file_descriptor(source_manifest),
+            },
+            "serving_checkpoint": {
+                "path": checkpoint_path,
+                "manifest": file_descriptor(checkpoint),
+                "tree_sha256": checkpoint_tree_sha,
+                "source_dcp_export_receipt": file_descriptor(source_dcp_export_receipt),
+            },
+            "artifacts": {
+                "training_config": file_descriptor(config),
+                "action_stats": file_descriptor(stats),
+                "cosmos_environment": {
+                    "root": str(cosmos_prefix.resolve()),
+                    "manifest": file_descriptor(cosmos_environment),
+                },
+                "robocasa_environment": {
+                    "root": str(robocasa_prefix.resolve()),
+                    "manifest": file_descriptor(robocasa_environment),
+                },
+                "robocasa_assets": {
+                    "root": str(robocasa_repo.resolve()),
+                    "manifest": {
+                        "path": str(asset_manifest_path.resolve()),
+                        "size_bytes": asset_manifest_path.stat().st_size,
+                        "sha256": _sha256(asset_manifest_path),
+                    },
+                    "receipt": {
+                        "path": str(publisher_receipt_path.resolve()),
+                        "size_bytes": publisher_receipt_path.stat().st_size,
+                        "sha256": _sha256(publisher_receipt_path),
+                    },
+                },
+            },
+            "repositories": {
+                "demian": {"root": str(demian_repo.resolve()), "commit": demian_commit},
+                "robocasa": {
+                    "root": str(robocasa_repo.resolve()),
+                    "commit": robocasa_commit,
+                },
+                "robosuite": {
+                    "root": str(robosuite_repo.resolve()),
+                    "commit": robosuite_commit,
+                },
+            },
+            "runtime": {
+                "container_image": evidence._EXPECTED_CONTAINER_IMAGE,
+                "egl_vendor_json": {
+                    "path": str(vendor_json_path.resolve()),
+                    "size_bytes": vendor_json_path.stat().st_size,
+                    "sha256": _sha256(vendor_json_path),
+                },
+            },
+            "resources": {
+                "cpu": 16,
+                "memory_mib": 187_500,
+                "gpu": 1,
+                "quota_group": "eailabagent_gpu",
+                "negative_tag": "node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn",
+                "task_type": "normal",
+                "private_machine": "group",
+                "priority": 9,
+                "restart_policy": "never",
+                "backoff_limit": 1,
+                "replicas": 1,
+            },
+            "prior_gate": None,
+        },
+    )
+    Path(intent["path"]).chmod(0o444)
+
+    submission_value = json.loads(Path(submission_verification["path"]).read_text(encoding="utf-8"))
+    submission_value["eval_intent_manifest"] = file_descriptor(intent)
+    submission_value["preflight"] = preflight
+    submission_value["preflight_sha256"] = preflight_sha256
+    submission_value["scheduler"]["expected"] = {
+        "showname": "cwam-e35-r12-gate",
+        "quota_group": "eailabagent_gpu",
+        "private_machine": "group",
+        "task_type": "normal",
+        "priority": 9,
+        "restart_policy": "Never",
+        "termination_grace_period_seconds": 60,
+        "backoff_limit": 1,
+        "replicas": 1,
+        "image": evidence._EXPECTED_CONTAINER_IMAGE,
+        "cpu": 16,
+        "memory_mib": 187_500,
+        "gpu": 1,
+        "negative_tags": ["node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn"],
+        "store_host_nvme": True,
+        "mounts": evidence._EXPECTED_SUBMISSION_MOUNTS,
+    }
+    submission_value["validation"]["eval_intent_manifest_matches"] = True
+    submission_value["validation"]["pre_submission_full_inputs_passed"] = True
+    _write_json(Path(submission_verification["path"]), submission_value)
+    submission_verification["sha256"] = _sha256(Path(submission_verification["path"]))
 
     eval_runtime_receipt = _artifact(
         tmp_path,
@@ -689,6 +931,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "max_steps": 400,
             "open_loop_horizon": 12,
             "num_shards": 1,
+            "prior_gate_evidence": None,
             "initialization_mode": "seeded_target_env",
             "seed_rule": "base_seed + within_shard_task_index * 10000 + episode_index",
             "causal_prompt_only": True,
@@ -710,10 +953,12 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "cosmos_server_module": cosmos_server_module,
             "checkpoint_manifest": checkpoint,
             "checkpoint_verification_receipt": checkpoint_verification,
+            "source_dcp_export_receipt": source_dcp_export_receipt,
             "training_config": config,
             "action_stats": stats,
             "cosmos_environment_manifest": cosmos_environment,
             "robocasa_environment_manifest": robocasa_environment,
+            "eval_intent_manifest": intent,
             "submission_verification_receipt": submission_verification,
             "asset_verification_receipt": asset_verification,
             "eval_runtime_receipt": eval_runtime_receipt,
@@ -723,6 +968,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         },
     }
     contract_path = _write_json(tmp_path / "contract.json", contract)
+    contract_path.chmod(0o444)
     args_json = {
         "tasks": ["OpenDrawer"],
         "split": "atomic",
@@ -776,25 +1022,24 @@ def _patch_post_rollout_verifiers(
     contract_path: Path,
 ) -> None:
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        evidence,
+        "_POST_ROLLOUT_SNAPSHOT_ALLOWED_ROOT",
+        Path(contract["source_root"]).parent,
+    )
     checkpoint_manifest_path = Path(contract["artifacts"]["checkpoint_manifest"]["path"])
     checkpoint_receipt_path = Path(contract["artifacts"]["checkpoint_verification_receipt"]["path"])
     asset_receipt_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
 
-    def verify_snapshot(
-        *,
-        snapshot_root: Path,
-        allowed_root: Path,
-        expected_manifest_sha256: str,
-    ) -> dict[str, object]:
-        assert snapshot_root == Path(contract["source_root"])
-        assert allowed_root == evidence._POST_ROLLOUT_SNAPSHOT_ALLOWED_ROOT
-        assert expected_manifest_sha256 == contract["source_manifest_sha256"]
+    def verify_snapshot(bound_contract: dict[str, object]) -> dict[str, object]:
+        assert bound_contract["source_root"] == contract["source_root"]
+        assert bound_contract["source_manifest_sha256"] == contract["source_manifest_sha256"]
         return {
             "schema_version": 1,
             "status": "passed",
-            "snapshot_root": str(snapshot_root.resolve()),
+            "snapshot_root": str(Path(contract["source_root"]).resolve()),
             "snapshot_manifest": contract["artifacts"]["source_manifest"]["path"],
-            "snapshot_manifest_sha256": expected_manifest_sha256,
+            "snapshot_manifest_sha256": contract["source_manifest_sha256"],
             "file_count": 1,
             "file_bytes": 1,
         }
@@ -811,8 +1056,8 @@ def _patch_post_rollout_verifiers(
         assert Path(checkpoint_path) == Path(contract["checkpoint_path"])
         return json.loads(checkpoint_receipt_path.read_text(encoding="utf-8"))
 
-    def verify_assets(asset_root: str | Path) -> dict[str, object]:
-        assert Path(asset_root) == Path(contract["simulator"]["robocasa_repo"])
+    def verify_assets(bound_contract: dict[str, object]) -> dict[str, object]:
+        assert bound_contract["simulator"] == contract["simulator"]
         return json.loads(asset_receipt_path.read_text(encoding="utf-8"))
 
     def verify_git_repository(
@@ -847,8 +1092,8 @@ def _patch_post_rollout_verifiers(
         }
 
     monkeypatch.setattr(
-        evidence.cwam_formal_provenance,
-        "verify_snapshot",
+        evidence,
+        "_verify_snapshot_with_bound_manifest",
         verify_snapshot,
     )
     monkeypatch.setattr(
@@ -862,8 +1107,8 @@ def _patch_post_rollout_verifiers(
         verify_checkpoint,
     )
     monkeypatch.setattr(
-        evidence.cwam_robocasa_asset_manifest,
-        "verify_robocasa_asset_tree",
+        evidence,
+        "_verify_asset_tree_with_bound_provenance",
         verify_assets,
     )
     monkeypatch.setattr(evidence, "_verify_git_repository", verify_git_repository)
@@ -877,6 +1122,66 @@ def _mock_post_rollout_receipt(
     _patch_post_rollout_verifiers(monkeypatch, contract_path)
     evidence.verify_post_rollout(contract_path=contract_path, output=output)
     return output
+
+
+def _gate_evidence_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, dict[str, object]]:
+    contract_path, results_dir = _fixture(tmp_path)
+    post_receipt = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract_path,
+        tmp_path / "post-rollout-receipt.json",
+    )
+    gate_evidence_path = results_dir / "evaluation_evidence.json"
+    result = evidence.summarize(
+        contract_path=contract_path,
+        post_rollout_verification_receipt=post_receipt,
+        results_dir=results_dir,
+        summary_csv=results_dir / "summary.csv",
+        task_success_rates_csv=results_dir / "task_success_rates.csv",
+        evidence_json=gate_evidence_path,
+        require_effect_pass=True,
+    )
+    assert result["prior_gate_evidence"] is None
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    asset_verification = json.loads(
+        Path(contract["artifacts"]["asset_verification_receipt"]["path"]).read_text(encoding="utf-8")
+    )
+    runtime_path = Path(contract["artifacts"]["eval_runtime_receipt"]["path"])
+    for path in (
+        contract_path,
+        runtime_path,
+        gate_evidence_path,
+        results_dir / "summary.csv",
+        results_dir / "task_success_rates.csv",
+        results_dir / "args.json",
+        results_dir / "results_shard0.json",
+    ):
+        path.chmod(0o444)
+    arguments: dict[str, object] = {
+        "gate_evidence_path": gate_evidence_path,
+        "expected_gate_evidence_sha256": _sha256(gate_evidence_path),
+        "current_source_root": Path(contract["source_root"]),
+        "current_source_commit": contract["source_commit"],
+        "current_source_manifest_sha256": contract["source_manifest_sha256"],
+        "current_checkpoint_path": Path(contract["checkpoint_path"]),
+        "current_checkpoint_manifest_sha256": contract["artifacts"]["checkpoint_manifest"]["sha256"],
+        "current_source_dcp_export_receipt_sha256": contract["artifacts"]["source_dcp_export_receipt"]["sha256"],
+        "current_asset_manifest_sha256": asset_verification["manifest_sha256"],
+        "current_asset_publisher_receipt_sha256": asset_verification["publisher_receipt_sha256"],
+        "current_training_config_sha256": contract["artifacts"]["training_config"]["sha256"],
+        "current_action_stats_sha256": contract["artifacts"]["action_stats"]["sha256"],
+        "current_cosmos_environment_manifest_sha256": contract["artifacts"]["cosmos_environment_manifest"]["sha256"],
+        "current_robocasa_environment_manifest_sha256": contract["artifacts"]["robocasa_environment_manifest"][
+            "sha256"
+        ],
+        "current_demian_commit": contract["demian"]["commit"],
+        "current_robocasa_commit": contract["simulator"]["robocasa_commit"],
+        "current_robosuite_commit": contract["simulator"]["robosuite_commit"],
+    }
+    return contract_path, gate_evidence_path, arguments
 
 
 def test_summarize_writes_complete_episode_and_task_csvs(
@@ -905,6 +1210,8 @@ def test_summarize_writes_complete_episode_and_task_csvs(
 
     assert result["execution_complete"] is True
     assert result["effect_pass"] is True
+    assert result["evaluation"]["evaluation_class"] == "exploratory"
+    assert result["evaluation"]["source_git_pushed_assertion"] is False
     assert result["external_execution_binding"]["submission"]["scheduler_rjob_name"] == "cwam-e35-r12-gate-abc123"
     assert result["external_execution_binding"]["assets"]["payload_symlink_count"] == 0
     assert result["external_execution_binding"]["graphics_userspace"]["gl_identity"]["vendor"] == "NVIDIA Corporation"
@@ -920,6 +1227,9 @@ def test_summarize_writes_complete_episode_and_task_csvs(
     assert result["artifacts"]["raw_shards"][0]["shard"] == 0
     assert result["artifacts"]["raw_shards"][0]["args"]["sha256"] == _sha256(results_dir / "args.json")
     assert result["artifacts"]["raw_shards"][0]["results"]["sha256"] == _sha256(results_dir / "results_shard0.json")
+    assert stat.S_IMODE(summary_csv.stat().st_mode) == 0o444
+    assert stat.S_IMODE(task_csv.stat().st_mode) == 0o444
+    assert stat.S_IMODE(evidence_json.stat().st_mode) == 0o444
     with summary_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
@@ -930,6 +1240,590 @@ def test_summarize_writes_complete_episode_and_task_csvs(
     with task_csv.open(newline="", encoding="utf-8") as handle:
         task_rows = list(csv.DictReader(handle))
     assert task_rows[0]["success_rate"] == "1.000000000000"
+
+
+@pytest.mark.parametrize(
+    "existing_name",
+    ("summary.csv", "task_success_rates.csv", "evaluation_evidence.json"),
+)
+def test_summarize_refuses_to_overwrite_terminal_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_name: str,
+) -> None:
+    contract, results_dir = _fixture(tmp_path)
+    post_receipt = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract,
+        tmp_path / "post-rollout-receipt.json",
+    )
+    outputs = {
+        "summary.csv": tmp_path / "summary.csv",
+        "task_success_rates.csv": tmp_path / "task_success_rates.csv",
+        "evaluation_evidence.json": tmp_path / "evaluation_evidence.json",
+    }
+    existing = outputs[existing_name]
+    existing.write_bytes(b"do-not-overwrite\n")
+
+    with pytest.raises(FileExistsError, match="overwrite"):
+        evidence.summarize(
+            contract_path=contract,
+            post_rollout_verification_receipt=post_receipt,
+            results_dir=results_dir,
+            summary_csv=outputs["summary.csv"],
+            task_success_rates_csv=outputs["task_success_rates.csv"],
+            evidence_json=outputs["evaluation_evidence.json"],
+            require_effect_pass=False,
+        )
+    assert existing.read_bytes() == b"do-not-overwrite\n"
+
+
+def test_summarize_rejects_symlinked_raw_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract, results_dir = _fixture(tmp_path)
+    post_receipt = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract,
+        tmp_path / "post-rollout-receipt.json",
+    )
+    args_path = results_dir / "args.json"
+    args_target = results_dir / "args-target.json"
+    args_path.rename(args_target)
+    args_path.symlink_to(args_target.name)
+
+    with pytest.raises(ValueError, match="non-symlink"):
+        evidence.summarize(
+            contract_path=contract,
+            post_rollout_verification_receipt=post_receipt,
+            results_dir=results_dir,
+            summary_csv=tmp_path / "summary.csv",
+            task_success_rates_csv=tmp_path / "task_success_rates.csv",
+            evidence_json=tmp_path / "evaluation_evidence.json",
+            require_effect_pass=False,
+        )
+
+
+def test_summarize_rejects_raw_path_replacement_during_fd_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract, results_dir = _fixture(tmp_path)
+    post_receipt = _mock_post_rollout_receipt(
+        monkeypatch,
+        contract,
+        tmp_path / "post-rollout-receipt.json",
+    )
+    args_path = results_dir / "args.json"
+    replacement = results_dir / "replacement.json"
+    replacement.write_bytes(args_path.read_bytes())
+    real_read = os.read
+    replaced = False
+    args_identity = (args_path.stat().st_dev, args_path.stat().st_ino)
+
+    def racing_read(descriptor: int, count: int) -> bytes:
+        nonlocal replaced
+        payload = real_read(descriptor, count)
+        opened = os.fstat(descriptor)
+        if not replaced and (opened.st_dev, opened.st_ino) == args_identity:
+            replaced = True
+            os.replace(replacement, args_path)
+        return payload
+
+    monkeypatch.setattr(evidence.os, "read", racing_read)
+    with pytest.raises(RuntimeError, match="changed or was replaced"):
+        evidence.summarize(
+            contract_path=contract,
+            post_rollout_verification_receipt=post_receipt,
+            results_dir=results_dir,
+            summary_csv=tmp_path / "summary.csv",
+            task_success_rates_csv=tmp_path / "task_success_rates.csv",
+            evidence_json=tmp_path / "evaluation_evidence.json",
+            require_effect_pass=False,
+        )
+
+
+def test_verify_sealed_evidence_reaggregates_and_publishes_exclusive_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, evidence_json, _arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    results_dir = evidence_json.parent
+    results_dir.chmod(0o555)
+    output = tmp_path / "sealed-evidence-verification.json"
+    keyword_args = {
+        "contract_path": contract_path,
+        "post_rollout_verification_receipt": tmp_path / "post-rollout-receipt.json",
+        "results_dir": results_dir,
+        "summary_csv": results_dir / "summary.csv",
+        "task_success_rates_csv": results_dir / "task_success_rates.csv",
+        "evidence_json": evidence_json,
+        "output": output,
+    }
+
+    receipt = evidence.verify_sealed_evidence(**keyword_args)
+
+    assert receipt["status"] == "passed"
+    assert receipt["kind"] == evidence._SEALED_EVIDENCE_VERIFICATION_KIND
+    assert receipt["evaluation"]["execution_complete"] is True
+    assert receipt["evaluation"]["effect_pass"] is True
+    assert all(receipt["validation"].values())
+    assert json.loads(output.read_text(encoding="utf-8")) == receipt
+    assert stat.S_IMODE(output.stat().st_mode) == 0o444
+
+    original_sha256 = _sha256(output)
+    with pytest.raises(FileExistsError, match="overwrite"):
+        evidence.verify_sealed_evidence(**keyword_args)
+    assert _sha256(output) == original_sha256
+
+
+def test_verify_sealed_evidence_validates_the_contract_bytes_opened_before_inode_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, evidence_json, _arguments = _gate_evidence_fixture(tmp_path, monkeypatch)
+    results_dir = evidence_json.parent
+    results_dir.chmod(0o555)
+    valid_contract = contract_path.read_bytes()
+    invalid_contract = json.loads(valid_contract)
+    invalid_contract["unexpected"] = True
+    _write_json(contract_path, invalid_contract)
+    replacement = tmp_path / "valid-contract-replacement.json"
+    replacement.write_bytes(valid_contract)
+    replacement.chmod(0o444)
+    opened_inode = contract_path.stat().st_ino
+    real_stable_read = evidence._read_stable_regular_file
+    replaced = False
+
+    def swap_contract_after_stable_read(path: Path, label: str, **kwargs):
+        nonlocal replaced
+        payload, descriptor = real_stable_read(path, label, **kwargs)
+        if label == "contract" and not replaced:
+            replaced = True
+            os.replace(replacement, contract_path)
+        return payload, descriptor
+
+    monkeypatch.setattr(evidence, "_read_stable_regular_file", swap_contract_after_stable_read)
+    with pytest.raises(ValueError, match="contract keys mismatch"):
+        evidence.verify_sealed_evidence(
+            contract_path=contract_path,
+            post_rollout_verification_receipt=tmp_path / "post-rollout-receipt.json",
+            results_dir=results_dir,
+            summary_csv=results_dir / "summary.csv",
+            task_success_rates_csv=results_dir / "task_success_rates.csv",
+            evidence_json=evidence_json,
+            output=tmp_path / "sealed-evidence-verification.json",
+        )
+    assert replaced
+    assert contract_path.stat().st_ino != opened_inode
+    assert contract_path.read_bytes() == valid_contract
+
+
+def test_verify_prior_gate_binds_terminal_gate_and_current_formal_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contract_path, gate_evidence_path, arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+
+    def forbidden_full_tree_verification(*_args, **_kwargs):
+        raise AssertionError("prior-gate verification must not repeat full checkpoint/asset hashing")
+
+    monkeypatch.setattr(
+        evidence.cwam_serving_checkpoint_manifest,
+        "verify_serving_checkpoint_manifest",
+        forbidden_full_tree_verification,
+    )
+    monkeypatch.setattr(
+        evidence.cwam_robocasa_asset_manifest,
+        "verify_robocasa_asset_tree",
+        forbidden_full_tree_verification,
+    )
+    result = evidence.verify_prior_gate(**arguments)
+
+    assert result["status"] == "passed"
+    assert result["prior_gate_evidence"] == {
+        "path": str(gate_evidence_path.resolve()),
+        "size_bytes": gate_evidence_path.stat().st_size,
+        "sha256": _sha256(gate_evidence_path),
+    }
+    assert result["gate_evaluation"] == {
+        "stage": "one_episode_gate",
+        "evaluation_class": "exploratory",
+        "source_git_pushed_assertion": False,
+        "task": "OpenDrawer",
+        "tasks": 1,
+        "episodes": 1,
+        "episodes_per_task": 1,
+        "num_shards": 1,
+        "execution_complete": True,
+        "effect_pass": True,
+    }
+    assert all(result["validation"].values())
+
+
+def test_verify_prior_gate_validates_the_evidence_bytes_opened_before_inode_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contract_path, gate_evidence_path, arguments = _gate_evidence_fixture(tmp_path, monkeypatch)
+    passing_evidence = gate_evidence_path.read_bytes()
+    failing_evidence = json.loads(passing_evidence)
+    failing_evidence["effect_pass"] = False
+    _write_json(gate_evidence_path, failing_evidence)
+    replacement = tmp_path / "passing-gate-evidence-replacement.json"
+    replacement.write_bytes(passing_evidence)
+    replacement.chmod(0o444)
+    arguments["expected_gate_evidence_sha256"] = _sha256(gate_evidence_path)
+    opened_inode = gate_evidence_path.stat().st_ino
+    real_stable_read = evidence._read_stable_regular_file
+    replaced = False
+
+    def swap_evidence_after_stable_read(path: Path, label: str, **kwargs):
+        nonlocal replaced
+        payload, descriptor = real_stable_read(path, label, **kwargs)
+        if label == "prior gate evidence" and not replaced:
+            replaced = True
+            os.replace(replacement, gate_evidence_path)
+        return payload, descriptor
+
+    monkeypatch.setattr(evidence, "_read_stable_regular_file", swap_evidence_after_stable_read)
+    with pytest.raises(ValueError, match="effect_pass=true"):
+        evidence.verify_prior_gate(**arguments)
+    assert replaced
+    assert gate_evidence_path.stat().st_ino != opened_inode
+    assert gate_evidence_path.read_bytes() == passing_evidence
+
+
+def test_contract_validates_the_bound_runtime_bytes_opened_before_inode_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    runtime_path = Path(contract["artifacts"]["eval_runtime_receipt"]["path"])
+    valid_runtime = runtime_path.read_bytes()
+    invalid_runtime = json.loads(valid_runtime)
+    invalid_runtime["status"] = "failed"
+    _write_json(runtime_path, invalid_runtime)
+    contract["artifacts"]["eval_runtime_receipt"]["sha256"] = _sha256(runtime_path)
+    _write_json(contract_path, contract)
+    replacement = tmp_path / "valid-runtime-replacement.json"
+    replacement.write_bytes(valid_runtime)
+    opened_inode = runtime_path.stat().st_ino
+    real_stable_read = evidence._read_stable_regular_file
+    replaced = False
+
+    def swap_runtime_after_stable_read(path: Path, label: str, **kwargs):
+        nonlocal replaced
+        payload, descriptor = real_stable_read(path, label, **kwargs)
+        if label == "contract.artifacts.eval_runtime_receipt" and not replaced:
+            replaced = True
+            os.replace(replacement, runtime_path)
+        return payload, descriptor
+
+    monkeypatch.setattr(evidence, "_read_stable_regular_file", swap_runtime_after_stable_read)
+    with pytest.raises(ValueError, match="unsupported schema/kind/status"):
+        evidence._validate_contract(contract_path)
+    assert replaced
+    assert runtime_path.stat().st_ino != opened_inode
+    assert runtime_path.read_bytes() == valid_runtime
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        (
+            lambda gate: gate.update(execution_complete=False),
+            "execution_complete=true",
+        ),
+        (
+            lambda gate: gate["evaluation"].update(stage="formal"),
+            "not exactly one atomic task",
+        ),
+        (
+            lambda gate: gate.update(prior_gate_evidence={"unexpected": True}),
+            "must not recursively bind",
+        ),
+    ],
+)
+def test_verify_prior_gate_rejects_nonterminal_or_recursive_gate_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation,
+    match: str,
+) -> None:
+    _contract_path, gate_evidence_path, arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    gate_evidence_path.chmod(0o644)
+    gate = json.loads(gate_evidence_path.read_text(encoding="utf-8"))
+    mutation(gate)
+    _write_json(gate_evidence_path, gate)
+    gate_evidence_path.chmod(0o444)
+    arguments["expected_gate_evidence_sha256"] = _sha256(gate_evidence_path)
+
+    with pytest.raises(ValueError, match=match):
+        evidence.verify_prior_gate(**arguments)
+
+
+def test_verify_prior_gate_rejects_hash_mode_and_current_input_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contract_path, gate_evidence_path, arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        evidence.verify_prior_gate(
+            **{
+                **arguments,
+                "expected_gate_evidence_sha256": "0" * 64,
+            }
+        )
+
+    gate_evidence_path.chmod(0o644)
+    with pytest.raises(ValueError, match="mode mismatch"):
+        evidence.verify_prior_gate(**arguments)
+    gate_evidence_path.chmod(0o444)
+
+    with pytest.raises(ValueError, match="inputs differ"):
+        evidence.verify_prior_gate(
+            **{
+                **arguments,
+                "current_training_config_sha256": "9" * 64,
+            }
+        )
+
+    with pytest.raises(ValueError, match="inputs differ"):
+        evidence.verify_prior_gate(
+            **{
+                **arguments,
+                "current_asset_manifest_sha256": "8" * 64,
+            }
+        )
+
+
+def test_contract_rejects_rehashed_intent_threshold_drift(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    intent_path = Path(contract["artifacts"]["eval_intent_manifest"]["path"])
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    intent["thresholds"]["minimum_mean_success_rate"] = 0.5
+    _write_json(intent_path, intent)
+    intent_path.chmod(0o444)
+    intent_sha256 = _sha256(intent_path)
+    contract["artifacts"]["eval_intent_manifest"]["sha256"] = intent_sha256
+    _write_json(contract_path, contract)
+
+    def rebind_intent(submission: dict[str, object]) -> None:
+        descriptor = submission["eval_intent_manifest"]
+        assert isinstance(descriptor, dict)
+        descriptor["size_bytes"] = intent_path.stat().st_size
+        descriptor["sha256"] = intent_sha256
+
+    _rewrite_submission_and_runtime_binding(contract_path, rebind_intent)
+    with pytest.raises(ValueError, match="intent thresholds differ"):
+        evidence._validate_contract(contract_path)
+
+
+def test_contract_rejects_non_json_source_dcp_receipt_even_when_rehashed(
+    tmp_path: Path,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    receipt_path = Path(contract["artifacts"]["source_dcp_export_receipt"]["path"])
+    prior_mode = stat.S_IMODE(receipt_path.stat().st_mode)
+    receipt_path.chmod(0o644)
+    receipt_path.write_bytes(b"")
+    receipt_path.chmod(prior_mode)
+    contract["artifacts"]["source_dcp_export_receipt"]["sha256"] = _sha256(receipt_path)
+    _write_json(contract_path, contract)
+
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        evidence._validate_contract(contract_path)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        (lambda receipt: receipt.update(status="failed"), "unsupported schema/kind/status"),
+        (
+            lambda receipt: receipt.update(checkpoint_tree_sha256="9" * 64),
+            "manifest/tree binding mismatch",
+        ),
+        (
+            lambda receipt: receipt["validation"].update(source_iteration_path_matches=False),
+            "exact all-true verdict",
+        ),
+        (
+            lambda receipt: receipt["validation"].update(source_iteration_path_matches=1),
+            "exact all-true verdict",
+        ),
+    ],
+)
+def test_contract_rejects_rehashed_source_dcp_semantic_drift(
+    tmp_path: Path,
+    mutation,
+    match: str,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    receipt_path = Path(contract["artifacts"]["source_dcp_export_receipt"]["path"])
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    mutation(receipt)
+    _write_json(receipt_path, receipt)
+    contract["artifacts"]["source_dcp_export_receipt"]["sha256"] = _sha256(receipt_path)
+    _write_json(contract_path, contract)
+
+    with pytest.raises((TypeError, ValueError), match=match):
+        evidence._validate_contract(contract_path)
+
+
+def test_contract_rejects_rehashed_preflight_false_verdict(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+
+    def invalidate_preflight(submission: dict[str, object]) -> None:
+        preflight = submission["preflight"]
+        assert isinstance(preflight, dict)
+        validation = preflight["validation"]
+        assert isinstance(validation, dict)
+        validation["tracked_regular_files_match_head_blobs"] = False
+        submission["preflight_sha256"] = hashlib.sha256(
+            json.dumps(
+                preflight,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    _rewrite_submission_and_runtime_binding(contract_path, invalidate_preflight)
+    with pytest.raises(ValueError, match="preflight validation"):
+        evidence._validate_contract(contract_path)
+
+
+def test_contract_consumes_stable_intent_bytes_after_inode_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    intent_path = Path(contract["artifacts"]["eval_intent_manifest"]["path"])
+    valid_intent = intent_path.read_bytes()
+    invalid_intent = json.loads(valid_intent)
+    invalid_intent["thresholds"]["minimum_mean_success_rate"] = 0.5
+    replacement = tmp_path / "invalid-intent-replacement.json"
+    _write_json(replacement, invalid_intent)
+    replacement.chmod(0o444)
+    opened_inode = intent_path.stat().st_ino
+    real_stable_read = evidence._read_stable_regular_file
+    replaced = False
+
+    def swap_intent_after_stable_read(path: Path, label: str, **kwargs):
+        nonlocal replaced
+        payload, descriptor = real_stable_read(path, label, **kwargs)
+        if label == "contract.artifacts.eval_intent_manifest" and not replaced:
+            replaced = True
+            os.replace(replacement, intent_path)
+        return payload, descriptor
+
+    monkeypatch.setattr(evidence, "_read_stable_regular_file", swap_intent_after_stable_read)
+    validated = evidence._validate_contract(contract_path)
+
+    assert replaced
+    assert intent_path.stat().st_ino != opened_inode
+    assert validated["_runtime_bindings"]["evaluation_intent"]["thresholds"]["minimum_mean_success_rate"] == 0.0
+    assert json.loads(intent_path.read_text(encoding="utf-8"))["thresholds"]["minimum_mean_success_rate"] == 0.5
+
+
+def test_contract_prior_gate_field_is_stage_aware(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["evaluation"]["prior_gate_evidence"] = {
+        "path": str(contract_path),
+        "size_bytes": contract_path.stat().st_size,
+        "sha256": _sha256(contract_path),
+    }
+    _write_json(contract_path, contract)
+    with pytest.raises(ValueError, match="must be null"):
+        evidence._validate_contract(contract_path)
+
+    contract["evaluation"]["stage"] = "formal"
+    contract["evaluation"]["prior_gate_evidence"] = None
+    _write_json(contract_path, contract)
+    with pytest.raises(ValueError, match="is required"):
+        evidence._validate_contract(contract_path)
+
+
+def test_formal_contract_revalidates_and_binds_prior_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_contract_path, gate_evidence_path, _arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    formal_contract = json.loads(gate_contract_path.read_text(encoding="utf-8"))
+    formal_contract["experiment_id"] = "CWAM-E35-R12-FORMAL"
+    formal_contract["logical_run_id"] = "CWAM-E35-R12-FORMAL-S42"
+    formal_contract["run_name"] = formal_contract["logical_run_id"]
+    formal_results = tmp_path / "formal-results" / formal_contract["logical_run_id"]
+    formal_results.mkdir(parents=True)
+    formal_contract["results_dir"] = str(formal_results.resolve())
+    formal_contract["evaluation"].update(
+        {
+            "stage": "formal",
+            "tasks": list(evidence.ATOMIC_TASKS),
+            "episodes_per_task": 20,
+            "num_shards": 8,
+            "prior_gate_evidence": {
+                "path": str(gate_evidence_path.resolve()),
+                "size_bytes": gate_evidence_path.stat().st_size,
+                "sha256": _sha256(gate_evidence_path),
+            },
+        }
+    )
+    receipt = formal_contract["artifacts"]["server_runtime_receipts"][0]
+    formal_contract["artifacts"]["server_runtime_receipts"] = [receipt] * 8
+    formal_contract_path = tmp_path / "formal-contract.json"
+    _write_json(formal_contract_path, formal_contract)
+    formal_contract_path.chmod(0o444)
+    asset_verification = json.loads(
+        Path(formal_contract["artifacts"]["asset_verification_receipt"]["path"]).read_text(encoding="utf-8")
+    )
+
+    monkeypatch.setattr(
+        evidence,
+        "_validate_eval_runtime_receipt",
+        lambda **_kwargs: {
+            "capture_started_at_utc": "2026-07-28T19:02:00Z",
+            "captured_at_utc": "2026-07-28T19:02:03Z",
+            "assets": {
+                "manifest_sha256": asset_verification["manifest_sha256"],
+                "publisher_receipt_sha256": asset_verification["publisher_receipt_sha256"],
+            },
+            "evaluation_intent": {
+                "evaluation_class": "exploratory",
+                "source_git_pushed": False,
+            },
+        },
+    )
+    validated = evidence._validate_contract(formal_contract_path)
+
+    assert validated["_prior_gate_binding"]["status"] == "passed"
+    assert (
+        validated["_prior_gate_binding"]["prior_gate_evidence"] == formal_contract["evaluation"]["prior_gate_evidence"]
+    )
 
 
 def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
@@ -1013,14 +1907,14 @@ def test_post_rollout_requires_exact_pre_and_post_semantic_match(
     else:
         receipt_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
 
-        def mismatched_assets(_asset_root: str | Path) -> dict[str, object]:
+        def mismatched_assets(_contract: dict[str, object]) -> dict[str, object]:
             result = json.loads(receipt_path.read_text(encoding="utf-8"))
             result["payload_file_count"] += 1
             return result
 
         monkeypatch.setattr(
-            evidence.cwam_robocasa_asset_manifest,
-            "verify_robocasa_asset_tree",
+            evidence,
+            "_verify_asset_tree_with_bound_provenance",
             mismatched_assets,
         )
 
@@ -1161,6 +2055,13 @@ def test_formal_contract_requires_full_canonical_atomic_suite(tmp_path: Path) ->
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     contract["evaluation"]["stage"] = "formal"
     contract["evaluation"]["episodes_per_task"] = 20
+    placeholder = Path(contract["artifacts"]["source_manifest"]["path"])
+    placeholder.chmod(0o444)
+    contract["evaluation"]["prior_gate_evidence"] = {
+        "path": str(placeholder),
+        "size_bytes": placeholder.stat().st_size,
+        "sha256": _sha256(placeholder),
+    }
     _write_json(contract_path, contract)
 
     with pytest.raises(ValueError, match="canonical ordered task list"):
@@ -1181,10 +2082,9 @@ def test_contract_and_artifact_schemas_reject_unknown_fields(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="contract.artifacts.source_manifest keys mismatch"):
         evidence._validate_contract(contract_path)
 
-    contract_path.write_text(
-        '{"schema_version":1,"schema_version":1}\n',
-        encoding="utf-8",
-    )
+    contract_path.chmod(0o600)
+    contract_path.write_text('{"schema_version":1,"schema_version":1}\n', encoding="utf-8")
+    contract_path.chmod(0o444)
     with pytest.raises(ValueError, match="duplicate key"):
         evidence._validate_contract(contract_path)
 
@@ -1350,7 +2250,9 @@ def test_final_evidence_rehashes_graphics_and_asset_provenance_files(
     asset_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
     asset = json.loads(asset_path.read_text(encoding="utf-8"))
     manifest_path = Path(asset["manifest_path"])
+    manifest_path.chmod(0o644)
     manifest_path.write_bytes(manifest_path.read_bytes() + b"drift")
+    manifest_path.chmod(evidence.cwam_robocasa_asset_manifest.PROVENANCE_FILE_MODE)
     with pytest.raises(ValueError, match="asset provenance SHA256"):
         evidence._validate_contract(contract_path)
 

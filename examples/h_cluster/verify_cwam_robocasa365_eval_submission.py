@@ -83,6 +83,9 @@ _RESERVATION_KEYS = frozenset(
         "source_commit",
         "source_manifest_sha256",
         "evaluation",
+        "eval_intent_manifest",
+        "preflight",
+        "preflight_sha256",
         "scheduler_expected",
     }
 )
@@ -115,6 +118,7 @@ _EVALUATION_KEYS = frozenset(
         "episodes_per_task",
         "num_shards",
         "base_seed",
+        "prior_gate_evidence",
     }
 )
 _SCHEDULER_KEYS = frozenset(
@@ -322,6 +326,29 @@ def _validate_artifact_descriptor(value: object, label: str) -> dict[str, Any]:
     return {"path": str(path), "size_bytes": size_bytes, "sha256": digest}
 
 
+def _validate_submission_terminal_state(
+    *,
+    scheduler_readback_receipt_path: Path,
+    submission_unknown_path: Path,
+) -> None:
+    readback = Path(os.path.abspath(scheduler_readback_receipt_path))
+    unknown = Path(os.path.abspath(submission_unknown_path))
+    if readback.name != "scheduler-readback-receipt.json":
+        raise SubmissionVerificationError("scheduler readback receipt must use the canonical terminal filename")
+    if unknown.name != "submission-unknown.json":
+        raise SubmissionVerificationError("submission unknown path must use the canonical terminal filename")
+    if readback.parent != unknown.parent:
+        raise SubmissionVerificationError("accepted and unknown terminal records must share one parent")
+    try:
+        parent = readback.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise SubmissionVerificationError("submission terminal-state parent cannot be resolved") from error
+    if parent != readback.parent or not parent.is_dir():
+        raise SubmissionVerificationError("submission terminal-state parent must be a canonical directory")
+    if unknown.exists() or unknown.is_symlink():
+        raise SubmissionVerificationError("submission-unknown terminal record exists")
+
+
 def _validate_scheduler(
     value: object,
     label: str,
@@ -382,11 +409,214 @@ def _validate_evaluation(value: object, label: str) -> dict[str, Any]:
     base_seed = _require_int(evaluation.get("base_seed"), f"{label}.base_seed", minimum=0)
     if base_seed != 42:
         raise SubmissionVerificationError(f"{label}.base_seed must be exactly 42")
-    if stage == "one_episode_gate" and (episodes != 1 or shards != 1 or tasks_csv not in ATOMIC_TASKS):
-        raise SubmissionVerificationError(f"{label} one_episode_gate contract is invalid")
-    if stage == "formal" and (episodes != 20 or shards != 8 or tasks_csv):
-        raise SubmissionVerificationError(f"{label} formal contract is invalid")
-    return dict(evaluation)
+    prior_gate = evaluation.get("prior_gate_evidence")
+    if stage == "one_episode_gate":
+        if episodes != 1 or shards != 1 or tasks_csv not in ATOMIC_TASKS or prior_gate is not None:
+            raise SubmissionVerificationError(f"{label} one_episode_gate contract is invalid")
+        validated_prior_gate = None
+    else:
+        if episodes != 20 or shards != 8 or tasks_csv or prior_gate is None:
+            raise SubmissionVerificationError(f"{label} formal contract is invalid")
+        validated_prior_gate = _validate_artifact_descriptor(
+            prior_gate,
+            f"{label}.prior_gate_evidence",
+        )
+        prior_gate_path = Path(validated_prior_gate["path"])
+        if prior_gate_path.lstat().st_mode & 0o222:
+            raise SubmissionVerificationError(f"{label}.prior_gate_evidence must be read-only")
+    return {
+        **evaluation,
+        "prior_gate_evidence": validated_prior_gate,
+    }
+
+
+def _validate_preflight(value: object, expected_sha256: object, label: str) -> dict[str, Any]:
+    preflight = _require_mapping(value, label)
+    _require_exact_keys(
+        preflight,
+        frozenset({"asset_tree", "repositories", "validation"}),
+        label,
+    )
+    digest = _require_sha256(expected_sha256, f"{label}_sha256")
+    try:
+        encoded = json.dumps(
+            preflight,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise SubmissionVerificationError(f"{label} is not canonical finite JSON") from error
+    if hashlib.sha256(encoded).hexdigest() != digest:
+        raise SubmissionVerificationError(f"{label} canonical SHA-256 mismatch")
+
+    asset = _require_mapping(preflight.get("asset_tree"), f"{label}.asset_tree")
+    if (
+        asset.get("schema_version") != 1
+        or asset.get("kind") != "cwam_robocasa_asset_tree_verification_receipt"
+        or asset.get("status") != "passed"
+    ):
+        raise SubmissionVerificationError(f"{label}.asset_tree is not a passed full-tree receipt")
+    _require_sha256(asset.get("manifest_sha256"), f"{label}.asset_tree.manifest_sha256")
+    _require_sha256(
+        asset.get("publisher_receipt_sha256"),
+        f"{label}.asset_tree.publisher_receipt_sha256",
+    )
+
+    repositories = _require_mapping(preflight.get("repositories"), f"{label}.repositories")
+    if set(repositories) != {"demian", "robocasa", "robosuite"}:
+        raise SubmissionVerificationError(f"{label}.repositories coverage is not exact")
+    for name, raw_report in repositories.items():
+        report = _require_mapping(raw_report, f"{label}.repositories.{name}")
+        _require_exact_keys(
+            report,
+            frozenset({"root", "expected_commit", "actual_commit", "clean", "tracked_files"}),
+            f"{label}.repositories.{name}",
+        )
+        root = Path(_require_string(report.get("root"), f"{label}.repositories.{name}.root"))
+        if not root.is_absolute() or root != Path(os.path.abspath(root)):
+            raise SubmissionVerificationError(f"{label}.repositories.{name}.root is not normalized absolute")
+        expected_commit = _require_string(
+            report.get("expected_commit"),
+            f"{label}.repositories.{name}.expected_commit",
+        )
+        actual_commit = _require_string(
+            report.get("actual_commit"),
+            f"{label}.repositories.{name}.actual_commit",
+        )
+        if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None or actual_commit != expected_commit:
+            raise SubmissionVerificationError(f"{label}.repositories.{name} commit binding is invalid")
+        if report.get("clean") is not True:
+            raise SubmissionVerificationError(f"{label}.repositories.{name} is not clean")
+        tracked = _require_mapping(
+            report.get("tracked_files"),
+            f"{label}.repositories.{name}.tracked_files",
+        )
+        if tracked.get("all_tracked_regular_files_match_head_blobs") is not True:
+            raise SubmissionVerificationError(f"{label}.repositories.{name} tracked blobs did not pass")
+
+    validation = _require_mapping(preflight.get("validation"), f"{label}.validation")
+    expected_validation = {
+        "asset_tree_full_hash_match": True,
+        "repository_heads_clean": True,
+        "tracked_regular_files_match_head_blobs": True,
+    }
+    if validation != expected_validation:
+        raise SubmissionVerificationError(f"{label}.validation is not the exact all-true verdict")
+    return dict(preflight)
+
+
+def _validate_eval_intent_manifest(
+    value: object,
+    *,
+    experiment_id: str,
+    logical_run_id: str,
+    run_name: str,
+    source_commit: str,
+    source_manifest_sha256: str,
+    evaluation: Mapping[str, Any],
+    scheduler: Mapping[str, Any],
+) -> dict[str, Any]:
+    descriptor = _require_mapping(value, "reservation.eval_intent_manifest")
+    _require_exact_keys(descriptor, _DESCRIPTOR_KEYS, "reservation.eval_intent_manifest")
+    path = Path(_require_string(descriptor.get("path"), "reservation.eval_intent_manifest.path"))
+    payload, metadata = _read_stable(path, "reservation.eval_intent_manifest")
+    if stat.S_IMODE(metadata.st_mode) != 0o444:
+        raise SubmissionVerificationError("reservation.eval_intent_manifest must be immutable mode 0444")
+    size_bytes = _require_int(
+        descriptor.get("size_bytes"),
+        "reservation.eval_intent_manifest.size_bytes",
+        minimum=1,
+    )
+    digest = _require_sha256(
+        descriptor.get("sha256"),
+        "reservation.eval_intent_manifest.sha256",
+    )
+    if size_bytes != len(payload) or hashlib.sha256(payload).hexdigest() != digest:
+        raise SubmissionVerificationError("reservation.eval_intent_manifest descriptor differs from live bytes")
+    try:
+        intent = json.loads(
+            payload.decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SubmissionVerificationError("reservation.eval_intent_manifest is not strict UTF-8 JSON") from error
+    intent = _require_mapping(intent, "eval intent")
+    _require_exact_keys(
+        intent,
+        frozenset(
+            {
+                "schema_version",
+                "kind",
+                "identity",
+                "protocol",
+                "thresholds",
+                "source",
+                "serving_checkpoint",
+                "artifacts",
+                "repositories",
+                "runtime",
+                "resources",
+                "prior_gate",
+            }
+        ),
+        "eval intent",
+    )
+    if intent.get("schema_version") != 1 or intent.get("kind") != "cwam_robocasa365_eval_intent":
+        raise SubmissionVerificationError("eval intent schema/kind is invalid")
+    identity = _require_mapping(intent.get("identity"), "eval intent.identity")
+    if identity.get("experiment_id") != experiment_id or identity.get("logical_run_id") != logical_run_id:
+        raise SubmissionVerificationError("eval intent experiment/logical identity mismatch")
+    if identity.get("run_name") != run_name or identity.get("stage") != evaluation["stage"]:
+        raise SubmissionVerificationError("eval intent run/stage identity mismatch")
+    evaluation_class = identity.get("evaluation_class")
+    if evaluation_class not in {"exploratory", "confirmatory"}:
+        raise SubmissionVerificationError("eval intent evaluation_class is invalid")
+
+    source = _require_mapping(intent.get("source"), "eval intent.source")
+    if source.get("commit") != source_commit:
+        raise SubmissionVerificationError("eval intent source commit mismatch")
+    source_manifest = _require_mapping(source.get("manifest"), "eval intent.source.manifest")
+    if source_manifest.get("sha256") != source_manifest_sha256:
+        raise SubmissionVerificationError("eval intent source manifest mismatch")
+    if type(source.get("git_pushed")) is not bool:
+        raise SubmissionVerificationError("eval intent source.git_pushed must be boolean")
+    if evaluation_class == "confirmatory" and source.get("git_pushed") is not True:
+        raise SubmissionVerificationError("confirmatory eval intent is not pushed")
+
+    protocol = _require_mapping(intent.get("protocol"), "eval intent.protocol")
+    expected_protocol = {
+        "split": evaluation["split"],
+        "episodes_per_task": evaluation["episodes_per_task"],
+        "num_shards": evaluation["num_shards"],
+        "base_seed": evaluation["base_seed"],
+    }
+    if any(protocol.get(key) != expected for key, expected in expected_protocol.items()):
+        raise SubmissionVerificationError("eval intent protocol differs from reservation")
+    tasks = protocol.get("tasks")
+    expected_tasks = [evaluation["tasks_csv"]] if evaluation["stage"] == "one_episode_gate" else sorted(ATOMIC_TASKS)
+    if not isinstance(tasks, list) or sorted(tasks) != expected_tasks:
+        raise SubmissionVerificationError("eval intent task coverage differs from reservation")
+    if intent.get("prior_gate") != evaluation["prior_gate_evidence"]:
+        raise SubmissionVerificationError("eval intent prior gate differs from reservation")
+
+    resources = _require_mapping(intent.get("resources"), "eval intent.resources")
+    resource_pairs = {
+        "cpu": scheduler["cpu"],
+        "memory_mib": scheduler["memory_mib"],
+        "gpu": scheduler["gpu"],
+        "quota_group": scheduler["quota_group"],
+        "negative_tag": scheduler["negative_tags"][0],
+        "task_type": scheduler["task_type"],
+        "private_machine": scheduler["private_machine"],
+        "priority": scheduler["priority"],
+        "backoff_limit": scheduler["backoff_limit"],
+        "replicas": scheduler["replicas"],
+    }
+    if any(resources.get(key) != expected for key, expected in resource_pairs.items()):
+        raise SubmissionVerificationError("eval intent resources differ from reservation scheduler")
+    return {"path": str(path), "size_bytes": size_bytes, "sha256": digest}
 
 
 def verify_submission(
@@ -394,6 +624,7 @@ def verify_submission(
     reservation_path: Path,
     expected_reservation_sha256: str,
     scheduler_readback_receipt_path: Path,
+    submission_unknown_path: Path,
     experiment_id: str,
     logical_run_id: str,
     run_name: str,
@@ -450,6 +681,10 @@ def verify_submission(
         raise SubmissionVerificationError("clock must return a timezone-aware datetime")
     now = now.astimezone(timezone.utc)
 
+    _validate_submission_terminal_state(
+        scheduler_readback_receipt_path=scheduler_readback_receipt_path,
+        submission_unknown_path=submission_unknown_path,
+    )
     reservation, reservation_descriptor = _load_record(
         reservation_path,
         "submission reservation",
@@ -495,10 +730,25 @@ def verify_submission(
         "reservation.source_manifest_sha256",
     )
     evaluation = _validate_evaluation(reservation.get("evaluation"), "reservation.evaluation")
+    preflight = _validate_preflight(
+        reservation.get("preflight"),
+        reservation.get("preflight_sha256"),
+        "reservation.preflight",
+    )
     scheduler_expected = _validate_scheduler(
         reservation.get("scheduler_expected"),
         "reservation.scheduler_expected",
         stage=evaluation["stage"],
+    )
+    eval_intent_manifest = _validate_eval_intent_manifest(
+        reservation.get("eval_intent_manifest"),
+        experiment_id=experiment_id,
+        logical_run_id=logical_run_id,
+        run_name=run_name,
+        source_commit=source_commit,
+        source_manifest_sha256=reservation["source_manifest_sha256"],
+        evaluation=evaluation,
+        scheduler=scheduler_expected,
     )
 
     readback, readback_descriptor = _load_record(
@@ -593,6 +843,10 @@ def verify_submission(
     validated_artifacts = {
         name: _validate_artifact_descriptor(value, f"readback.artifacts.{name}") for name, value in artifacts.items()
     }
+    _validate_submission_terminal_state(
+        scheduler_readback_receipt_path=scheduler_readback_receipt_path,
+        submission_unknown_path=submission_unknown_path,
+    )
 
     verification = {
         "schema_version": SCHEMA_VERSION,
@@ -610,6 +864,9 @@ def verify_submission(
             "max_start_to_verification_seconds": max_start_to_verification_seconds,
         },
         "evaluation": evaluation,
+        "eval_intent_manifest": eval_intent_manifest,
+        "preflight": preflight,
+        "preflight_sha256": reservation["preflight_sha256"],
         "scheduler": {
             "rjob_name": scheduler_name,
             "rjob_uid": scheduler_uid,
@@ -625,6 +882,9 @@ def verify_submission(
             "freshness_window_passed": True,
             "scheduler_readback_matches": True,
             "scheduler_artifact_hashes_match": True,
+            "eval_intent_manifest_matches": True,
+            "pre_submission_full_inputs_passed": True,
+            "submission_unknown_absent": True,
         },
     }
     output = Path(os.path.abspath(output))
@@ -643,8 +903,16 @@ def verify_submission(
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
+        _validate_submission_terminal_state(
+            scheduler_readback_receipt_path=scheduler_readback_receipt_path,
+            submission_unknown_path=submission_unknown_path,
+        )
         os.link(temporary, output, follow_symlinks=False)
         published = True
+        _validate_submission_terminal_state(
+            scheduler_readback_receipt_path=scheduler_readback_receipt_path,
+            submission_unknown_path=submission_unknown_path,
+        )
         os.chmod(output, 0o444, follow_symlinks=False)
         directory_descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
@@ -666,6 +934,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reservation", type=Path, required=True)
     parser.add_argument("--expected-reservation-sha256", required=True)
     parser.add_argument("--scheduler-readback-receipt", type=Path, required=True)
+    parser.add_argument("--submission-unknown", type=Path, required=True)
     parser.add_argument("--experiment-id", required=True)
     parser.add_argument("--logical-run-id", required=True)
     parser.add_argument("--run-name", required=True)
@@ -687,6 +956,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             reservation_path=arguments.reservation,
             expected_reservation_sha256=arguments.expected_reservation_sha256,
             scheduler_readback_receipt_path=arguments.scheduler_readback_receipt,
+            submission_unknown_path=arguments.submission_unknown,
             experiment_id=arguments.experiment_id,
             logical_run_id=arguments.logical_run_id,
             run_name=arguments.run_name,

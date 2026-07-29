@@ -27,10 +27,14 @@ export PYTHONNOUSERSITE=1
 : "${SOURCE_MANIFEST:?Set SOURCE_MANIFEST to the immutable source manifest}"
 : "${COSMOS_ENVIRONMENT_MANIFEST:?Set COSMOS_ENVIRONMENT_MANIFEST to the exact Cosmos environment manifest}"
 : "${ROBOCASA_ENVIRONMENT_MANIFEST:?Set ROBOCASA_ENVIRONMENT_MANIFEST to the exact RoboCasa environment manifest}"
+: "${EVAL_INTENT_MANIFEST:?Set EVAL_INTENT_MANIFEST to the immutable preregistered intent}"
+: "${SOURCE_DCP_EXPORT_RECEIPT:?Set SOURCE_DCP_EXPORT_RECEIPT to the selected serving-DCP receipt}"
 : "${EVAL_OUTPUT_ROOT:?Set EVAL_OUTPUT_ROOT to a new per-experiment directory}"
 : "${EVAL_EXPERIMENT_ID:?Set EVAL_EXPERIMENT_ID}"
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
 : "${EVAL_RUN_NAME:?Set EVAL_RUN_NAME}"
+: "${EVAL_EVALUATION_CLASS:?Set EVAL_EVALUATION_CLASS}"
+: "${SOURCE_GIT_PUSHED:?Set SOURCE_GIT_PUSHED to true or false}"
 : "${EXPECTED_SOURCE_COMMIT:?Set EXPECTED_SOURCE_COMMIT}"
 : "${EXPECTED_SOURCE_MANIFEST_SHA256:?Set EXPECTED_SOURCE_MANIFEST_SHA256}"
 : "${EXPECTED_CHECKPOINT_MANIFEST_SHA256:?Set EXPECTED_CHECKPOINT_MANIFEST_SHA256}"
@@ -38,6 +42,9 @@ export PYTHONNOUSERSITE=1
 : "${EXPECTED_ACTION_STATS_SHA256:?Set EXPECTED_ACTION_STATS_SHA256}"
 : "${EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256:?Set the audited Cosmos environment manifest SHA256}"
 : "${EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256:?Set the audited RoboCasa environment manifest SHA256}"
+: "${EXPECTED_EVAL_INTENT_MANIFEST_SHA256:?Set the preregistered intent SHA256}"
+: "${EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256:?Set the serving-DCP receipt SHA256}"
+: "${EXPECTED_EGL_VENDOR_JSON_SHA256:?Set the pinned EGL vendor JSON SHA256}"
 : "${EXPECTED_ROBOCASA_COMMIT:?Set EXPECTED_ROBOCASA_COMMIT}"
 : "${EXPECTED_ROBOSUITE_COMMIT:?Set EXPECTED_ROBOSUITE_COMMIT}"
 : "${MINIMUM_MEAN_SUCCESS_RATE:?Pre-register MINIMUM_MEAN_SUCCESS_RATE}"
@@ -50,6 +57,7 @@ export PYTHONNOUSERSITE=1
 : "${EVAL_SUBMISSION_RESERVATION_PATH:?Set the submit-side reservation path}"
 : "${EXPECTED_EVAL_SUBMISSION_PENDING_SHA256:?Set the submit-side reservation SHA256}"
 : "${EVAL_SCHEDULER_READBACK_RECEIPT:?Set the accepted scheduler readback receipt path}"
+: "${EVAL_SUBMISSION_UNKNOWN_PATH:?Set the mutually exclusive submission-unknown path}"
 : "${EVAL_RUNTIME_CAPTURE_NONCE:?Set the submitter-generated runtime capture nonce}"
 : "${EVAL_SUBMITTED_AT_UTC:?Set the submitter-generated UTC timestamp}"
 : "${EVAL_SUBMISSION_MAX_AGE_SECONDS:?Set the pinned submission freshness window}"
@@ -65,6 +73,14 @@ export PYTHONNOUSERSITE=1
 : "${EVAL_SPLIT:?Set EVAL_SPLIT explicitly}"
 [[ -v EVAL_TASKS_CSV ]] || {
     echo "ERROR: Set EVAL_TASKS_CSV explicitly (empty only for formal)" >&2
+    exit 1
+}
+[[ -v PRIOR_GATE_EVIDENCE ]] || {
+    echo "ERROR: Set PRIOR_GATE_EVIDENCE explicitly (empty only for one_episode_gate)" >&2
+    exit 1
+}
+[[ -v EXPECTED_PRIOR_GATE_EVIDENCE_SHA256 ]] || {
+    echo "ERROR: Set EXPECTED_PRIOR_GATE_EVIDENCE_SHA256 explicitly (empty only for one_episode_gate)" >&2
     exit 1
 }
 : "${EPISODES_PER_TASK:?Set EPISODES_PER_TASK explicitly}"
@@ -88,6 +104,7 @@ readonly SERVER_MODULE_REL="cosmos_framework/scripts/action_policy_server_roboca
 readonly RECEIPT_HELPER_REL="examples/h_cluster/capture_robocasa365_server_receipt.py"
 readonly EVIDENCE_HELPER_REL="examples/h_cluster/cwam_robocasa365_eval_evidence.py"
 readonly CHECKPOINT_HELPER_REL="examples/h_cluster/cwam_serving_checkpoint_manifest.py"
+readonly INTENT_HELPER_REL="examples/h_cluster/cwam_robocasa365_eval_intent.py"
 readonly RUNTIME_RECEIPT_HELPER_REL="examples/h_cluster/capture_robocasa365_eval_runtime.py"
 readonly SUBMISSION_VERIFY_HELPER_REL="examples/h_cluster/verify_cwam_robocasa365_eval_submission.py"
 readonly ASSET_VERIFY_HELPER_REL="examples/h_cluster/cwam_robocasa_asset_manifest.py"
@@ -191,6 +208,12 @@ require_nonnegative_int POLICY_SEED "$POLICY_SEED"
 require_nonnegative_int MINIMUM_SUCCESSFUL_TASKS "$MINIMUM_SUCCESSFUL_TASKS"
 [[ "$EVAL_STAGE" == "one_episode_gate" || "$EVAL_STAGE" == "formal" ]] ||
     die "EVAL_STAGE must be one_episode_gate or formal"
+[[ "$EVAL_EVALUATION_CLASS" == exploratory || "$EVAL_EVALUATION_CLASS" == confirmatory ]] ||
+    die "EVAL_EVALUATION_CLASS must be exploratory or confirmatory"
+[[ "$SOURCE_GIT_PUSHED" == true || "$SOURCE_GIT_PUSHED" == false ]] ||
+    die "SOURCE_GIT_PUSHED must be true or false"
+[[ "$EVAL_EVALUATION_CLASS" != confirmatory || "$SOURCE_GIT_PUSHED" == true ]] ||
+    die "confirmatory evaluation requires SOURCE_GIT_PUSHED=true"
 [[ "$EVAL_SPLIT" == "atomic" || "$EVAL_SPLIT" == "composite" ]] ||
     die "EVAL_SPLIT must be atomic or composite"
 [[ "$POLICY_SAMPLER" == "unipc" || "$POLICY_SAMPLER" == "edm" ]] ||
@@ -216,6 +239,13 @@ require_nonnegative_int MINIMUM_SUCCESSFUL_TASKS "$MINIMUM_SUCCESSFUL_TASKS"
     die "EVAL_RUNTIME_CAPTURE_NONCE must be a submitter-generated lowercase nonce"
 [[ "$EXPECTED_EVAL_SUBMISSION_PENDING_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "EXPECTED_EVAL_SUBMISSION_PENDING_SHA256 must be a lowercase SHA256"
+for digest_name in \
+    EXPECTED_EVAL_INTENT_MANIFEST_SHA256 \
+    EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256 \
+    EXPECTED_EGL_VENDOR_JSON_SHA256; do
+    [[ "${!digest_name}" =~ ^[0-9a-f]{64}$ ]] ||
+        die "$digest_name must be a lowercase SHA256"
+done
 [[ "$EXPECTED_ROBOCASA_ASSET_MANIFEST_SHA256" == "$PINNED_ASSET_MANIFEST_SHA256" ]] ||
     die "Asset manifest SHA256 differs from the audited publication"
 [[ "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256" == "$PINNED_ASSET_RECEIPT_SHA256" ]] ||
@@ -238,10 +268,23 @@ if [[ "$EVAL_STAGE" == "one_episode_gate" ]]; then
         die "one_episode_gate MINIMUM_MEAN_SUCCESS_RATE must be 0.0"
     [[ "$MINIMUM_SUCCESSFUL_TASKS" == 0 ]] ||
         die "one_episode_gate MINIMUM_SUCCESSFUL_TASKS must be 0"
+    [[ -z "$PRIOR_GATE_EVIDENCE" && -z "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256" ]] ||
+        die "one_episode_gate must not bind prior gate evidence"
 else
     [[ "$EPISODES_PER_TASK" == 20 ]] || die "formal evaluation requires EPISODES_PER_TASK=20"
     [[ "$NUM_SHARDS" == 8 ]] || die "formal evaluation requires NUM_SHARDS=8"
     [[ -z "$EVAL_TASKS_CSV" ]] || die "formal evaluation must use the complete canonical split"
+    [[ "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+        die "formal EXPECTED_PRIOR_GATE_EVIDENCE_SHA256 must be a lowercase SHA256"
+    PRIOR_GATE_EVIDENCE="$(canonical_existing "$PRIOR_GATE_EVIDENCE")"
+    [[ -f "$PRIOR_GATE_EVIDENCE" && ! -L "$PRIOR_GATE_EVIDENCE" ]] ||
+        die "formal PRIOR_GATE_EVIDENCE must be a canonical regular file"
+    [[ "$(stat -c %a -- "$PRIOR_GATE_EVIDENCE")" == 444 ]] ||
+        die "formal PRIOR_GATE_EVIDENCE must be immutable mode 0444"
+    verify_sha256 \
+        prior_gate_evidence \
+        "$PRIOR_GATE_EVIDENCE" \
+        "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256"
 fi
 for identity_name in EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID EVAL_RUN_NAME; do
     identity_value="${!identity_name}"
@@ -278,6 +321,8 @@ ACTION_STATS="$(canonical_existing "$ACTION_STATS")"
 SOURCE_MANIFEST="$(canonical_existing "$SOURCE_MANIFEST")"
 COSMOS_ENVIRONMENT_MANIFEST="$(canonical_existing "$COSMOS_ENVIRONMENT_MANIFEST")"
 ROBOCASA_ENVIRONMENT_MANIFEST="$(canonical_existing "$ROBOCASA_ENVIRONMENT_MANIFEST")"
+EVAL_INTENT_MANIFEST="$(canonical_existing "$EVAL_INTENT_MANIFEST")"
+SOURCE_DCP_EXPORT_RECEIPT="$(canonical_existing "$SOURCE_DCP_EXPORT_RECEIPT")"
 ALLOWED_OUTPUT_PARENT="$(canonical_existing "$ALLOWED_OUTPUT_PARENT")"
 ROBOCASA_ASSET_ROOT="$(canonical_existing "$ROBOCASA_ASSET_ROOT")"
 ROBOCASA_ASSET_TREE_MANIFEST="$(canonical_existing "$ROBOCASA_ASSET_TREE_MANIFEST")"
@@ -291,6 +336,7 @@ ROBOCASA_ASSET_TREE_RECEIPT="$(canonical_existing "$ROBOCASA_ASSET_TREE_RECEIPT"
 [[ -f "$COSMOS_SOURCE/$RECEIPT_HELPER_REL" ]] || die "Missing server receipt helper"
 [[ -f "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" ]] || die "Missing eval evidence helper"
 [[ -f "$COSMOS_SOURCE/$CHECKPOINT_HELPER_REL" ]] || die "Missing serving checkpoint manifest helper"
+[[ -f "$COSMOS_SOURCE/$INTENT_HELPER_REL" ]] || die "Missing eval intent helper"
 [[ -f "$COSMOS_SOURCE/$RUNTIME_RECEIPT_HELPER_REL" ]] || die "Missing eval runtime receipt helper"
 [[ -f "$COSMOS_SOURCE/$SUBMISSION_VERIFY_HELPER_REL" ]] || die "Missing submission verification helper"
 [[ -f "$COSMOS_SOURCE/$ASSET_VERIFY_HELPER_REL" ]] || die "Missing RoboCasa asset verification helper"
@@ -332,6 +378,16 @@ verify_sha256 \
     robocasa_environment_manifest \
     "$ROBOCASA_ENVIRONMENT_MANIFEST" \
     "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256"
+verify_sha256 eval_intent_manifest "$EVAL_INTENT_MANIFEST" "$EXPECTED_EVAL_INTENT_MANIFEST_SHA256"
+verify_sha256 \
+    source_dcp_export_receipt \
+    "$SOURCE_DCP_EXPORT_RECEIPT" \
+    "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"
+verify_sha256 egl_vendor_json "$EVAL_EGL_VENDOR_JSON" "$EXPECTED_EGL_VENDOR_JSON_SHA256"
+[[ "$(stat -c %a -- "$EVAL_INTENT_MANIFEST")" == 444 ]] ||
+    die "EVAL_INTENT_MANIFEST must be immutable mode 0444"
+[[ "$(stat -c %a -- "$SOURCE_DCP_EXPORT_RECEIPT")" == 444 ]] ||
+    die "SOURCE_DCP_EXPORT_RECEIPT must be immutable mode 0444"
 verify_sha256 demian_evaluator \
     "$DEMIAN_REPO/$DEMIAN_EVALUATOR_REL" \
     "$EXPECTED_DEMIAN_EVALUATOR_SHA256"
@@ -346,6 +402,116 @@ verify_sha256 \
     robocasa_asset_receipt \
     "$ROBOCASA_ASSET_TREE_RECEIPT" \
     "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256"
+if [[ "$EVAL_STAGE" == one_episode_gate ]]; then
+    INTENT_CPU=16
+    INTENT_MEMORY_MIB=187500
+    INTENT_GPU=1
+else
+    INTENT_CPU=128
+    INTENT_MEMORY_MIB=1500000
+    INTENT_GPU=8
+fi
+INTENT_VERIFY_ARGS=(
+    verify
+    --manifest "$EVAL_INTENT_MANIFEST"
+    --expected-manifest-sha256 "$EXPECTED_EVAL_INTENT_MANIFEST_SHA256"
+    --experiment-id "$EVAL_EXPERIMENT_ID"
+    --logical-run-id "$EVAL_LOGICAL_RUN_ID"
+    --run-name "$EVAL_RUN_NAME"
+    --stage "$EVAL_STAGE"
+    --evaluation-class "$EVAL_EVALUATION_CLASS"
+    --git-pushed "$SOURCE_GIT_PUSHED"
+    --split "$EVAL_SPLIT"
+    --tasks-csv "$EVAL_TASKS_CSV"
+    --episodes-per-task "$EPISODES_PER_TASK"
+    --num-shards "$NUM_SHARDS"
+    --base-seed "$BASE_SEED"
+    --max-steps "$MAX_STEPS"
+    --open-loop-horizon "$OPEN_LOOP_HORIZON"
+    --policy-sampler "$POLICY_SAMPLER"
+    --policy-seed "$POLICY_SEED"
+    --policy-guidance "$POLICY_GUIDANCE"
+    --policy-num-steps "$POLICY_NUM_STEPS"
+    --base-port "$BASE_PORT"
+    --server-ready-timeout-seconds "$SERVER_READY_TIMEOUT_SECONDS"
+    --minimum-mean-success-rate "$MINIMUM_MEAN_SUCCESS_RATE"
+    --minimum-successful-tasks "$MINIMUM_SUCCESSFUL_TASKS"
+    --source-root "$COSMOS_SOURCE"
+    --source-commit "$EXPECTED_SOURCE_COMMIT"
+    --source-manifest "$SOURCE_MANIFEST"
+    --expected-source-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256"
+    --serving-checkpoint-path "$SERVING_CHECKPOINT_PATH"
+    --checkpoint-manifest "$CHECKPOINT_MANIFEST"
+    --expected-checkpoint-manifest-sha256 "$EXPECTED_CHECKPOINT_MANIFEST_SHA256"
+    --source-dcp-export-receipt "$SOURCE_DCP_EXPORT_RECEIPT"
+    --expected-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"
+    --training-config "$TRAINING_CONFIG"
+    --expected-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256"
+    --action-stats "$ACTION_STATS"
+    --expected-action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256"
+    --cosmos-env-root "$COSMOS_ENV"
+    --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST"
+    --expected-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256"
+    --robocasa-env-root "$ROBOCASA_ENV"
+    --robocasa-environment-manifest "$ROBOCASA_ENVIRONMENT_MANIFEST"
+    --expected-robocasa-environment-manifest-sha256 "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256"
+    --robocasa-asset-root "$ROBOCASA_ASSET_ROOT"
+    --robocasa-asset-manifest "$ROBOCASA_ASSET_TREE_MANIFEST"
+    --expected-robocasa-asset-manifest-sha256 "$EXPECTED_ROBOCASA_ASSET_MANIFEST_SHA256"
+    --robocasa-asset-receipt "$ROBOCASA_ASSET_TREE_RECEIPT"
+    --expected-robocasa-asset-receipt-sha256 "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256"
+    --demian-root "$DEMIAN_REPO"
+    --demian-commit "$EXPECTED_DEMIAN_COMMIT"
+    --robocasa-root "$ROBOCASA_REPO"
+    --robocasa-commit "$EXPECTED_ROBOCASA_COMMIT"
+    --robosuite-root "$ROBOSUITE_REPO"
+    --robosuite-commit "$EXPECTED_ROBOSUITE_COMMIT"
+    --container-image "$EXPECTED_CONTAINER_IMAGE"
+    --egl-vendor-json "$EVAL_EGL_VENDOR_JSON"
+    --expected-egl-vendor-json-sha256 "$EXPECTED_EGL_VENDOR_JSON_SHA256"
+    --cpu "$INTENT_CPU"
+    --memory-mib "$INTENT_MEMORY_MIB"
+    --gpu "$INTENT_GPU"
+    --quota-group eailabagent_gpu
+    --negative-tag node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn
+    --task-type normal
+    --private-machine group
+    --priority 9
+    --restart-policy never
+    --backoff-limit 1
+    --replicas 1
+)
+if [[ "$EVAL_STAGE" == formal ]]; then
+    INTENT_VERIFY_ARGS+=(
+        --prior-gate-evidence "$PRIOR_GATE_EVIDENCE"
+        --expected-prior-gate-evidence-sha256 "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256"
+    )
+fi
+PYTHONPATH="$COSMOS_SOURCE/examples/h_cluster" \
+    "$COSMOS_ENV/bin/python" "$COSMOS_SOURCE/$INTENT_HELPER_REL" \
+    "${INTENT_VERIFY_ARGS[@]}" >/dev/null
+if [[ "$EVAL_STAGE" == "formal" ]]; then
+    PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_ENV/bin/python" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
+        verify-prior-gate \
+        --gate-evidence "$PRIOR_GATE_EVIDENCE" \
+        --expected-gate-evidence-sha256 "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256" \
+        --current-source-root "$COSMOS_SOURCE" \
+        --current-source-commit "$EXPECTED_SOURCE_COMMIT" \
+        --current-source-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256" \
+        --current-checkpoint-path "$SERVING_CHECKPOINT_PATH" \
+        --current-checkpoint-manifest-sha256 "$EXPECTED_CHECKPOINT_MANIFEST_SHA256" \
+        --current-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256" \
+        --current-asset-manifest-sha256 "$EXPECTED_ROBOCASA_ASSET_MANIFEST_SHA256" \
+        --current-asset-publisher-receipt-sha256 "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256" \
+        --current-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256" \
+        --current-action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256" \
+        --current-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256" \
+        --current-robocasa-environment-manifest-sha256 "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256" \
+        --current-demian-commit "$EXPECTED_DEMIAN_COMMIT" \
+        --current-robocasa-commit "$EXPECTED_ROBOCASA_COMMIT" \
+        --current-robosuite-commit "$EXPECTED_ROBOSUITE_COMMIT" \
+        >/dev/null
+fi
 
 readonly COSMOS_PY="$COSMOS_ENV/bin/python"
 readonly ROBOCASA_PY="$ROBOCASA_ENV/bin/python"
@@ -380,14 +546,53 @@ readonly EVAL_RUNTIME_RECEIPT="$CONTROL_DIR/eval-runtime-receipt.json"
 readonly SUBMISSION_VERIFICATION_RECEIPT="$CONTROL_DIR/submission-verification.json"
 readonly ASSET_VERIFICATION_RECEIPT="$CONTROL_DIR/asset-tree-verification.json"
 readonly POST_ROLLOUT_VERIFICATION_RECEIPT="$CONTROL_DIR/post-rollout-verification.json"
+readonly SEALED_EVIDENCE_VERIFICATION_RECEIPT="$CONTROL_DIR/sealed-evidence-verification.json"
 mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT"
 
+EVAL_SCHEDULER_READBACK_RECEIPT="$(realpath -m -- "$EVAL_SCHEDULER_READBACK_RECEIPT")"
+EVAL_SUBMISSION_UNKNOWN_PATH="$(realpath -m -- "$EVAL_SUBMISSION_UNKNOWN_PATH")"
+[[ "$(basename -- "$EVAL_SCHEDULER_READBACK_RECEIPT")" == scheduler-readback-receipt.json ]] ||
+    die "EVAL_SCHEDULER_READBACK_RECEIPT has a non-canonical terminal filename"
+[[ "$(basename -- "$EVAL_SUBMISSION_UNKNOWN_PATH")" == submission-unknown.json ]] ||
+    die "EVAL_SUBMISSION_UNKNOWN_PATH has a non-canonical terminal filename"
+[[ "$(dirname -- "$EVAL_SCHEDULER_READBACK_RECEIPT")" == "$(dirname -- "$EVAL_SUBMISSION_UNKNOWN_PATH")" ]] ||
+    die "accepted and unknown terminal records must share one reservation directory"
+
+require_accepted_submission_terminal_state() {
+    local terminal_parent
+    terminal_parent="$(dirname -- "$EVAL_SCHEDULER_READBACK_RECEIPT")"
+    [[ -d "$terminal_parent" && ! -L "$terminal_parent" ]] ||
+        die "submission terminal-state parent is not a regular directory"
+    [[ "$(realpath -e -- "$terminal_parent")" == "$terminal_parent" ]] ||
+        die "submission terminal-state parent is not canonical"
+    [[ ! -e "$EVAL_SUBMISSION_UNKNOWN_PATH" && ! -L "$EVAL_SUBMISSION_UNKNOWN_PATH" ]] ||
+        die "submission-unknown terminal record exists"
+    [[ -f "$EVAL_SCHEDULER_READBACK_RECEIPT" && ! -L "$EVAL_SCHEDULER_READBACK_RECEIPT" ]] ||
+        die "accepted scheduler readback receipt is not a regular file"
+    [[ "$(stat -c %a -- "$EVAL_SCHEDULER_READBACK_RECEIPT")" == 444 ]] ||
+        die "accepted scheduler readback receipt is not sealed mode 0444"
+    [[ "$(stat -c %a -- "$terminal_parent")" == 555 ]] ||
+        die "submission reservation directory is not sealed mode 0555"
+}
+
 for ((waited = 0; waited < SCHEDULER_READBACK_WAIT_SECONDS; waited++)); do
-    [[ -s "$EVAL_SCHEDULER_READBACK_RECEIPT" ]] && break
+    if [[ ( -e "$EVAL_SCHEDULER_READBACK_RECEIPT" || -L "$EVAL_SCHEDULER_READBACK_RECEIPT" ) &&
+        ( -e "$EVAL_SUBMISSION_UNKNOWN_PATH" || -L "$EVAL_SUBMISSION_UNKNOWN_PATH" ) ]]; then
+        die "accepted and unknown submission terminal records both exist"
+    fi
+    [[ ! -e "$EVAL_SUBMISSION_UNKNOWN_PATH" && ! -L "$EVAL_SUBMISSION_UNKNOWN_PATH" ]] ||
+        die "submission became unknown before worker verification"
+    if [[ -s "$EVAL_SCHEDULER_READBACK_RECEIPT" &&
+        ! -L "$EVAL_SCHEDULER_READBACK_RECEIPT" &&
+        "$(stat -c %a -- "$EVAL_SCHEDULER_READBACK_RECEIPT")" == 444 &&
+        "$(stat -c %a -- "$(dirname -- "$EVAL_SCHEDULER_READBACK_RECEIPT")")" == 555 ]]; then
+        break
+    fi
     sleep 1
 done
 [[ -s "$EVAL_SCHEDULER_READBACK_RECEIPT" ]] ||
     die "Timed out waiting for the accepted scheduler readback receipt"
+require_accepted_submission_terminal_state
 
 /usr/bin/env \
     PATH="$H_RUNTIME_PATH" \
@@ -396,6 +601,7 @@ done
     --reservation "$EVAL_SUBMISSION_RESERVATION_PATH" \
     --expected-reservation-sha256 "$EXPECTED_EVAL_SUBMISSION_PENDING_SHA256" \
     --scheduler-readback-receipt "$EVAL_SCHEDULER_READBACK_RECEIPT" \
+    --submission-unknown "$EVAL_SUBMISSION_UNKNOWN_PATH" \
     --experiment-id "$EVAL_EXPERIMENT_ID" \
     --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
     --run-name "$EVAL_RUN_NAME" \
@@ -408,6 +614,7 @@ done
     --max-start-to-verification-seconds "$EVAL_SUBMISSION_MAX_START_TO_VERIFICATION_SECONDS" \
     --output "$SUBMISSION_VERIFICATION_RECEIPT"
 echo "EVAL_SUBMISSION_VERIFIED receipt=$SUBMISSION_VERIFICATION_RECEIPT"
+require_accepted_submission_terminal_state
 
 asset_verification_started_seconds=$SECONDS
 /usr/bin/env \
@@ -492,6 +699,67 @@ echo "SERVING_CHECKPOINT_VERIFIED" \
     --output "$EVAL_RUNTIME_RECEIPT"
 echo "EVAL_RUNTIME_RECEIPT_READY path=$EVAL_RUNTIME_RECEIPT sha256=$(sha256_file "$EVAL_RUNTIME_RECEIPT")"
 
+SERVER_PIDS=()
+EVALUATOR_PIDS=()
+LAUNCH_NONCES=()
+NVME_CREATED=0
+stop_child_pids() {
+    local deadline
+    local still_running
+    local pid
+    local -a child_pids=("$@")
+    for pid in "${child_pids[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    deadline=$((SECONDS + CLEANUP_GRACE_SECONDS))
+    while ((SECONDS < deadline)); do
+        still_running=0
+        for pid in "${child_pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                still_running=1
+            fi
+        done
+        ((still_running == 1)) || break
+        sleep 1
+    done
+    for pid in "${child_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+    for pid in "${child_pids[@]}"; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
+}
+cleanup_nvme() {
+    local expected_nvme_root="/nvme/.cwam-robocasa365-eval/$EVAL_LOGICAL_RUN_ID"
+    [[ "$NVME_CREATED" == 1 ]] || return 0
+    [[ "$EVAL_NVME_ROOT" == "$expected_nvme_root" ]] ||
+        die "refusing to clean an unexpected NVMe path: $EVAL_NVME_ROOT"
+    [[ ! -L "$EVAL_NVME_ROOT" ]] ||
+        die "refusing to clean a symlinked NVMe path: $EVAL_NVME_ROOT"
+    if [[ -d "$EVAL_NVME_ROOT" ]]; then
+        /usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_ROOT"
+    fi
+    [[ ! -e "$EVAL_NVME_ROOT" && ! -L "$EVAL_NVME_ROOT" ]] ||
+        die "scoped NVMe cleanup did not remove $EVAL_NVME_ROOT"
+    NVME_CREATED=0
+}
+cleanup() {
+    local status="$1"
+    trap - EXIT INT TERM
+    stop_child_pids "${EVALUATOR_PIDS[@]}" "${SERVER_PIDS[@]}"
+    if ! cleanup_nvme; then
+        status=1
+    fi
+    exit "$status"
+}
+trap 'cleanup $?' EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+
 EVAL_NVME_ROOT="$(realpath -m -- "$EVAL_NVME_ROOT")"
 [[ "$EVAL_NVME_ROOT" == "/nvme/.cwam-robocasa365-eval/$EVAL_LOGICAL_RUN_ID" ]] ||
     die "EVAL_NVME_ROOT must be derived exactly from EVAL_LOGICAL_RUN_ID"
@@ -504,6 +772,7 @@ esac
 [[ "$(findmnt -n -T /nvme -o FSTYPE)" == xfs ]] || die "/nvme is not xfs"
 [[ ! -e "$EVAL_NVME_ROOT" ]] || die "Refusing to reuse EVAL_NVME_ROOT: $EVAL_NVME_ROOT"
 mkdir -- "$EVAL_NVME_ROOT"
+NVME_CREATED=1
 
 "$COSMOS_PY" - "$NUM_SHARDS" <<'PY'
 import sys
@@ -538,49 +807,7 @@ finally:
 print(f"EVAL_PORTS_READY base={base_port} count={count}")
 PY
 
-SERVER_PIDS=()
-EVALUATOR_PIDS=()
-LAUNCH_NONCES=()
-stop_child_pids() {
-    local deadline
-    local still_running
-    local pid
-    local -a child_pids=("$@")
-    for pid in "${child_pids[@]}"; do
-        kill "$pid" 2>/dev/null || true
-    done
-    deadline=$((SECONDS + CLEANUP_GRACE_SECONDS))
-    while ((SECONDS < deadline)); do
-        still_running=0
-        for pid in "${child_pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                still_running=1
-            fi
-        done
-        ((still_running == 1)) || break
-        sleep 1
-    done
-    for pid in "${child_pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -KILL "$pid" 2>/dev/null || true
-        fi
-    done
-    for pid in "${child_pids[@]}"; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid" 2>/dev/null || true
-        fi
-    done
-}
-cleanup() {
-    local status="$1"
-    trap - EXIT INT TERM
-    stop_child_pids "${EVALUATOR_PIDS[@]}" "${SERVER_PIDS[@]}"
-    exit "$status"
-}
-trap 'cleanup $?' EXIT
-trap 'cleanup 130' INT
-trap 'cleanup 143' TERM
-
+require_accepted_submission_terminal_state
 for ((shard = 0; shard < NUM_SHARDS; shard++)); do
     port=$((BASE_PORT + shard))
     server_log="$CONTROL_DIR/server-shard${shard}.log"
@@ -652,10 +879,12 @@ CONTRACT_ARGS=(
     --checkpoint-path "$SERVING_CHECKPOINT_PATH"
     --checkpoint-manifest "$CHECKPOINT_MANIFEST"
     --checkpoint-verification-receipt "$CHECKPOINT_VERIFICATION_RECEIPT"
+    --source-dcp-export-receipt "$SOURCE_DCP_EXPORT_RECEIPT"
     --training-config "$TRAINING_CONFIG"
     --action-stats "$ACTION_STATS"
     --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST"
     --robocasa-environment-manifest "$ROBOCASA_ENVIRONMENT_MANIFEST"
+    --eval-intent-manifest "$EVAL_INTENT_MANIFEST"
     --submission-verification-receipt "$SUBMISSION_VERIFICATION_RECEIPT"
     --asset-verification-receipt "$ASSET_VERIFICATION_RECEIPT"
     --eval-runtime-receipt "$EVAL_RUNTIME_RECEIPT"
@@ -689,6 +918,11 @@ done
 if [[ "$EVAL_STAGE" == "one_episode_gate" ]]; then
     IFS=',' read -r -a EVAL_TASKS <<<"$EVAL_TASKS_CSV"
     CONTRACT_ARGS+=(--tasks "${EVAL_TASKS[@]}")
+else
+    CONTRACT_ARGS+=(
+        --prior-gate-evidence "$PRIOR_GATE_EVIDENCE"
+        --expected-prior-gate-evidence-sha256 "$EXPECTED_PRIOR_GATE_EVIDENCE_SHA256"
+    )
 fi
 PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
     "${CONTRACT_ARGS[@]}" >"$CONTROL_DIR/create-contract.log"
@@ -749,6 +983,7 @@ for ((shard = 0; shard < NUM_SHARDS; shard++)); do
 done
 EVALUATOR_PIDS=()
 [[ "$eval_failed" == 0 ]] || die "One or more RoboCasa evaluator shards failed"
+require_accepted_submission_terminal_state
 stop_child_pids "${SERVER_PIDS[@]}"
 SERVER_PIDS=()
 
@@ -758,6 +993,7 @@ PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
     --output "$POST_ROLLOUT_VERIFICATION_RECEIPT" \
     >"$CONTROL_DIR/post-rollout-verification.log"
 echo "POST_ROLLOUT_INPUTS_VERIFIED receipt=$POST_ROLLOUT_VERIFICATION_RECEIPT"
+require_accepted_submission_terminal_state
 
 SUMMARIZE_ARGS=(
     summarize
@@ -774,11 +1010,6 @@ PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
 [[ -s "$SUMMARY_CSV" ]] || die "summary.csv is missing or empty"
 [[ -s "$TASK_SUCCESS_RATES_CSV" ]] || die "task_success_rates.csv is missing or empty"
 [[ -s "$EVIDENCE_JSON" ]] || die "evaluation_evidence.json is missing or empty"
-EFFECT_PASS="$(
-    "$COSMOS_PY" -c \
-        'import json,sys; value=json.load(open(sys.argv[1]))["effect_pass"]; assert type(value) is bool; print(str(value).lower())' \
-        "$EVIDENCE_JSON"
-)"
 RAW_RESULT_FILES=()
 for ((shard = 0; shard < NUM_SHARDS; shard++)); do
     if [[ "$NUM_SHARDS" == 1 ]]; then
@@ -801,10 +1032,112 @@ chmod 0444 \
     "$TASK_SUCCESS_RATES_CSV" \
     "$EVIDENCE_JSON"
 chmod 0555 "$RESULTS_DIR"
+PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
+    verify-sealed-evidence \
+    --contract "$CONTRACT_PATH" \
+    --post-rollout-verification-receipt "$POST_ROLLOUT_VERIFICATION_RECEIPT" \
+    --results-dir "$RESULTS_DIR" \
+    --summary-csv "$SUMMARY_CSV" \
+    --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \
+    --evidence-json "$EVIDENCE_JSON" \
+    --output "$SEALED_EVIDENCE_VERIFICATION_RECEIPT" \
+    >"$CONTROL_DIR/sealed-evidence-verification.log"
+[[ -s "$SEALED_EVIDENCE_VERIFICATION_RECEIPT" ]] ||
+    die "sealed evidence verification receipt is missing or empty"
+[[ "$(stat -c %a -- "$SEALED_EVIDENCE_VERIFICATION_RECEIPT")" == 444 ]] ||
+    die "sealed evidence verification receipt is not mode 0444"
+SEALED_EVIDENCE_VERIFICATION_SHA256="$(sha256_file "$SEALED_EVIDENCE_VERIFICATION_RECEIPT")"
+chmod 0444 "$CONTROL_DIR/sealed-evidence-verification.log"
+require_accepted_submission_terminal_state
+chmod 0555 \
+    "$CONTROL_DIR" \
+    "$RESULTS_ROOT" \
+    "$EVAL_OUTPUT_ROOT" \
+    "$EXPERIMENT_OUTPUT_ROOT"
+EFFECT_PASS="$(
+    "$COSMOS_PY" - \
+        "$SEALED_EVIDENCE_VERIFICATION_RECEIPT" \
+        "$SEALED_EVIDENCE_VERIFICATION_SHA256" \
+        "$CONTROL_DIR" \
+        "$RESULTS_ROOT" \
+        "$EVAL_OUTPUT_ROOT" \
+        "$EXPERIMENT_OUTPUT_ROOT" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+expected_sha256 = sys.argv[2]
+directories = [pathlib.Path(value) for value in sys.argv[3:]]
+for directory in directories:
+    metadata = directory.lstat()
+    if directory.resolve(strict=True) != directory or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"sealed evaluation directory is unsafe: {directory}")
+    if stat.S_IMODE(metadata.st_mode) != 0o555:
+        raise SystemExit(f"sealed evaluation directory is not mode 0555: {directory}")
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+before = path.lstat()
+if path.resolve(strict=True) != path or not stat.S_ISREG(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o444:
+    raise SystemExit("sealed evidence verification receipt is unsafe or not mode 0444")
+descriptor = os.open(
+    path,
+    os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+)
+try:
+    opened = os.fstat(descriptor)
+    chunks = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    after = os.fstat(descriptor)
+finally:
+    os.close(descriptor)
+final = path.lstat()
+identity = lambda value: (
+    value.st_dev,
+    value.st_ino,
+    value.st_mode,
+    value.st_size,
+    value.st_mtime_ns,
+    value.st_ctime_ns,
+)
+if not (identity(before) == identity(opened) == identity(after) == identity(final)):
+    raise SystemExit("sealed evidence verification receipt changed during final verdict read")
+payload = b"".join(chunks)
+if hashlib.sha256(payload).hexdigest() != expected_sha256:
+    raise SystemExit("sealed evidence verification receipt SHA-256 changed after directory sealing")
+receipt = json.loads(payload)
+if (
+    receipt.get("schema_version") != 1
+    or receipt.get("kind") != "cwam_robocasa365_sealed_evidence_verification_receipt"
+    or receipt.get("status") != "passed"
+):
+    raise SystemExit("sealed evidence verification receipt terminal verdict is invalid")
+validation = receipt.get("validation")
+if not isinstance(validation, dict) or not validation or any(value is not True for value in validation.values()):
+    raise SystemExit("sealed evidence verification receipt is not an all-true validation")
+effect_pass = receipt.get("evaluation", {}).get("effect_pass")
+if type(effect_pass) is not bool:
+    raise SystemExit("sealed evidence verification receipt effect_pass is not boolean")
+print(str(effect_pass).lower())
+PY
+)"
+require_accepted_submission_terminal_state
 echo "ROBOCASA365_EVAL_EXECUTION_SUCCESS stage=$EVAL_STAGE"
 echo "SUMMARY_CSV=$SUMMARY_CSV sha256=$(sha256_file "$SUMMARY_CSV")"
 echo "TASK_SUCCESS_RATES_CSV=$TASK_SUCCESS_RATES_CSV sha256=$(sha256_file "$TASK_SUCCESS_RATES_CSV")"
 echo "EVIDENCE_JSON=$EVIDENCE_JSON sha256=$(sha256_file "$EVIDENCE_JSON")"
+echo "SEALED_EVIDENCE_VERIFICATION_RECEIPT=$SEALED_EVIDENCE_VERIFICATION_RECEIPT sha256=$SEALED_EVIDENCE_VERIFICATION_SHA256"
 if [[ "$EVAL_STAGE" == "formal" ]]; then
     if [[ "$EFFECT_PASS" == true ]]; then
         echo "ROBOCASA365_EVAL_EFFECT_GATE_PASSED"
