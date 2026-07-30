@@ -64,6 +64,7 @@ def _validate(batch: dict) -> dict:
         batch,
         expected_sample_count=2,
         expected_video_shape=(3, 5, 16, 32),
+        expected_video_latent_shape=(48, 2, 1, 2),
         expected_action_shape=(4, 8),
         expected_raw_action_shape=(4, 2),
     )
@@ -92,6 +93,34 @@ def test_validate_packed_batch_recomputes_tokens_and_tensor_bytes() -> None:
     assert metrics["unique_url_key_count"] == 2
     assert metrics["tensor_bytes"] == 15_736
     assert metrics["tensor_bytes"] == _tensor_bytes(batch)
+    assert metrics["vision_input_key"] == "video"
+
+
+def test_validate_packed_batch_accepts_cached_bfloat16_latents() -> None:
+    batch = _synthetic_batch()
+    del batch["video"]
+    batch["video_latent"] = [
+        [torch.zeros((48, 2, 1, 2), dtype=torch.bfloat16)]
+        for _ in range(2)
+    ]
+
+    metrics = _validate(batch)
+
+    assert metrics["vision_input_key"] == "video_latent"
+    assert metrics["video_shape"] is None
+    assert metrics["video_latent_shape"] == [48, 2, 1, 2]
+    assert metrics["video_latent_dtype"] == "torch.bfloat16"
+
+
+def test_validate_packed_batch_rejects_ambiguous_vision_inputs() -> None:
+    batch = _synthetic_batch()
+    batch["video_latent"] = [
+        [torch.zeros((48, 2, 1, 2), dtype=torch.bfloat16)]
+        for _ in range(2)
+    ]
+
+    with pytest.raises(AssertionError, match="exactly one"):
+        _validate(batch)
 
 
 def test_validate_packed_batch_rejects_duplicate_stable_identity() -> None:

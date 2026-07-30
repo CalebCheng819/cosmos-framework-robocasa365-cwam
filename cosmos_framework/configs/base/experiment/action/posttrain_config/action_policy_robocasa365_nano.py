@@ -331,3 +331,35 @@ cs.store(
     name="action_policy_robocasa365_nano",
     node=action_policy_robocasa365_nano,
 )
+
+
+def _action_policy_robocasa365_s1_nano_model_config() -> dict:
+    """Enable the S1 soft action-relevance residual on the baseline policy."""
+    cfg = _action_policy_robocasa365_nano_model_config()
+    cfg.update(
+        action_relevance_enabled=True,
+        action_relevance_routing_dim=512,
+        action_relevance_num_heads=8,
+        action_relevance_topk=32,
+        action_relevance_initial_gate=0.01,
+        action_relevance_sparsity_weight=0.01,
+        action_relevance_sparsity_start_iter=1000,
+        action_relevance_sparsity_anneal_iters=4000,
+    )
+    return cfg
+
+
+action_policy_robocasa365_s1_nano = copy.deepcopy(action_policy_robocasa365_nano)
+action_policy_robocasa365_s1_nano.job.name = "action_policy_robocasa365_s1_nano"
+action_policy_robocasa365_s1_nano.model.config = _action_policy_robocasa365_s1_nano_model_config()
+action_policy_robocasa365_s1_nano.optimizer.keys_to_select.append("action_relevance")
+action_policy_robocasa365_s1_nano.optimizer.lr_multipliers["action_relevance"] = 5.0
+action_policy_robocasa365_s1_nano.trainer.callbacks.action_gradient_evidence.families.append("action_relevance")
+action_policy_robocasa365_s1_nano.checkpoint.keys_to_skip_loading.append("action_relevance")
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_s1_nano",
+    node=action_policy_robocasa365_s1_nano,
+)

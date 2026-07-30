@@ -16,6 +16,9 @@ readonly PINNED_CONTAINER_IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:592
 readonly PINNED_PERSONAL_GPFS_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
 readonly PINNED_FORMAL_OUTPUT_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-cosmos3-formal"
 readonly PINNED_FORMAL_LOG_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/logs/cwam-cosmos3-formal"
+readonly PINNED_S1_LATENT_CACHE_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data/robocasa365-demian/processed/robocasa365-wan22-ti2v5b-postcrop-bf16-cwam-v1"
+readonly PINNED_S1_LATENT_CACHE_SUCCESS_SHA256="dc2b30e52e2d5327efeceff98f34a3c6fefbb4d96cae5b3d6c6417104379b6d6"
+readonly PINNED_S1_LATENT_CACHE_MANIFEST_SHA256="724bd3d5c2fd812f3d5848ed8a1703ec49c2855450c4b5beeb85d0ffb122fc75"
 readonly PINNED_FORMAL_MIN_FREE_BYTES="5497558138880"
 readonly PINNED_FORMAL_ESTIMATED_REQUIRED_BYTES="4398046511104"
 readonly PINNED_RJOB_QUOTA_GROUP="eailabagent_gpu"
@@ -82,6 +85,14 @@ fi
         echo "ERROR: world_size=$NPROC_PER_NODE requires a $PROTOCOL_EXPERIMENT_FAMILY experiment ID" >&2
         exit 1
     }
+if [[ "$FORMAL_EXPERIMENT_ID" == "CWAM-E35-S1-"* ]]; then
+    TOML_FILE="examples/toml/sft_config/action_policy_robocasa365_s1_nano.toml"
+    S1_LATENT_CACHE_ENABLED=1
+else
+    TOML_FILE="examples/toml/sft_config/action_policy_robocasa365_nano.toml"
+    S1_LATENT_CACHE_ENABLED=0
+fi
+export TOML_FILE
 [[ "$FORMAL_RUN_NAME" == "$FORMAL_EXPERIMENT_ID" ]] ||
     { echo "ERROR: FORMAL_RUN_NAME must equal FORMAL_EXPERIMENT_ID" >&2; exit 1; }
 [[ "$RUN_FORMAL_AFTER_PROBE" =~ ^[01]$ ]] ||
@@ -122,11 +133,23 @@ fi
     { echo "ERROR: RJOB_QUOTA_GROUP does not match the audited quota group" >&2; exit 1; }
 [[ "$RJOB_EXCLUDED_NODE_TAG" == "$PINNED_RJOB_EXCLUDED_NODE_TAG" ]] ||
     { echo "ERROR: RJOB_EXCLUDED_NODE_TAG does not match the audited exclusion" >&2; exit 1; }
+if [[ "$S1_LATENT_CACHE_ENABLED" == 1 ]]; then
+    : "${GPFS_LATENT_CACHE_ROOT:=$PINNED_S1_LATENT_CACHE_ROOT}"
+    : "${EXPECTED_CACHE_SUCCESS_SHA256:=$PINNED_S1_LATENT_CACHE_SUCCESS_SHA256}"
+    : "${EXPECTED_CACHE_MANIFEST_SHA256:=$PINNED_S1_LATENT_CACHE_MANIFEST_SHA256}"
+    [[ "$GPFS_LATENT_CACHE_ROOT" == "$PINNED_S1_LATENT_CACHE_ROOT" ]] ||
+        { echo "ERROR: S1 latent-cache root differs from the audited cache" >&2; exit 1; }
+    [[ "$EXPECTED_CACHE_SUCCESS_SHA256" == "$PINNED_S1_LATENT_CACHE_SUCCESS_SHA256" ]] ||
+        { echo "ERROR: S1 latent-cache success digest differs from the audited cache" >&2; exit 1; }
+    [[ "$EXPECTED_CACHE_MANIFEST_SHA256" == "$PINNED_S1_LATENT_CACHE_MANIFEST_SHA256" ]] ||
+        { echo "ERROR: S1 latent-cache manifest digest differs from the audited cache" >&2; exit 1; }
+fi
 
 test -d "$COSMOS_SOURCE"
 test -s "$COSMOS_SOURCE/SNAPSHOT_MANIFEST.json"
 test -s "$COSMOS_SOURCE/examples/h_cluster/cwam_formal_provenance.py"
 test -s "$COSMOS_SOURCE/examples/h_cluster/cwam_formal_training_evidence.py"
+test -s "$COSMOS_SOURCE/$TOML_FILE"
 test -s "$SECURE_PATH_HELPER"
 test -s "$SECURE_TEE_HELPER"
 test -s "$FORMAL_MANIFEST_PATH"
@@ -138,6 +161,10 @@ test -d "$ROBOCASA365_SOURCE_ROOT/videos"
 test -s "$BASE_CHECKPOINT_PATH/model/.metadata"
 test -s "$WAN_VAE_PATH"
 test -s "$QWEN3_VL_TOKENIZER_PATH/tokenizer_config.json"
+if [[ "$S1_LATENT_CACHE_ENABLED" == 1 ]]; then
+    test -s "$GPFS_LATENT_CACHE_ROOT/_SUCCESS.json"
+    test -s "$GPFS_LATENT_CACHE_ROOT/manifest.json"
+fi
 command -v nvidia-smi >/dev/null
 command -v python3 >/dev/null
 RUN_SCRIPT_REAL="$(realpath -e -- "${BASH_SOURCE[0]}")"
@@ -746,6 +773,14 @@ export BASE_CHECKPOINT_PATH WAN_VAE_PATH QWEN3_VL_TOKENIZER_PATH
 export NPROC_PER_NODE
 export TORCHINDUCTOR_CACHE_DIR="$INDUCTOR_CACHE_DIR"
 export TORCHDYNAMO_DISABLE=0
+if [[ "$S1_LATENT_CACHE_ENABLED" == 1 ]]; then
+    export ROBOCASA365_LATENT_CACHE_ROOT="$GPFS_LATENT_CACHE_ROOT"
+    export ROBOCASA365_LATENT_CACHE_MODE=required
+    export CWAM_METADATA_ONLY_VIDEO_TOKENIZER=1
+    export ROBOCASA365_TRAIN_NUM_WORKERS=4
+    export ROBOCASA365_VAL_NUM_WORKERS=2
+    export CWAM_ACTIVATION_CHECKPOINTING_MODE=selective
+fi
 
 source "$COSMOS_SOURCE/examples/h_cluster/configure_torchcodec_runtime.sh"
 "$COSMOS_ENV/bin/python" "$COSMOS_SOURCE/examples/h_cluster/validate_cu128_train_env_marker.py" \
@@ -828,6 +863,20 @@ temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 temporary.replace(target)
 PY
 
+if [[ "$S1_LATENT_CACHE_ENABLED" == 1 ]]; then
+    CURRENT_PHASE="latent_cache_preflight"
+    [[ "$(sha256sum "$GPFS_LATENT_CACHE_ROOT/_SUCCESS.json" | awk '{print $1}')" == \
+       "$EXPECTED_CACHE_SUCCESS_SHA256" ]] ||
+        { echo "ERROR: S1 latent-cache _SUCCESS digest mismatch" >&2; exit 1; }
+    [[ "$(sha256sum "$GPFS_LATENT_CACHE_ROOT/manifest.json" | awk '{print $1}')" == \
+       "$EXPECTED_CACHE_MANIFEST_SHA256" ]] ||
+        { echo "ERROR: S1 latent-cache manifest digest mismatch" >&2; exit 1; }
+    "$COSMOS_ENV/bin/python" examples/h_cluster/cwam_cosmos3_latent_cache_throughput.py \
+        validate-cache \
+        --root "$GPFS_LATENT_CACHE_ROOT" \
+        --output "$EVIDENCE_DIR/latent-cache-validation.json"
+fi
+
 CURRENT_PHASE="cpu_production_batch"
 "$COSMOS_ENV/bin/python" examples/validate_action_policy_robocasa365_nano_batch.py \
     --dataset-root "$ROBOCASA365_ROOT" \
@@ -835,6 +884,7 @@ CURRENT_PHASE="cpu_production_batch"
     --checkpoint "$BASE_CHECKPOINT_PATH" \
     --wan-vae "$WAN_VAE_PATH" \
     --qwen-tokenizer "$QWEN3_VL_TOKENIZER_PATH" \
+    --toml "$TOML_FILE" \
     --output-json "$EVIDENCE_DIR/cpu-production-batch.json"
 
 start_sampler() {

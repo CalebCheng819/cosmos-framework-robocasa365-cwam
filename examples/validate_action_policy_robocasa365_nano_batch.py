@@ -29,6 +29,7 @@ _PRODUCTION_SAMPLE_COUNT = 128
 # VideoResize selects the "256" tier and maps that 2:1 input to a 192x320
 # production canvas (160x320 resized content plus bottom reflection padding).
 _PRODUCTION_VIDEO_SHAPE = (3, 17, 192, 320)
+_PRODUCTION_VIDEO_LATENT_SHAPE = (48, 5, 10, 20)
 _PRODUCTION_ACTION_SHAPE = (16, 64)
 _PRODUCTION_RAW_ACTION_SHAPE = (16, 10)
 _INTEGER_DTYPES = {
@@ -89,6 +90,9 @@ def _configure_runtime(args: argparse.Namespace) -> None:
     os.environ["BASE_CHECKPOINT_PATH"] = str(args.checkpoint)
     os.environ["WAN_VAE_PATH"] = str(args.wan_vae)
     os.environ["QWEN3_VL_TOKENIZER_PATH"] = str(args.qwen_tokenizer)
+    # This CPU-only gate can run in an SSH workspace without a usable
+    # ancillary-FD channel. The production trainer keeps PyTorch's default.
+    torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 @contextmanager
@@ -233,7 +237,16 @@ def _validate_sequence_plans(batch: Mapping[str, Any], expected_count: int) -> N
 
 
 def _sample_for_token_estimate(batch: Mapping[str, Any], index: int) -> dict[str, Any]:
-    sample = {key: batch[key][index] for key in ("text_token_ids", "video", "action")}
+    media_keys = [key for key in ("images", "video", "video_latent") if key in batch]
+    if len(media_keys) != 1:
+        raise AssertionError(
+            "Packed batch must contain exactly one vision input for token estimation; "
+            f"got {media_keys}."
+        )
+    sample = {
+        key: batch[key][index]
+        for key in ("text_token_ids", media_keys[0], "action")
+    }
     for key in (
         "enable_per_camera_vae_encoding",
         "sample_n_views",
@@ -251,6 +264,7 @@ def _validate_packed_batch(
     *,
     expected_sample_count: int,
     expected_video_shape: tuple[int, ...],
+    expected_video_latent_shape: tuple[int, ...] | None = None,
     expected_action_shape: tuple[int, ...],
     expected_raw_action_shape: tuple[int, ...],
 ) -> dict[str, Any]:
@@ -260,18 +274,38 @@ def _validate_packed_batch(
     if expected_sample_count <= 0:
         raise ValueError(f"expected_sample_count must be positive, got {expected_sample_count}.")
 
-    videos = _require_single_tensor_items(batch, "video", expected_sample_count)
+    vision_keys = [key for key in ("images", "video", "video_latent") if key in batch]
+    if len(vision_keys) != 1:
+        raise AssertionError(
+            "Packed batch must contain exactly one of 'images', 'video', or 'video_latent'; "
+            f"got {vision_keys}."
+        )
+    vision_key = vision_keys[0]
+    if vision_key == "images":
+        raise AssertionError("RoboCasa365 policy training does not support an image-only packed batch.")
+    vision_tensors = _require_single_tensor_items(batch, vision_key, expected_sample_count)
     actions = _require_single_tensor_items(batch, "action", expected_sample_count)
     raw_actions = _require_single_tensor_items(batch, "action_raw", expected_sample_count)
     text_tokens = _require_single_tensor_items(batch, "text_token_ids", expected_sample_count)
 
-    for index, video in enumerate(videos):
-        if tuple(video.shape) != expected_video_shape or video.dtype != torch.uint8:
-            raise AssertionError(
-                f"video[{index}] has shape={tuple(video.shape)}, dtype={video.dtype}; "
-                f"expected shape={expected_video_shape}, dtype=torch.uint8."
-            )
-        _require_finite(video, label=f"video[{index}]")
+    if vision_key == "video":
+        for index, video in enumerate(vision_tensors):
+            if tuple(video.shape) != expected_video_shape or video.dtype != torch.uint8:
+                raise AssertionError(
+                    f"video[{index}] has shape={tuple(video.shape)}, dtype={video.dtype}; "
+                    f"expected shape={expected_video_shape}, dtype=torch.uint8."
+                )
+            _require_finite(video, label=f"video[{index}]")
+    else:
+        if expected_video_latent_shape is None:
+            raise AssertionError("Cached packed batches require an expected video_latent shape.")
+        for index, latent in enumerate(vision_tensors):
+            if tuple(latent.shape) != expected_video_latent_shape or latent.dtype != torch.bfloat16:
+                raise AssertionError(
+                    f"video_latent[{index}] has shape={tuple(latent.shape)}, dtype={latent.dtype}; "
+                    f"expected shape={expected_video_latent_shape}, dtype=torch.bfloat16."
+                )
+            _require_finite(latent, label=f"video_latent[{index}]")
 
     for index, (action, raw_action) in enumerate(zip(actions, raw_actions)):
         if tuple(action.shape) != expected_action_shape or not action.is_floating_point():
@@ -330,7 +364,10 @@ def _validate_packed_batch(
         "text_tokens_max_per_sample": max(text_token_counts),
         "cfg_dropped_caption_count": cfg_dropped_count,
         "unique_url_key_count": unique_identity_count,
-        "video_shape": list(expected_video_shape),
+        "vision_input_key": vision_key,
+        "video_shape": list(expected_video_shape) if vision_key == "video" else None,
+        "video_latent_shape": list(expected_video_latent_shape) if vision_key == "video_latent" else None,
+        "video_latent_dtype": str(vision_tensors[0].dtype) if vision_key == "video_latent" else None,
         "action_shape": list(expected_action_shape),
         "raw_action_shape": list(expected_raw_action_shape),
     }
@@ -357,6 +394,15 @@ def _validate_loader_config(config: Any) -> dict[str, Any]:
         raise AssertionError("Target-derived idle-frame metadata must be disabled for policy training.")
     if not bool(dataset.iterable_shuffle) or not bool(inner.in_order):
         raise AssertionError("Production train loader must preserve the configured stable shuffled stream.")
+    latent_cache_mode = str(dataset.latent_cache_mode)
+    latent_cache_root = dataset.latent_cache_root
+    action_relevance_enabled = bool(config.model.config.get("action_relevance_enabled", False))
+    if action_relevance_enabled:
+        if latent_cache_mode != "required" or not latent_cache_root:
+            raise AssertionError("S1 production validation requires the audited latent cache.")
+        tokenizer_target = str(config.model.config.tokenizer.get("_target_", ""))
+        if not tokenizer_target.endswith(".PrecomputedWan2pt2LatentTokenizer"):
+            raise AssertionError("S1 production validation requires the metadata-only Wan tokenizer.")
 
     return {
         "max_samples_per_batch": max_samples,
@@ -369,6 +415,9 @@ def _validate_loader_config(config: Any) -> dict[str, Any]:
         "caption_mode": str(dataset.caption_mode),
         "iterable_shuffle": bool(dataset.iterable_shuffle),
         "in_order": bool(inner.in_order),
+        "latent_cache_mode": latent_cache_mode,
+        "latent_cache_root": latent_cache_root,
+        "metadata_only_video_tokenizer": action_relevance_enabled,
     }
 
 
@@ -406,6 +455,7 @@ def main() -> None:
             batch,
             expected_sample_count=_PRODUCTION_SAMPLE_COUNT,
             expected_video_shape=_PRODUCTION_VIDEO_SHAPE,
+            expected_video_latent_shape=_PRODUCTION_VIDEO_LATENT_SHAPE,
             expected_action_shape=_PRODUCTION_ACTION_SHAPE,
             expected_raw_action_shape=_PRODUCTION_RAW_ACTION_SHAPE,
         )

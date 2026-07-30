@@ -15,11 +15,14 @@ from examples.h_cluster.cwam_formal_training_evidence import (
     _PROTOCOLS,
     EvidenceError,
     TrainingProtocol,
+    _expected_action_gradient_families,
     _expected_continuation_gradient_iterations,
     _expected_gradient_iterations,
     _validate_callback_config,
     _validate_dcp,
+    _validate_gradient_report,
     _validate_memory_report,
+    _validate_s1_scratch_config,
     _validate_validation_summaries,
     protocol_for_world_size,
     verify_formal,
@@ -249,6 +252,69 @@ def test_memory_gate_contract_requires_exact_requested_world_size(tmp_path: Path
             iteration=1,
             included_initial_validation=True,
             included_checkpoint_save=False,
+        )
+
+
+def test_s1_gradient_evidence_requires_action_relevance_family(tmp_path: Path) -> None:
+    experiment_id = "CWAM-E35-S1-TEST"
+    assert _expected_action_gradient_families(experiment_id) == (
+        "action2llm",
+        "llm2action",
+        "action_modality_embed",
+        "action_relevance",
+    )
+
+    config = _config(world_size=8, max_iter=1)
+    config["trainer"]["callbacks"]["action_gradient_evidence"]["families"].append("action_relevance")
+    _validate_callback_config(
+        config,
+        world_size=8,
+        gradient_every_n=1,
+        experiment_id=experiment_id,
+    )
+    config["model"]["config"].update(
+        {
+            "action_relevance_enabled": True,
+            "action_relevance_routing_dim": 512,
+            "action_relevance_num_heads": 8,
+            "action_relevance_topk": 32,
+        }
+    )
+    config["checkpoint"].update(
+        {
+            "load_training_state": False,
+            "load_ema_to_reg": False,
+            "keys_to_skip_loading": [
+                "net_ema.",
+                "action2llm",
+                "llm2action",
+                "action_modality_embed",
+                "action_relevance",
+            ],
+        }
+    )
+    config["optimizer"]["keys_to_select"] = ["action_relevance"]
+    _validate_s1_scratch_config(config, experiment_id=experiment_id)
+
+    report = _gradient_report(world_size=8, iteration=1)
+    report["families"]["action_relevance"] = report["families"]["action2llm"]
+    report_path = tmp_path / "gradient.json"
+    report_path.write_text(json.dumps(report))
+    _validate_gradient_report(
+        report_path,
+        world_size=8,
+        iteration=1,
+        experiment_id=experiment_id,
+    )
+
+    del report["families"]["action_relevance"]
+    report_path.write_text(json.dumps(report))
+    with pytest.raises(EvidenceError, match="action-gradient family set"):
+        _validate_gradient_report(
+            report_path,
+            world_size=8,
+            iteration=1,
+            experiment_id=experiment_id,
         )
 
 

@@ -46,6 +46,8 @@ _CONTINUATION_CONTRACT_KIND = "cwam_cosmos3_formal_continuation_inputs"
 _PRECOMPUTED_WAN_TOKENIZER_TARGET = (
     "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2.PrecomputedWan2pt2LatentTokenizer"
 )
+_BASE_ACTION_GRADIENT_FAMILIES = ("action2llm", "llm2action", "action_modality_embed")
+_S1_ACTION_GRADIENT_FAMILIES = (*_BASE_ACTION_GRADIENT_FAMILIES, "action_relevance")
 _FORBIDDEN_LOG_MARKERS = (
     "Traceback (most recent call last):",
     "CUDA out of memory",
@@ -58,6 +60,12 @@ _VALIDATION_RE = re.compile(
     r"avg_final_loss: (?P<loss>[^;\s]+); unstable_count: (?P<unstable>\d+); "
     r"iteration: (?P<iteration>\d+)"
 )
+
+
+def _expected_action_gradient_families(experiment_id: str | None) -> tuple[str, ...]:
+    if experiment_id is not None and experiment_id.startswith("CWAM-E35-S1-"):
+        return _S1_ACTION_GRADIENT_FAMILIES
+    return _BASE_ACTION_GRADIENT_FAMILIES
 
 
 @dataclass(frozen=True)
@@ -249,6 +257,7 @@ def _validate_callback_config(
     *,
     world_size: int,
     gradient_every_n: int,
+    experiment_id: str | None = None,
 ) -> None:
     callbacks = _require_mapping(
         _require_mapping(config.get("trainer"), "trainer config").get("callbacks"),
@@ -257,7 +266,7 @@ def _validate_callback_config(
     gradient = _require_mapping(callbacks.get("action_gradient_evidence"), "gradient callback")
     _require_equal(
         gradient.get("families"),
-        ["action2llm", "llm2action", "action_modality_embed"],
+        list(_expected_action_gradient_families(experiment_id)),
         "action-gradient configured families",
     )
     _require_equal(gradient.get("every_n"), gradient_every_n, "action-gradient frequency")
@@ -336,6 +345,35 @@ def _validate_common_config(
         _require_equal(worker.get("num_workers"), expected_workers, f"{label} num_workers")
         _require_equal(worker.get("persistent_workers"), True, f"{label} persistent_workers")
         _require_equal(worker.get("prefetch_factor"), 4, f"{label} prefetch_factor")
+
+
+def _validate_s1_scratch_config(config: dict[str, Any], *, experiment_id: str) -> None:
+    if not experiment_id.startswith("CWAM-E35-S1-"):
+        return
+    model = _require_mapping(
+        _require_mapping(config.get("model"), "model config").get("config"),
+        "model.config",
+    )
+    checkpoint = _require_mapping(config.get("checkpoint"), "checkpoint config")
+    optimizer = _require_mapping(config.get("optimizer"), "optimizer config")
+    for key, expected in {
+        "action_relevance_enabled": True,
+        "action_relevance_routing_dim": 512,
+        "action_relevance_num_heads": 8,
+        "action_relevance_topk": 32,
+    }.items():
+        _require_equal(model.get(key), expected, f"S1 model.{key}")
+    skip_keys = checkpoint.get("keys_to_skip_loading")
+    if not isinstance(skip_keys, list):
+        raise EvidenceError("S1 checkpoint.keys_to_skip_loading must be a list")
+    for key in ("net_ema.", "action2llm", "llm2action", "action_modality_embed", "action_relevance"):
+        if key not in skip_keys:
+            raise EvidenceError(f"S1 scratch initialization is missing checkpoint skip key {key!r}")
+    _require_equal(checkpoint.get("load_training_state"), False, "S1 checkpoint.load_training_state")
+    _require_equal(checkpoint.get("load_ema_to_reg"), False, "S1 checkpoint.load_ema_to_reg")
+    optimizer_keys = optimizer.get("keys_to_select")
+    if not isinstance(optimizer_keys, list) or "action_relevance" not in optimizer_keys:
+        raise EvidenceError("S1 optimizer does not select action_relevance parameters")
 
 
 def _validate_dcp(checkpoint_dir: Path) -> dict[str, dict[str, int]]:
@@ -573,7 +611,13 @@ def _validate_validation_summaries(
     return rows
 
 
-def _validate_gradient_report(path: Path, *, world_size: int, iteration: int) -> dict[str, Any]:
+def _validate_gradient_report(
+    path: Path,
+    *,
+    world_size: int,
+    iteration: int,
+    experiment_id: str | None = None,
+) -> dict[str, Any]:
     report = _load_json(path, f"action-gradient evidence for iteration {iteration}")
     _require_exact_keys(
         report,
@@ -592,12 +636,13 @@ def _validate_gradient_report(path: Path, *, world_size: int, iteration: int) ->
     if report.get("loss_failures"):
         raise EvidenceError(f"action-gradient evidence contains loss failures: {report['loss_failures']!r}")
     families = _require_mapping(report.get("families"), "action-gradient families")
+    expected_families = _expected_action_gradient_families(experiment_id)
     _require_exact_keys(
         families,
-        {"action2llm", "llm2action", "action_modality_embed"},
+        set(expected_families),
         "action-gradient family set",
     )
-    for family in ("action2llm", "llm2action", "action_modality_embed"):
+    for family in expected_families:
         stats = _require_mapping(families.get(family), f"action-gradient family {family}")
         _require_exact_keys(
             stats,
@@ -893,13 +938,19 @@ def verify_probe(
     )
     config = _load_config(run_dir)
     _validate_common_config(config, world_size=world_size, max_iter=1, max_val_iter=1, save_iter=1)
+    _validate_s1_scratch_config(config, experiment_id=experiment_id)
     _validate_protocol_scalars(config, protocol)
     _require_equal(
         config["trainer"].get("validation_iter"),
         protocol.validation_iter,
         "production-probe validation frequency",
     )
-    _validate_callback_config(config, world_size=world_size, gradient_every_n=1)
+    _validate_callback_config(
+        config,
+        world_size=world_size,
+        gradient_every_n=1,
+        experiment_id=experiment_id,
+    )
 
     cpu_batch = _load_json(cpu_batch_path, "CPU production-batch evidence")
     _require_equal(cpu_batch.get("status"), "passed", "CPU production-batch status")
@@ -926,7 +977,12 @@ def verify_probe(
         included_initial_validation=True,
         included_checkpoint_save=True,
     )
-    _validate_gradient_report(gradient_path, world_size=world_size, iteration=1)
+    _validate_gradient_report(
+        gradient_path,
+        world_size=world_size,
+        iteration=1,
+        experiment_id=experiment_id,
+    )
     _require_exact_checkpoint_root(run_dir / "checkpoints", [1])
     checkpoint_dir, components = _validate_latest_checkpoint(run_dir, 1)
 
@@ -1012,7 +1068,12 @@ def verify_resume(
         protocol.validation_iter,
         "resume-probe validation frequency",
     )
-    _validate_callback_config(config, world_size=world_size, gradient_every_n=1)
+    _validate_callback_config(
+        config,
+        world_size=world_size,
+        gradient_every_n=1,
+        experiment_id=experiment_id,
+    )
     memory_path = run_dir / "production_batch_memory_gate" / "iteration_000000002.json"
     gradient_path = run_dir / "action_gradient_evidence" / "iteration_000000002.json"
     _require_exact_regular_files(
@@ -1032,7 +1093,12 @@ def verify_resume(
         included_initial_validation=False,
         included_checkpoint_save=True,
     )
-    _validate_gradient_report(gradient_path, world_size=world_size, iteration=2)
+    _validate_gradient_report(
+        gradient_path,
+        world_size=world_size,
+        iteration=2,
+        experiment_id=experiment_id,
+    )
     _validate_sampled_memory(
         sampled_memory_path,
         world_size=world_size,
@@ -1220,8 +1286,14 @@ def verify_formal(
         save_iter=protocol.save_iter,
     )
     _validate_protocol_scalars(config, protocol)
+    _validate_s1_scratch_config(config, experiment_id=experiment_id)
     _require_equal(config["trainer"].get("validation_iter"), protocol.validation_iter, "validation frequency")
-    _validate_callback_config(config, world_size=world_size, gradient_every_n=50)
+    _validate_callback_config(
+        config,
+        world_size=world_size,
+        gradient_every_n=50,
+        experiment_id=experiment_id,
+    )
 
     memory_dir = run_dir / "production_batch_memory_gate"
     memory_files = sorted(path.name for path in memory_dir.glob("iteration_*.json"))
@@ -1247,6 +1319,7 @@ def verify_formal(
             gradient_dir / f"iteration_{iteration:09d}.json",
             world_size=world_size,
             iteration=iteration,
+            experiment_id=experiment_id,
         )
 
     expected_checkpoint_iterations = protocol.checkpoint_iterations
@@ -2498,7 +2571,12 @@ def verify_formal_continuation(
         protocol.validation_iter,
         "continuation validation frequency",
     )
-    _validate_callback_config(config, world_size=world_size, gradient_every_n=50)
+    _validate_callback_config(
+        config,
+        world_size=world_size,
+        gradient_every_n=50,
+        experiment_id=experiment_id,
+    )
     checkpoint_config = _require_mapping(config.get("checkpoint"), "checkpoint config")
     for key, expected in {
         "load_training_state": True,
@@ -2615,6 +2693,7 @@ def verify_formal_continuation(
             gradient_dir / f"iteration_{iteration:09d}.json",
             world_size=world_size,
             iteration=iteration,
+            experiment_id=experiment_id,
         )
 
     final_checkpoint, final_components, checkpoint_count, all_checkpoint_bytes = _validate_continuation_checkpoint_root(

@@ -16,7 +16,10 @@ import examples.h_cluster.cwam_formal_provenance as provenance
 from examples.h_cluster.cwam_formal_provenance import (
     _EXPECTED_CONFIG_PATH,
     _QWEN_PROCESSOR_FILES,
+    _S1_CONFIG_PATH,
+    _S1_LATENT_CACHE_CONTRACT,
     ProvenanceError,
+    _expected_config_path,
     _formal_rjob_contract,
     create_artifact_inventory,
     sha256_file,
@@ -114,6 +117,16 @@ def _make_read_only_tree(root: Path) -> None:
 
 
 class SnapshotVerificationTest(unittest.TestCase):
+    def test_s1_uses_its_immutable_toml(self) -> None:
+        self.assertEqual(
+            _expected_config_path("CWAM-E35-S1-SCRATCH-ARR-8GPU-S42-20260730"),
+            _S1_CONFIG_PATH,
+        )
+        self.assertEqual(
+            _expected_config_path("CWAM-E35-ROB365-COSMOS3-NANO-8GPU-S42-20260728"),
+            _EXPECTED_CONFIG_PATH,
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -353,8 +366,9 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             experiment_id = f"{protocol['experiment_family']}-TEST"
         allowed_root = self.root / "run_snapshots"
         snapshot_root = allowed_root / f"formal-{status_value}-{world_size}"
+        config_path = _expected_config_path(experiment_id)
         config_payload = b"[job]\nexperiment = 'fixture'\n"
-        _write(snapshot_root / _EXPECTED_CONFIG_PATH, config_payload)
+        _write(snapshot_root / config_path, config_payload)
         snapshot_manifest = {
             "schema_version": 1,
             "experiment_id": experiment_id,
@@ -364,7 +378,7 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             "file_count": 1,
             "files": [
                 {
-                    "path": _EXPECTED_CONFIG_PATH,
+                    "path": config_path,
                     "bytes": len(config_payload),
                     "sha256": _sha256(config_payload),
                 }
@@ -391,7 +405,7 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
                 "snapshot_sha256": _WORKFLOW_SHA256,
                 "source_manifest_sha256": snapshot_manifest_sha256,
             },
-            "config": {"path": _EXPECTED_CONFIG_PATH, "sha256": _sha256(config_payload)},
+            "config": {"path": config_path, "sha256": _sha256(config_payload)},
             "data": {
                 "root": str(self.dataset_root.resolve()),
                 "source_root": str(self.source_root.resolve()),
@@ -416,6 +430,8 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             "command": "bash examples/h_cluster/run_cwam_cosmos3_nano_production_then_formal.sh",
             "hardware": f"single-node {world_size}x H200; 128 samples/rank",
         }
+        if experiment_id.startswith("CWAM-E35-S1-"):
+            formal["latent_cache"] = copy.deepcopy(_S1_LATENT_CACHE_CONTRACT)
         formal_path = self.root / f"formal-{status_value}-{world_size}.json"
         _write_json(formal_path, formal)
         return {
@@ -451,6 +467,23 @@ class ArtifactAndFormalContractTest(unittest.TestCase):
             environment=self.environment,
             expected_experiment_mode=expected_experiment_mode,
         )
+
+    def test_s1_formal_contract_requires_exact_latent_cache(self) -> None:
+        fixture = self._make_snapshot_and_formal_manifest(
+            status_value="planned",
+            experiment_id="CWAM-E35-S1-TEST",
+        )
+        report = self._verify_formal(fixture)
+        self.assertEqual(report["latent_cache"], _S1_LATENT_CACHE_CONTRACT)
+
+        formal_path = fixture["formal_manifest_path"]
+        assert isinstance(formal_path, Path)
+        formal = json.loads(formal_path.read_text())
+        formal["latent_cache"]["manifest_sha256"] = "0" * 64
+        _write_json(formal_path, formal)
+        fixture["formal_manifest_sha256"] = sha256_file(formal_path)
+        with self.assertRaisesRegex(ProvenanceError, "latent-cache contract mismatch"):
+            self._verify_formal(fixture)
 
     def test_formal_contract_accepts_only_planned_or_queued(self) -> None:
         for world_size in (8, 6):

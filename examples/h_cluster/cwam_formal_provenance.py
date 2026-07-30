@@ -32,6 +32,19 @@ _DEFAULT_LARGE_FILE_THRESHOLD = 64 * 1024 * 1024
 _DEFAULT_SAMPLE_BYTES = 1024 * 1024
 _HASH_CHUNK_BYTES = 8 * 1024 * 1024
 _EXPECTED_CONFIG_PATH = "examples/toml/sft_config/action_policy_robocasa365_nano.toml"
+_S1_CONFIG_PATH = "examples/toml/sft_config/action_policy_robocasa365_s1_nano.toml"
+_S1_LATENT_CACHE_CONTRACT = {
+    "root": (
+        "/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data/"
+        "robocasa365-demian/processed/robocasa365-wan22-ti2v5b-postcrop-bf16-cwam-v1"
+    ),
+    "cache_id": "robocasa365-wan-2b3f3b93e542d3e67026fecd",
+    "manifest_sha256": "724bd3d5c2fd812f3d5848ed8a1703ec49c2855450c4b5beeb85d0ffb122fc75",
+    "success_sha256": "dc2b30e52e2d5327efeceff98f34a3c6fefbb4d96cae5b3d6c6417104379b6d6",
+    "mode": "required",
+    "metadata_only_video_tokenizer": True,
+    "verify_shard_checksums_before_training": True,
+}
 _FORMAL_OUTPUT_ROOT = "/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-cosmos3-formal"
 _FORMAL_MIN_FREE_BYTES = 5 * 1024**4
 _FORMAL_ESTIMATED_REQUIRED_BYTES = 4 * 1024**4
@@ -113,6 +126,28 @@ _ENV_CRITICAL_GLOB_GROUPS = {
 
 class ProvenanceError(RuntimeError):
     """Raised when a formal-run provenance contract is not satisfied."""
+
+
+def _expected_config_path(experiment_id: str) -> str:
+    if experiment_id.startswith("CWAM-E35-S1-"):
+        return _S1_CONFIG_PATH
+    return _EXPECTED_CONFIG_PATH
+
+
+def _verify_s1_latent_cache_contract(
+    formal: dict[str, Any],
+    *,
+    experiment_id: str,
+) -> dict[str, Any] | None:
+    if not experiment_id.startswith("CWAM-E35-S1-"):
+        return None
+    actual = _require_mapping(formal.get("latent_cache"), "formal S1 latent cache")
+    if actual != _S1_LATENT_CACHE_CONTRACT:
+        raise ProvenanceError(
+            "formal S1 latent-cache contract mismatch: "
+            f"expected={_S1_LATENT_CACHE_CONTRACT}, actual={actual}"
+        )
+    return dict(actual)
 
 
 def _formal_protocol_for_world_size(world_size: int) -> dict[str, str | int | float]:
@@ -1215,15 +1250,20 @@ def verify_formal_contract(
         raise ProvenanceError("formal manifest does not bind the exact source SNAPSHOT_MANIFEST.json")
 
     config = _require_mapping(formal.get("config"), "formal config")
-    if config.get("path") != _EXPECTED_CONFIG_PATH:
+    expected_config_path = _expected_config_path(experiment_id)
+    if config.get("path") != expected_config_path:
         raise ProvenanceError(f"formal config path mismatch: {config.get('path')!r}")
     expected_config_sha256 = _require_sha256(config.get("sha256"), "formal config SHA-256")
-    config_path = snapshot_root / _EXPECTED_CONFIG_PATH
+    config_path = snapshot_root / expected_config_path
     actual_config_sha256 = sha256_file(config_path)
     if actual_config_sha256 != expected_config_sha256:
         raise ProvenanceError(
             f"formal config checksum mismatch: expected={expected_config_sha256}, actual={actual_config_sha256}"
         )
+    s1_latent_cache_contract = _verify_s1_latent_cache_contract(
+        formal,
+        experiment_id=experiment_id,
+    )
 
     dataset_root = _canonical_root(dataset_root)
     source_root = _canonical_root(source_root)
@@ -1309,7 +1349,7 @@ def verify_formal_contract(
     if "74000 packed-token cap" in hardware:
         raise ProvenanceError("formal manifest still claims the inactive 74000-token loader cap")
 
-    return {
+    report = {
         "schema_version": 1,
         "status": "passed",
         "experiment_id": experiment_id,
@@ -1333,6 +1373,9 @@ def verify_formal_contract(
         "container_image": expected_container_image,
         "nproc_per_node": nproc_per_node,
     }
+    if s1_latent_cache_contract is not None:
+        report["latent_cache"] = s1_latent_cache_contract
+    return report
 
 
 def _write_json_report(payload: dict[str, Any], output: Path | None) -> None:
