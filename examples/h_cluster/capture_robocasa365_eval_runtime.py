@@ -357,10 +357,10 @@ if "MESA" in gl_renderer.upper() or "LLVMPIPE" in gl_renderer.upper():
 
 library_specs = (
     ("libEGL", "libEGL.so.1", "eglGetDisplay", "egl_context_mapped"),
-    ("libEGL_nvidia", "libEGL_nvidia.so.0", "eglQueryString", "egl_context_mapped"),
+    ("libEGL_nvidia", "libEGL_nvidia.so.0", "__egl_Main", "egl_context_mapped"),
     ("libGL", "libGL.so.1", "glGetString", "resolved_and_dlopen_verified"),
     ("libGLX", "libGLX.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified"),
-    ("libGLX_nvidia", "libGLX_nvidia.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified"),
+    ("libGLX_nvidia", "libGLX_nvidia.so.0", "__glx_Main", "resolved_and_dlopen_verified"),
 )
 libraries = {
     name: library_descriptor(name, soname, symbol, mapped_after_context, evidence_class)
@@ -1424,7 +1424,7 @@ def _validate_graphics_userspace(value: object, label: str) -> dict[str, Any]:
         "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
         "libEGL_nvidia": (
             "libEGL_nvidia.so.0",
-            "eglQueryString",
+            "__egl_Main",
             "egl_context_mapped",
             True,
         ),
@@ -1442,7 +1442,7 @@ def _validate_graphics_userspace(value: object, label: str) -> dict[str, Any]:
         ),
         "libGLX_nvidia": (
             "libGLX_nvidia.so.0",
-            "glXGetProcAddress",
+            "__glx_Main",
             "resolved_and_dlopen_verified",
             None,
         ),

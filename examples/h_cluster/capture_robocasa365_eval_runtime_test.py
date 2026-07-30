@@ -24,6 +24,16 @@ def test_all_subprocess_probe_programs_compile() -> None:
         compile(getattr(runtime_receipt, name), f"{runtime_receipt.__file__}:{name}", "exec")
 
 
+def test_graphics_probe_distinguishes_glvnd_frontends_from_vendor_abis() -> None:
+    probe = runtime_receipt._ROBOCASA_EGL_PROBE
+    assert '("libEGL", "libEGL.so.1", "eglGetDisplay", "egl_context_mapped")' in probe
+    assert '("libEGL_nvidia", "libEGL_nvidia.so.0", "__egl_Main", "egl_context_mapped")' in probe
+    assert '("libEGL_nvidia", "libEGL_nvidia.so.0", "eglQueryString", "egl_context_mapped")' not in probe
+    assert '("libGLX", "libGLX.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified")' in probe
+    assert '("libGLX_nvidia", "libGLX_nvidia.so.0", "__glx_Main", "resolved_and_dlopen_verified")' in probe
+    assert '("libGLX_nvidia", "libGLX_nvidia.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified")' not in probe
+
+
 def _write_executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -129,7 +139,7 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
         "libEGL_nvidia": (
             "libEGL_nvidia.so.0",
-            "eglQueryString",
+            "__egl_Main",
             "egl_context_mapped",
             True,
         ),
@@ -147,7 +157,7 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         ),
         "libGLX_nvidia": (
             "libGLX_nvidia.so.0",
-            "glXGetProcAddress",
+            "__glx_Main",
             "resolved_and_dlopen_verified",
             False,
         ),
@@ -1218,6 +1228,33 @@ def test_graphics_userspace_is_nvidia_cross_shard_and_live_file_bound(
                 valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("library_name", "frontend_symbol"),
+    [
+        ("libEGL_nvidia", "eglQueryString"),
+        ("libGLX_nvidia", "glXGetProcAddress"),
+    ],
+)
+def test_runtime_receipt_rejects_frontend_symbol_as_vendor_abi(
+    valid_fixture: dict[str, Any],
+    library_name: str,
+    frontend_symbol: str,
+) -> None:
+    valid_fixture["robocasa_egl_probes"][0]["graphics_userspace"]["libraries"][library_name]["symbol"] = frontend_symbol
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match=rf"libraries\.{library_name}\.symbol mismatch",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **_capture_arguments(valid_fixture),
+            runner=FakeRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert not valid_fixture["output"].exists()
 
 
 def test_graphics_file_drift_during_capture_is_rejected(

@@ -496,7 +496,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
         "libEGL_nvidia": (
             "libEGL_nvidia.so.0",
-            "eglQueryString",
+            "__egl_Main",
             "egl_context_mapped",
             True,
         ),
@@ -514,7 +514,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         ),
         "libGLX_nvidia": (
             "libGLX_nvidia.so.0",
-            "glXGetProcAddress",
+            "__glx_Main",
             "resolved_and_dlopen_verified",
             False,
         ),
@@ -2286,6 +2286,16 @@ def test_environment_interpreter_must_remain_executable(tmp_path: Path) -> None:
         (
             lambda receipt: receipt["robocasa_egl"][0].update(mujoco_egl_device_id="1"),
             "exact per-shard EGL environment",
+        ),
+        (
+            lambda receipt: receipt["graphics_userspace"]["libraries"]["libEGL_nvidia"].update(symbol="eglQueryString"),
+            r"libraries\.libEGL_nvidia\.symbol mismatch",
+        ),
+        (
+            lambda receipt: receipt["graphics_userspace"]["libraries"]["libGLX_nvidia"].update(
+                symbol="glXGetProcAddress"
+            ),
+            r"libraries\.libGLX_nvidia\.symbol mismatch",
         ),
         (
             lambda receipt: receipt["robocasa_runtime"]["packages"]["numpy"].update(distribution_version="9.9"),

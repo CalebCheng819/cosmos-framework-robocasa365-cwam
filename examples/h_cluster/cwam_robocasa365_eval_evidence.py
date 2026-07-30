@@ -1405,7 +1405,7 @@ def _validate_graphics_userspace(value: Any, label: str) -> dict[str, Any]:
         "libEGL": ("libEGL.so.1", "eglGetDisplay", "egl_context_mapped", True),
         "libEGL_nvidia": (
             "libEGL_nvidia.so.0",
-            "eglQueryString",
+            "__egl_Main",
             "egl_context_mapped",
             True,
         ),
@@ -1423,7 +1423,7 @@ def _validate_graphics_userspace(value: Any, label: str) -> dict[str, Any]:
         ),
         "libGLX_nvidia": (
             "libGLX_nvidia.so.0",
-            "glXGetProcAddress",
+            "__glx_Main",
             "resolved_and_dlopen_verified",
             None,
         ),
