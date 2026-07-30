@@ -75,6 +75,7 @@ def _validate_metadata(metadata: dict[str, Any]) -> None:
         "format_prompt_as_json": True,
         "reuse_policy_seed_per_request": True,
         "use_ema_weights": True,
+        "guardrails": False,
     }
     for key, value in expected.items():
         if metadata.get(key) != value:

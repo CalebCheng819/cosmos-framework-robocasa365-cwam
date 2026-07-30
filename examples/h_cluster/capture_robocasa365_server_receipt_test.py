@@ -47,6 +47,7 @@ def _metadata() -> dict:
         "num_steps": 30,
         "reuse_policy_seed_per_request": True,
         "use_ema_weights": True,
+        "guardrails": False,
     }
 
 

@@ -216,6 +216,12 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     launch_nonce: str
     """Per-process 256-bit nonce used to bind receipts to this exact launch."""
 
+    def build_setup_overrides(self) -> Any:
+        """Disable generative-media guardrails for the robot action service."""
+        overrides = super().build_setup_overrides()
+        overrides.guardrails = False
+        return overrides
+
 
 class RoboCasa365PolicyService(ActionModelService):
     """OpenPI-compatible service with strict RoboCasa365 pre/post processing."""
@@ -254,6 +260,8 @@ class RoboCasa365PolicyService(ActionModelService):
         self.launch_nonce = args.launch_nonce
         super().__init__(args)
 
+        if self.setup_args.guardrails:
+            raise RuntimeError("RoboCasa365 action serving must keep generative-media guardrails disabled")
         if self.raw_action_dim != _RAW_ACTION_DIM:
             raise RuntimeError(f"Resolved action stats width must be 10, got {self.raw_action_dim}")
         if self.cfg.action_chunk_size != 16 or self.cfg.fps != 20:
@@ -357,6 +365,7 @@ class RoboCasa365PolicyService(ActionModelService):
             "num_steps": self.cfg.num_steps,
             "reuse_policy_seed_per_request": True,
             "use_ema_weights": bool(self.setup_args.use_ema_weights),
+            "guardrails": bool(self.setup_args.guardrails),
         }
 
 

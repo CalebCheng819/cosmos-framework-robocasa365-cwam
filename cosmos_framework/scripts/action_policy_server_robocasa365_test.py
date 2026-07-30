@@ -56,6 +56,19 @@ def _stats_file(path: Path) -> Path:
     return path
 
 
+def test_server_args_disable_generative_media_guardrails() -> None:
+    args = server.RoboCasa365ServerArgs.model_validate(
+        {
+            "checkpoint": {"checkpoint_path": "/checkpoint/model"},
+            "launch_nonce": "a" * 64,
+        }
+    )
+
+    overrides = args.build_setup_overrides()
+
+    assert overrides.guardrails is False
+
+
 def test_extract_training_observation_uses_left_then_wrist_only() -> None:
     image, prompt = server._extract_training_observation(
         _observation(),
