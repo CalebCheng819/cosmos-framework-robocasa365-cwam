@@ -126,10 +126,10 @@ def _run_output_initializer(personal_root: Path) -> subprocess.CompletedProcess[
     )
 
 
-def _render_submit_args(*, predict_only: bool) -> list[str]:
+def _render_submit_args(*, predict_only: bool, host_network: bool = False) -> list[str]:
     script = SUBMITTER.read_text(encoding="utf-8")
     start = script.index("SUBMIT_ARGS=(\n")
-    end = script.index('\n)\nif [[ "$RJOB_PREDICT_ONLY" == 1 ]]', start) + 2
+    end = script.index('\nif [[ "$RJOB_PREDICT_ONLY" == 1 ]]', start)
     array_program = script[start:end]
     values = {
         "RJOB_NAME": "unit-rjob",
@@ -139,6 +139,7 @@ def _render_submit_args(*, predict_only: bool) -> list[str]:
         "RJOB_CPU": "16",
         "RJOB_GPU": "1",
         "RJOB_MEMORY_MIB": "187500",
+        "RJOB_HOST_NETWORK": "true" if host_network else "false",
         "PINNED_EXCLUDED_NODE_TAG": "unit-negative-tag",
         "PERSONAL_GPFS_MOUNT": "unit-personal-mount",
         "PUBLIC_GPFS_MOUNT": "unit-public-mount",
@@ -337,9 +338,19 @@ def test_predict_only_cannot_initialize_or_reserve_output_infrastructure() -> No
     assert _render_submit_args(predict_only=True)[-2:] == ["--predict-only", "true"]
 
 
-def test_actual_and_predict_only_submit_argv_use_bare_host_network_flag_once() -> None:
+def test_gate_omits_host_network_and_formal_uses_the_bare_flag_once() -> None:
     for predict_only in (False, True):
-        arguments = _render_submit_args(predict_only=predict_only)
+        gate_arguments = _render_submit_args(
+            predict_only=predict_only,
+            host_network=False,
+        )
+        assert "--host-network" not in gate_arguments
+        assert gate_arguments.count("true") == int(predict_only)
+
+        arguments = _render_submit_args(
+            predict_only=predict_only,
+            host_network=True,
+        )
         indices = [index for index, value in enumerate(arguments) if value == "--host-network"]
         assert indices == [arguments.index("--host-network")]
         index = indices[0]

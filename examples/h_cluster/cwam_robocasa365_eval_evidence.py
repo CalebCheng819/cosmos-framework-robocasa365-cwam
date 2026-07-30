@@ -304,6 +304,7 @@ _SUBMISSION_SCHEDULER_EXPECTED_KEYS = frozenset(
         "cpu",
         "memory_mib",
         "gpu",
+        "host_network",
         "negative_tags",
         "store_host_nvme",
         "mounts",
@@ -349,6 +350,7 @@ _EVAL_INTENT_RESOURCE_KEYS = frozenset(
         "cpu",
         "memory_mib",
         "gpu",
+        "host_network",
         "quota_group",
         "negative_tag",
         "task_type",
@@ -1278,10 +1280,7 @@ def _validated_environment_launcher(
         manifest_interpreter.get("sha256"),
         f"{label} manifest interpreter.sha256",
     )
-    if (
-        target_descriptor["size_bytes"] != expected_size
-        or target_descriptor["sha256"] != expected_sha256
-    ):
+    if target_descriptor["size_bytes"] != expected_size or target_descriptor["sha256"] != expected_sha256:
         raise ValueError(f"{label} launcher target bytes do not match the environment manifest")
     try:
         launcher_before_resolve = launcher.lstat()
@@ -2049,6 +2048,7 @@ def _validate_external_execution_bindings(
     )
     if any(scheduler_expected.get(key) != value for key, value in expected_resources.items()):
         raise ValueError("submission scheduler resources do not match the evaluation phase")
+    expected_host_network = contract_evaluation["stage"] == "formal"
     if (
         scheduler_expected.get("showname") != scheduler.get("showname")
         or scheduler_expected.get("image") != _EXPECTED_CONTAINER_IMAGE
@@ -2060,6 +2060,7 @@ def _validate_external_execution_bindings(
         or scheduler_expected.get("termination_grace_period_seconds") != 60
         or scheduler_expected.get("backoff_limit") != 1
         or scheduler_expected.get("replicas") != 1
+        or scheduler_expected.get("host_network") is not expected_host_network
         or scheduler_expected.get("store_host_nvme") is not True
         or scheduler_expected.get("negative_tags") != ["node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn"]
         or scheduler_expected.get("mounts") != _EXPECTED_SUBMISSION_MOUNTS
@@ -2574,6 +2575,7 @@ def _validate_eval_intent_binding(
         "cpu": scheduler_expected["cpu"],
         "memory_mib": scheduler_expected["memory_mib"],
         "gpu": scheduler_expected["gpu"],
+        "host_network": scheduler_expected["host_network"],
         "quota_group": scheduler_expected["quota_group"],
         "negative_tag": scheduler_expected["negative_tags"][0],
         "task_type": scheduler_expected["task_type"],

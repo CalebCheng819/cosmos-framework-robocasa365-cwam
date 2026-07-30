@@ -596,6 +596,7 @@ def _resources(args: argparse.Namespace) -> dict[str, str | int]:
         "cpu": args.cpu,
         "memory_mib": args.memory_mib,
         "gpu": args.gpu,
+        "host_network": args.stage == "formal",
         **expected,
     }
 

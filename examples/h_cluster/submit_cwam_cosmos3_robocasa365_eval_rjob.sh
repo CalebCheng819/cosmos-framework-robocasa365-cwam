@@ -406,6 +406,7 @@ case "$EVAL_STAGE" in
         RJOB_CPU=16
         RJOB_MEMORY_MIB=187500
         RJOB_GPU=1
+        RJOB_HOST_NETWORK=false
         ;;
     formal)
         [[ "$EPISODES_PER_TASK" == 20 ]] ||
@@ -434,6 +435,7 @@ PY
         RJOB_CPU=128
         RJOB_MEMORY_MIB=1500000
         RJOB_GPU=8
+        RJOB_HOST_NETWORK=true
         ;;
     *)
         die "EVAL_STAGE must be one_episode_gate or formal"
@@ -884,6 +886,7 @@ SCHEDULER_EXPECTED_JSON="$(
         "$RJOB_CPU" \
         "$RJOB_MEMORY_MIB" \
         "$RJOB_GPU" \
+        "$RJOB_HOST_NETWORK" \
         "$PINNED_EXCLUDED_NODE_TAG" \
         "$PERSONAL_GPFS_MOUNT" \
         "$PUBLIC_GPFS_MOUNT" <<'PY'
@@ -904,9 +907,10 @@ print(json.dumps({
     "cpu": int(sys.argv[3]),
     "memory_mib": int(sys.argv[4]),
     "gpu": int(sys.argv[5]),
-    "negative_tags": [sys.argv[6]],
+    "host_network": {"false": False, "true": True}[sys.argv[6]],
+    "negative_tags": [sys.argv[7]],
     "store_host_nvme": True,
-    "mounts": [sys.argv[7], sys.argv[8]],
+    "mounts": [sys.argv[8], sys.argv[9]],
 }, separators=(",", ":"), sort_keys=True))
 PY
 )"
@@ -1346,7 +1350,11 @@ SUBMIT_ARGS=(
     --gpu "$RJOB_GPU"
     --memory "$RJOB_MEMORY_MIB"
     --negative-tags "$PINNED_EXCLUDED_NODE_TAG"
-    --host-network
+)
+if [[ "$RJOB_HOST_NETWORK" == true ]]; then
+    SUBMIT_ARGS+=(--host-network)
+fi
+SUBMIT_ARGS+=(
     --store-host-nvme
     --mount
     "$PERSONAL_GPFS_MOUNT"
@@ -1361,6 +1369,7 @@ echo "EVAL_STAGE=$EVAL_STAGE"
 echo "EVAL_EXPERIMENT_ID=$EVAL_EXPERIMENT_ID"
 echo "EVAL_LOGICAL_RUN_ID=$EVAL_LOGICAL_RUN_ID"
 echo "RJOB_RESOURCES=cpu=$RJOB_CPU memory_mib=$RJOB_MEMORY_MIB gpu=$RJOB_GPU"
+echo "RJOB_HOST_NETWORK=$RJOB_HOST_NETWORK"
 echo "RJOB_IMAGE=$PINNED_CONTAINER_IMAGE"
 echo "RJOB_MOUNTS=$PERSONAL_GPFS_MOUNT;$PUBLIC_GPFS_MOUNT"
 echo "RJOB_STORE_HOST_NVME=true"

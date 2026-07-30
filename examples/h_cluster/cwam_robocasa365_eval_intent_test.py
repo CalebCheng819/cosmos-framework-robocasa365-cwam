@@ -267,6 +267,7 @@ def test_positive_one_episode_gate(tmp_path: Path) -> None:
     assert manifest["identity"]["evaluation_class"] == "exploratory"
     assert manifest["prior_gate"] is None
     assert manifest["protocol"]["expected_episode_count"] == 1
+    assert manifest["resources"]["host_network"] is False
 
 
 def test_positive_exploratory_formal_keeps_stage_and_class_orthogonal(tmp_path: Path) -> None:
@@ -277,6 +278,7 @@ def test_positive_exploratory_formal_keeps_stage_and_class_orthogonal(tmp_path: 
     assert manifest["source"]["git_pushed"] is False
     assert manifest["prior_gate"]["sha256"]
     assert manifest["protocol"]["expected_episode_count"] == 340
+    assert manifest["resources"]["host_network"] is True
 
 
 def test_confirmatory_unpushed_is_rejected(tmp_path: Path) -> None:

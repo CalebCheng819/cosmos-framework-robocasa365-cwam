@@ -352,6 +352,44 @@ def test_valid_receipt_normalizes_authoritative_fields_and_replica_identity() ->
     )
 
 
+def test_one_gpu_receipt_accepts_the_observed_non_host_network_r1_shape() -> None:
+    expected = _expected()
+    expected.update(cpu=16, memory_mib=187_500, gpu=1)
+    raw_rjob = _raw_rjob()
+    raw_replicas = _raw_replicas()
+    template_spec = raw_rjob["spec"]["taskSpecs"]["t0"]["template"]["spec"]
+    replica_spec = raw_replicas["items"][0]["spec"]
+    for spec in (template_spec, replica_spec):
+        spec.pop("hostNetwork")
+        spec.pop("dnsPolicy")
+        resources = spec["containers"][0]["resources"]
+        resources["requests"].update(
+            cpu="16",
+            memory="187500Mi",
+            **{"nvidia.com/gpu": "1"},
+        )
+        resources["limits"].update(
+            cpu="16",
+            memory="187500Mi",
+            **{"nvidia.com/gpu": "1"},
+        )
+    replica_env = replica_spec["containers"][0]["env"]
+    next(item for item in replica_env if item["name"] == "HOST_NETWORK")["value"] = "false"
+
+    receipt = validate_and_normalize_receipt(
+        raw_rjob,
+        raw_replicas,
+        expected,
+        captured_at="2026-07-30T00:55:19+00:00",
+    )
+
+    runtime = receipt["replicas"][0]["runtime_identity"]
+    assert runtime["host_network"] is False
+    assert runtime["dns_policy"] is None
+    assert receipt["spec"]["task"]["container"]["resources"]["gpu"] == 1
+    assert receipt["replicas"][0]["worker_spec"]["resources"]["gpu"] == 1
+
+
 @pytest.mark.parametrize(
     ("path", "bad_value"),
     [

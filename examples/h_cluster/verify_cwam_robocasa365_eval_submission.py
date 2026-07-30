@@ -136,6 +136,7 @@ _SCHEDULER_KEYS = frozenset(
         "cpu",
         "memory_mib",
         "gpu",
+        "host_network",
         "negative_tags",
         "store_host_nvme",
         "mounts",
@@ -379,6 +380,8 @@ def _validate_scheduler(
         raise SubmissionVerificationError(
             f"{label} resource contract does not match stage={stage!r}: expected={expected_resources}"
         )
+    if scheduler.get("host_network") is not (stage == "formal"):
+        raise SubmissionVerificationError(f"{label}.host_network does not match stage={stage!r}")
     if scheduler.get("store_host_nvme") is not True:
         raise SubmissionVerificationError(f"{label}.store_host_nvme must be true")
     image = _require_string(scheduler.get("image"), f"{label}.image")
@@ -606,6 +609,7 @@ def _validate_eval_intent_manifest(
         "cpu": scheduler["cpu"],
         "memory_mib": scheduler["memory_mib"],
         "gpu": scheduler["gpu"],
+        "host_network": scheduler["host_network"],
         "quota_group": scheduler["quota_group"],
         "negative_tag": scheduler["negative_tags"][0],
         "task_type": scheduler["task_type"],

@@ -151,9 +151,7 @@ def _require_container_env(
         if isinstance(item, dict) and item.get("name") == name
     ]
     if len(matches) != 1:
-        raise ReceiptValidationError(
-            f"replica.spec.containers[0].env must contain exactly one {name!r} binding"
-        )
+        raise ReceiptValidationError(f"replica.spec.containers[0].env must contain exactly one {name!r} binding")
     binding = matches[0]
     label = f"replica.spec.containers[0].env[{name}]"
     if expected_value is not None:
@@ -399,6 +397,24 @@ def _require_one_export(exports: Mapping[str, list[str]], key: str, expected: st
         )
 
 
+def _validate_host_network(
+    spec: Mapping[str, Any],
+    *,
+    expected: Mapping[str, Any],
+    label: str,
+) -> tuple[bool, str | None]:
+    host_network = expected["gpu"] == 8
+    if host_network:
+        _require_exact(spec.get("hostNetwork"), True, f"{label}.hostNetwork")
+        _require_exact(spec.get("dnsPolicy"), "ClusterFirstWithHostNet", f"{label}.dnsPolicy")
+        return True, "ClusterFirstWithHostNet"
+    if "hostNetwork" in spec:
+        raise ReceiptValidationError(f"{label}.hostNetwork must be absent for a non-host-network task")
+    if "dnsPolicy" in spec:
+        raise ReceiptValidationError(f"{label}.dnsPolicy must be absent for a non-host-network task")
+    return False, None
+
+
 def _validate_command(command_value: object, expected: Mapping[str, Any]) -> list[str]:
     command = _require_list(command_value, "rjob.spec.taskSpecs.t0.template.spec.containers[0].command")
     if len(command) != 3 or command[:2] != ["bash", "-lc"] or not isinstance(command[2], str):
@@ -528,11 +544,7 @@ def _validate_expanded_worker_command(
         command_suffix = normalized_command
     else:
         matched_prefix = next(
-            (
-                list(prefix)
-                for prefix in _WORKER_INIT_PREFIXES
-                if normalized_command[: len(prefix)] == list(prefix)
-            ),
+            (list(prefix) for prefix in _WORKER_INIT_PREFIXES if normalized_command[: len(prefix)] == list(prefix)),
             None,
         )
         if matched_prefix is None:
@@ -610,8 +622,11 @@ def _normalize_replica(
         template_command,
     )
     pod_hostname = _require_string(spec.get("hostname"), "replica.spec.hostname")
-    _require_exact(spec.get("hostNetwork"), True, "replica.spec.hostNetwork")
-    _require_exact(spec.get("dnsPolicy"), "ClusterFirstWithHostNet", "replica.spec.dnsPolicy")
+    host_network, dns_policy = _validate_host_network(
+        spec,
+        expected=expected,
+        label="replica.spec",
+    )
     hostname_suffix = f"-{replica_index}"
     if not pod_hostname.endswith(hostname_suffix):
         raise ReceiptValidationError(
@@ -624,7 +639,7 @@ def _normalize_replica(
     _require_container_env(
         replica_container,
         name="HOST_NETWORK",
-        expected_value="true",
+        expected_value=str(host_network).lower(),
     )
     _require_container_env(
         replica_container,
@@ -671,8 +686,8 @@ def _normalize_replica(
         "task_name": _TASK_NAME,
         "replica_index": 0,
         "runtime_identity": {
-            "host_network": True,
-            "dns_policy": "ClusterFirstWithHostNet",
+            "host_network": host_network,
+            "dns_policy": dns_policy,
             "hostname_prefix": hostname_prefix,
             "node_name_field_path": node_name_field_path,
             "rjob_name": expected["scheduler_rjob_name"],
@@ -770,8 +785,11 @@ def validate_and_normalize_receipt(
     _require_exact(observed_mounts, expected["mounts"], _GPFS_MOUNT_ANNOTATION)
 
     pod_spec = _require_mapping(template.get("spec"), f"rjob.spec.taskSpecs.{_TASK_NAME}.template.spec")
-    _require_exact(pod_spec.get("hostNetwork"), True, "template.spec.hostNetwork")
-    _require_exact(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet", "template.spec.dnsPolicy")
+    _validate_host_network(
+        pod_spec,
+        expected=expected,
+        label="template.spec",
+    )
     _require_exact(pod_spec.get("restartPolicy"), expected["restart_policy"], "template.spec.restartPolicy")
     _require_exact(
         pod_spec.get("terminationGracePeriodSeconds"),
@@ -808,10 +826,7 @@ def validate_and_normalize_receipt(
             f"expected exactly {expected['replicas']} scheduler replica, got {len(replica_items)}"
         )
     normalized_replicas = sorted(
-        (
-            _normalize_replica(item, expected, command, identity["uid"])
-            for item in replica_items
-        ),
+        (_normalize_replica(item, expected, command, identity["uid"]) for item in replica_items),
         key=lambda item: (item["replica_index"], item["replica_name"]),
     )
 
