@@ -4342,6 +4342,13 @@ def _verify_snapshot_with_bound_manifest(contract: dict[str, Any]) -> dict[str, 
     manifest = _require_dict(contract["_bound_json"]["source_manifest"], "Cosmos snapshot manifest")
     if manifest.get("schema_version") != 1:
         raise ValueError("Cosmos snapshot manifest schema_version must be 1")
+    if (
+        _require_commit(manifest.get("source_head"), "Cosmos snapshot manifest source_head")
+        != contract["source_commit"]
+    ):
+        raise ValueError("Cosmos snapshot manifest source_head differs from the eval contract")
+    if manifest.get("source_dirty") is not False:
+        raise ValueError("Cosmos snapshot manifest must assert source_dirty=false")
     entries = manifest.get("files")
     if not isinstance(entries, list) or manifest.get("file_count") != len(entries):
         raise ValueError("Cosmos snapshot manifest file inventory is malformed")
@@ -4512,12 +4519,15 @@ def _collect_post_rollout_live_verification(
 
     phase_started = time.perf_counter()
     source_repositories = {
-        "cosmos": _verify_git_repository(
-            name="Cosmos",
-            root=Path(contract["source_root"]),
-            expected_commit=contract["source_commit"],
-            verify_tracked_files=False,
-        ),
+        "cosmos": {
+            "root": snapshot["snapshot_root"],
+            "expected_commit": contract["source_commit"],
+            "actual_commit": contract["source_commit"],
+            "clean": True,
+            "tracked_files": {
+                "verification_mode": "covered_by_full_cosmos_snapshot_verification",
+            },
+        },
         "demian": _verify_git_repository(
             name="DeMiAn",
             root=Path(contract["demian"]["repo"]),

@@ -7,10 +7,11 @@
 The helper is intentionally a separate process from both the policy server and
 the evaluator.  It interrogates each pinned Python interpreter with isolated
 ``argv`` subprocesses, verifies both full Python-environment manifests, binds
-the four source checkouts to exact clean commits, and cross-checks PyTorch's GPU
-inventory against ``nvidia-smi``.  It also creates and releases one real
-RoboCasa EGL context under each evaluator shard's exact GPU environment before
-publishing a run-identity-bound immutable receipt.
+the immutable Cosmos snapshot to its frozen manifest and the other three source
+checkouts to exact clean commits, and cross-checks PyTorch's GPU inventory
+against ``nvidia-smi``.  It also creates and releases one real RoboCasa EGL
+context under each evaluator shard's exact GPU environment before publishing a
+run-identity-bound immutable receipt.
 """
 
 from __future__ import annotations
@@ -793,6 +794,57 @@ def _git_source_record(
     }
 
 
+def _snapshot_source_record(
+    *,
+    name: str,
+    root: Path,
+    expected_commit: str,
+    manifest: Path,
+    expected_manifest_sha256: str,
+) -> dict[str, Any]:
+    expected = _require_commit(expected_commit, f"expected {name} commit")
+    canonical = _canonical_path(root, f"{name} source root", kind="directory")
+    canonical_manifest = _canonical_path(manifest, f"{name} snapshot manifest", kind="file")
+    if canonical_manifest != canonical / "SNAPSHOT_MANIFEST.json":
+        raise RuntimeReceiptValidationError(
+            f"{name} snapshot manifest must be the exact SNAPSHOT_MANIFEST.json under the source root"
+        )
+    if stat.S_IMODE(canonical_manifest.stat().st_mode) != 0o444:
+        raise RuntimeReceiptValidationError(f"{name} snapshot manifest must be immutable mode 0444")
+    payload = _read_stable_file(canonical_manifest, f"{name} snapshot manifest")
+    expected_sha256 = _require_sha256(
+        expected_manifest_sha256,
+        f"expected {name} snapshot manifest SHA256",
+    )
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise RuntimeReceiptValidationError(
+            f"{name} snapshot manifest SHA256 mismatch: expected={expected_sha256}, actual={actual_sha256}"
+        )
+    document = _require_mapping(
+        _strict_json_bytes(payload, f"{name} snapshot manifest"),
+        f"{name} snapshot manifest",
+    )
+    if document.get("schema_version") != 1:
+        raise RuntimeReceiptValidationError(f"{name} snapshot manifest schema_version must be 1")
+    actual = _require_commit(document.get("source_head"), f"{name} snapshot manifest source_head")
+    if actual != expected:
+        raise RuntimeReceiptValidationError(
+            f"{name} snapshot source commit mismatch: expected={expected}, actual={actual}"
+        )
+    if document.get("source_dirty") is not False:
+        raise RuntimeReceiptValidationError(f"{name} snapshot manifest must assert source_dirty=false")
+    files = document.get("files")
+    if not isinstance(files, list) or document.get("file_count") != len(files):
+        raise RuntimeReceiptValidationError(f"{name} snapshot manifest file inventory is malformed")
+    return {
+        "root": str(canonical),
+        "expected_commit": expected,
+        "actual_commit": actual,
+        "clean": True,
+    }
+
+
 def _validate_environment_report(value: object, label: str) -> dict[str, Any]:
     report = _require_mapping(value, label)
     _require_exact_keys(
@@ -1522,6 +1574,8 @@ def capture_runtime_receipt(
     expected_robocasa_environment_manifest_sha256: str,
     cosmos_source_root: Path,
     expected_cosmos_commit: str,
+    cosmos_source_manifest: Path,
+    expected_cosmos_source_manifest_sha256: str,
     demian_source_root: Path,
     expected_demian_commit: str,
     robocasa_source_root: Path,
@@ -1769,23 +1823,32 @@ def capture_runtime_receipt(
 
     git = _resolve_executable("git", executable_resolver)
     nvidia_smi = _resolve_executable("nvidia-smi", executable_resolver)
+    cosmos_source = _snapshot_source_record(
+        name="cosmos",
+        root=cosmos_source_root,
+        expected_commit=expected_cosmos_commit,
+        manifest=cosmos_source_manifest,
+        expected_manifest_sha256=expected_cosmos_source_manifest_sha256,
+    )
     source_specs = (
-        ("cosmos", cosmos_source_root, expected_cosmos_commit),
         ("demian", demian_source_root, expected_demian_commit),
         ("robocasa", robocasa_source_root, expected_robocasa_commit),
         ("robosuite", robosuite_source_root, expected_robosuite_commit),
     )
-    sources = {
-        name: _git_source_record(
-            name=name,
-            root=root,
-            expected_commit=commit,
-            git=git,
-            runner=runner,
-            timeout_seconds=float(timeout_seconds),
-        )
-        for name, root, commit in source_specs
-    }
+    sources = {"cosmos": cosmos_source}
+    sources.update(
+        {
+            name: _git_source_record(
+                name=name,
+                root=root,
+                expected_commit=commit,
+                git=git,
+                runner=runner,
+                timeout_seconds=float(timeout_seconds),
+            )
+            for name, root, commit in source_specs
+        }
+    )
     cosmos_root = Path(sources["cosmos"]["root"])
     demian_root = Path(sources["demian"]["root"])
     robocasa_root = Path(sources["robocasa"]["root"])
@@ -1951,16 +2014,27 @@ def capture_runtime_receipt(
         raise RuntimeReceiptValidationError("Python environment identity changed during runtime capture")
 
     sources_after = {
-        name: _git_source_record(
-            name=name,
-            root=root,
-            expected_commit=commit,
-            git=git,
-            runner=runner,
-            timeout_seconds=float(timeout_seconds),
+        "cosmos": _snapshot_source_record(
+            name="cosmos",
+            root=cosmos_source_root,
+            expected_commit=expected_cosmos_commit,
+            manifest=cosmos_source_manifest,
+            expected_manifest_sha256=expected_cosmos_source_manifest_sha256,
         )
-        for name, root, commit in source_specs
     }
+    sources_after.update(
+        {
+            name: _git_source_record(
+                name=name,
+                root=root,
+                expected_commit=commit,
+                git=git,
+                runner=runner,
+                timeout_seconds=float(timeout_seconds),
+            )
+            for name, root, commit in source_specs
+        }
+    )
     if sources_after != sources:
         raise RuntimeReceiptValidationError("source identity changed during runtime capture")
 
@@ -2066,6 +2140,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-robocasa-environment-manifest-sha256", required=True)
     parser.add_argument("--cosmos-source-root", type=Path, required=True)
     parser.add_argument("--expected-cosmos-commit", required=True)
+    parser.add_argument("--cosmos-source-manifest", type=Path, required=True)
+    parser.add_argument("--expected-cosmos-source-manifest-sha256", required=True)
     parser.add_argument("--demian-source-root", type=Path, required=True)
     parser.add_argument("--expected-demian-commit", required=True)
     parser.add_argument("--robocasa-source-root", type=Path, required=True)
@@ -2107,6 +2183,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_robocasa_environment_manifest_sha256=(arguments.expected_robocasa_environment_manifest_sha256),
             cosmos_source_root=arguments.cosmos_source_root,
             expected_cosmos_commit=arguments.expected_cosmos_commit,
+            cosmos_source_manifest=arguments.cosmos_source_manifest,
+            expected_cosmos_source_manifest_sha256=(arguments.expected_cosmos_source_manifest_sha256),
             demian_source_root=arguments.demian_source_root,
             expected_demian_commit=arguments.expected_demian_commit,
             robocasa_source_root=arguments.robocasa_source_root,

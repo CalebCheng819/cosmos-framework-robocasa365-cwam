@@ -349,24 +349,54 @@ ROBOCASA_ASSET_TREE_RECEIPT="$(canonical_existing "$ROBOCASA_ASSET_TREE_RECEIPT"
 [[ "$ROBOCASA_ASSET_TREE_RECEIPT" == "$ROBOCASA_REPO/.cwam_provenance/asset-tree-receipt.json" ]] ||
     die "ROBOCASA_ASSET_TREE_RECEIPT is outside the exact asset provenance directory"
 
-SOURCE_COMMIT="$(git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" rev-parse HEAD)"
+[[ "$SOURCE_MANIFEST" == "$COSMOS_SOURCE/SNAPSHOT_MANIFEST.json" ]] ||
+    die "SOURCE_MANIFEST must be the exact SNAPSHOT_MANIFEST.json under COSMOS_SOURCE"
+[[ "$(stat -c %a -- "$SOURCE_MANIFEST")" == 444 ]] ||
+    die "SOURCE_MANIFEST must be immutable mode 0444"
+verify_sha256 source_manifest "$SOURCE_MANIFEST" "$EXPECTED_SOURCE_MANIFEST_SHA256"
+"$COSMOS_ENV/bin/python" -I -B - "$SOURCE_MANIFEST" "$EXPECTED_SOURCE_COMMIT" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if manifest.get("schema_version") != 1:
+    raise SystemExit("ERROR: source snapshot manifest schema_version must be 1")
+if manifest.get("source_head") != sys.argv[2]:
+    raise SystemExit("ERROR: source snapshot manifest does not bind EXPECTED_SOURCE_COMMIT")
+if manifest.get("source_dirty") is not False:
+    raise SystemExit("ERROR: source snapshot manifest must assert source_dirty=false")
+files = manifest.get("files")
+if not isinstance(files, list) or manifest.get("file_count") != len(files):
+    raise SystemExit("ERROR: source snapshot manifest file inventory is malformed")
+PY
+
+if [[ -e "$COSMOS_SOURCE/.git" || -L "$COSMOS_SOURCE/.git" ]]; then
+    SOURCE_GIT_TOPLEVEL="$(
+        git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" rev-parse --show-toplevel
+    )"
+    [[ "$SOURCE_GIT_TOPLEVEL" == "$COSMOS_SOURCE" ]] ||
+        die "COSMOS_SOURCE .git does not describe the exact source root"
+    SOURCE_COMMIT="$(git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" rev-parse HEAD)"
+    [[ "$SOURCE_COMMIT" == "$EXPECTED_SOURCE_COMMIT" ]] ||
+        die "Cosmos source commit mismatch: expected=$EXPECTED_SOURCE_COMMIT actual=$SOURCE_COMMIT"
+    [[ -z "$(git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" status --porcelain --untracked-files=all)" ]] ||
+        die "Pinned source checkout is dirty: $COSMOS_SOURCE"
+fi
 DEMIAN_COMMIT="$(git -c safe.directory="$DEMIAN_REPO" -C "$DEMIAN_REPO" rev-parse HEAD)"
 ROBOCASA_COMMIT="$(git -c safe.directory="$ROBOCASA_REPO" -C "$ROBOCASA_REPO" rev-parse HEAD)"
 ROBOSUITE_COMMIT="$(git -c safe.directory="$ROBOSUITE_REPO" -C "$ROBOSUITE_REPO" rev-parse HEAD)"
-[[ "$SOURCE_COMMIT" == "$EXPECTED_SOURCE_COMMIT" ]] ||
-    die "Cosmos source commit mismatch: expected=$EXPECTED_SOURCE_COMMIT actual=$SOURCE_COMMIT"
 [[ "$DEMIAN_COMMIT" == "$EXPECTED_DEMIAN_COMMIT" ]] ||
     die "DeMiAn commit mismatch: expected=$EXPECTED_DEMIAN_COMMIT actual=$DEMIAN_COMMIT"
 [[ "$ROBOCASA_COMMIT" == "$EXPECTED_ROBOCASA_COMMIT" ]] ||
     die "RoboCasa commit mismatch: expected=$EXPECTED_ROBOCASA_COMMIT actual=$ROBOCASA_COMMIT"
 [[ "$ROBOSUITE_COMMIT" == "$EXPECTED_ROBOSUITE_COMMIT" ]] ||
     die "robosuite commit mismatch: expected=$EXPECTED_ROBOSUITE_COMMIT actual=$ROBOSUITE_COMMIT"
-for repo in "$COSMOS_SOURCE" "$DEMIAN_REPO" "$ROBOCASA_REPO" "$ROBOSUITE_REPO"; do
+for repo in "$DEMIAN_REPO" "$ROBOCASA_REPO" "$ROBOSUITE_REPO"; do
     [[ -z "$(git -c safe.directory="$repo" -C "$repo" status --porcelain --untracked-files=all)" ]] ||
         die "Pinned source checkout is dirty: $repo"
 done
 
-verify_sha256 source_manifest "$SOURCE_MANIFEST" "$EXPECTED_SOURCE_MANIFEST_SHA256"
 verify_sha256 checkpoint_manifest "$CHECKPOINT_MANIFEST" "$EXPECTED_CHECKPOINT_MANIFEST_SHA256"
 verify_sha256 training_config "$TRAINING_CONFIG" "$EXPECTED_TRAINING_CONFIG_SHA256"
 verify_sha256 action_stats "$ACTION_STATS" "$EXPECTED_ACTION_STATS_SHA256"
@@ -678,6 +708,8 @@ echo "SERVING_CHECKPOINT_VERIFIED" \
     --expected-robocasa-environment-manifest-sha256 "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256" \
     --cosmos-source-root "$COSMOS_SOURCE" \
     --expected-cosmos-commit "$EXPECTED_SOURCE_COMMIT" \
+    --cosmos-source-manifest "$SOURCE_MANIFEST" \
+    --expected-cosmos-source-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256" \
     --demian-source-root "$DEMIAN_REPO" \
     --expected-demian-commit "$EXPECTED_DEMIAN_COMMIT" \
     --robocasa-source-root "$ROBOCASA_REPO" \

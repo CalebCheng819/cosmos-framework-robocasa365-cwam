@@ -290,6 +290,17 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         str(source_roots["robocasa"]): "3" * 40,
         str(source_roots["robosuite"]): "4" * 40,
     }
+    cosmos_source_manifest, cosmos_source_manifest_sha = _write_json(
+        source_roots["cosmos"] / "SNAPSHOT_MANIFEST.json",
+        {
+            "schema_version": 1,
+            "source_head": commits[str(source_roots["cosmos"])],
+            "source_dirty": False,
+            "file_count": 0,
+            "files": [],
+        },
+    )
+    cosmos_source_manifest.chmod(0o444)
     gpus = [
         {
             "index": index,
@@ -352,6 +363,8 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         "statuses": {},
         "cosmos_manifest": cosmos_manifest,
         "cosmos_manifest_sha": cosmos_manifest_sha,
+        "cosmos_source_manifest": cosmos_source_manifest,
+        "cosmos_source_manifest_sha": cosmos_source_manifest_sha,
         "robocasa_manifest": robocasa_manifest,
         "robocasa_manifest_sha": robocasa_manifest_sha,
         "cosmos_environment_report": {
@@ -432,6 +445,8 @@ def _capture_arguments(fixture: dict[str, Any]) -> dict[str, Any]:
         "expected_robocasa_environment_manifest_sha256": fixture["robocasa_manifest_sha"],
         "cosmos_source_root": roots["cosmos"],
         "expected_cosmos_commit": commits[str(roots["cosmos"])],
+        "cosmos_source_manifest": fixture["cosmos_source_manifest"],
+        "expected_cosmos_source_manifest_sha256": fixture["cosmos_source_manifest_sha"],
         "demian_source_root": roots["demian"],
         "expected_demian_commit": commits[str(roots["demian"])],
         "robocasa_source_root": roots["robocasa"],
@@ -501,7 +516,15 @@ def test_happy_path_publishes_read_only_receipt_and_uses_only_argv_subprocesses(
     assert numpy["distribution_version"] == "2.2.5"
     assert numpy["module_reported_version"] == "1.23.5"
     assert numpy["version_source"] == "importlib.metadata"
-    assert len(runner.calls) == 25
+    assert receipt["inputs"]["sources"]["cosmos"] == {
+        "root": str(valid_fixture["source_roots"]["cosmos"]),
+        "expected_commit": "1" * 40,
+        "actual_commit": "1" * 40,
+        "clean": True,
+    }
+    cosmos_root = str(valid_fixture["source_roots"]["cosmos"])
+    assert not any("-C" in argv and argv[argv.index("-C") + 1] == cosmos_root for argv, _kwargs in runner.calls)
+    assert len(runner.calls) == 21
     for argv, kwargs in runner.calls:
         assert isinstance(argv, list)
         assert kwargs["shell"] is False
@@ -561,6 +584,77 @@ def test_manifest_sha_mismatch_and_duplicate_keys_fail_before_commands(
             executable_resolver=lambda name: str(valid_fixture["git"]),
         )
     assert runner.calls == []
+    assert not valid_fixture["output"].exists()
+
+
+def test_cosmos_snapshot_manifest_is_commit_bound_and_rechecked(
+    valid_fixture: dict[str, Any],
+) -> None:
+    arguments = _capture_arguments(valid_fixture)
+    arguments["expected_cosmos_source_manifest_sha256"] = "0" * 64
+    runner = FakeRunner(valid_fixture)
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="snapshot manifest SHA256 mismatch",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert runner.calls == []
+
+    manifest = valid_fixture["cosmos_source_manifest"]
+    manifest.chmod(0o644)
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["source_head"] = "f" * 40
+    _, digest = _write_json(manifest, value)
+    manifest.chmod(0o444)
+    arguments["expected_cosmos_source_manifest_sha256"] = digest
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="snapshot source commit mismatch",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert runner.calls == []
+    assert not valid_fixture["output"].exists()
+
+
+def test_cosmos_snapshot_manifest_drift_during_capture_is_rejected(
+    valid_fixture: dict[str, Any],
+) -> None:
+    manifest = valid_fixture["cosmos_source_manifest"]
+
+    class SnapshotDriftingRunner(FakeRunner):
+        def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            result = super().__call__(argv, **kwargs)
+            if self._label(argv) == "nvidia-smi":
+                manifest.chmod(0o644)
+                value = json.loads(manifest.read_text(encoding="utf-8"))
+                value["extra"] = "drift"
+                _write_json(manifest, value)
+                manifest.chmod(0o444)
+            return result
+
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="snapshot manifest SHA256 mismatch",
+    ):
+        runtime_receipt.capture_runtime_receipt(
+            **_capture_arguments(valid_fixture),
+            runner=SnapshotDriftingRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
     assert not valid_fixture["output"].exists()
 
 

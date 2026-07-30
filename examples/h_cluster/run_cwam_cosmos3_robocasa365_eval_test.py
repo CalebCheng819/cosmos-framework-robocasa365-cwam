@@ -93,6 +93,8 @@ def test_runner_captures_runtime_before_starting_policy_servers() -> None:
     assert '--logical-run-id "$EVAL_LOGICAL_RUN_ID"' in script
     assert '--capture-nonce "$EVAL_RUNTIME_CAPTURE_NONCE"' in script
     assert '--submitted-at-utc "$EVAL_SUBMITTED_AT_UTC"' in script
+    assert '--cosmos-source-manifest "$SOURCE_MANIFEST"' in script
+    assert '--expected-cosmos-source-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256"' in script
     assert '--submission-verification-receipt "$SUBMISSION_VERIFICATION_RECEIPT"' in script
     assert '--asset-verification-receipt "$ASSET_VERIFICATION_RECEIPT"' in script
     assert 'EVAL_RUNTIME_CAPTURE_NONCE="$(' not in script
@@ -178,6 +180,28 @@ def test_runner_hard_pins_episode_reset_demian_revision() -> None:
     )
     assert ': "${EXPECTED_DEMIAN_COMMIT:?' not in script
     assert ': "${EXPECTED_DEMIAN_EVALUATOR_SHA256:?' not in script
+
+
+def test_runner_accepts_manifest_only_immutable_cosmos_snapshot() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+
+    manifest_verification = script.index(
+        'verify_sha256 source_manifest "$SOURCE_MANIFEST" "$EXPECTED_SOURCE_MANIFEST_SHA256"'
+    )
+    optional_git_verification = script.index('if [[ -e "$COSMOS_SOURCE/.git" || -L "$COSMOS_SOURCE/.git" ]]; then')
+    demian_verification = script.index('DEMIAN_COMMIT="$(git -c safe.directory="$DEMIAN_REPO"')
+    source_git_block = script[optional_git_verification:demian_verification]
+
+    assert '[[ "$SOURCE_MANIFEST" == "$COSMOS_SOURCE/SNAPSHOT_MANIFEST.json" ]]' in script
+    assert '[[ "$(stat -c %a -- "$SOURCE_MANIFEST")" == 444 ]]' in script
+    assert 'manifest.get("source_head") != sys.argv[2]' in script
+    assert 'manifest.get("source_dirty") is not False' in script
+    assert manifest_verification < optional_git_verification < demian_verification
+    assert "rev-parse --show-toplevel" in source_git_block
+    assert "rev-parse HEAD" in source_git_block
+    assert "status --porcelain --untracked-files=all" in source_git_block
+    assert 'for repo in "$DEMIAN_REPO" "$ROBOCASA_REPO" "$ROBOSUITE_REPO"; do' in script
+    assert 'for repo in "$COSMOS_SOURCE"' not in script
 
 
 def test_runner_rejects_reused_outputs_and_non_nvme_scratch() -> None:
@@ -270,6 +294,6 @@ def test_all_embedded_python_programs_compile() -> None:
     script = RUNNER.read_text(encoding="utf-8")
     programs = re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|\Z)", script, re.DOTALL)
 
-    assert len(programs) == 4
+    assert len(programs) == 5
     for index, program in enumerate(programs, start=1):
         compile(program, f"{RUNNER.name}:heredoc-{index}", "exec")

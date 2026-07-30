@@ -1074,22 +1074,18 @@ def _patch_post_rollout_verifiers(
         expected_commit: str,
         verify_tracked_files: bool,
     ) -> dict[str, object]:
-        tracked_files: dict[str, object]
-        if verify_tracked_files:
-            tracked_files = {
-                "object_format": "sha1",
-                "head_tree_oid": "a" * 40,
-                "tracked_entry_count": 1,
-                "tracked_regular_file_count": 1,
-                "tracked_non_regular_entry_count": 0,
-                "tracked_regular_total_bytes": 1,
-                "tracked_regular_manifest_sha256": "b" * 64,
-                "all_tracked_regular_files_match_head_blobs": True,
-            }
-        else:
-            tracked_files = {
-                "verification_mode": "covered_by_full_cosmos_snapshot_verification",
-            }
+        assert name != "Cosmos"
+        assert verify_tracked_files is True
+        tracked_files: dict[str, object] = {
+            "object_format": "sha1",
+            "head_tree_oid": "a" * 40,
+            "tracked_entry_count": 1,
+            "tracked_regular_file_count": 1,
+            "tracked_non_regular_entry_count": 0,
+            "tracked_regular_total_bytes": 1,
+            "tracked_regular_manifest_sha256": "b" * 64,
+            "all_tracked_regular_files_match_head_blobs": True,
+        }
         return {
             "root": str(root.resolve()),
             "expected_commit": expected_commit,
@@ -1883,6 +1879,64 @@ def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
             contract_path=contract_path,
             output=receipt_path,
         )
+
+
+def test_post_rollout_snapshot_identity_uses_manifest_without_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_root = tmp_path / "snapshots" / "run"
+    snapshot_root.mkdir(parents=True)
+    payload = snapshot_root / "payload.txt"
+    payload.write_text("immutable\n", encoding="utf-8")
+    payload.chmod(0o444)
+    source_commit = "a" * 40
+    source_manifest = snapshot_root / "SNAPSHOT_MANIFEST.json"
+    _write_json(
+        source_manifest,
+        {
+            "schema_version": 1,
+            "source_head": source_commit,
+            "source_dirty": False,
+            "file_count": 1,
+            "files": [
+                {
+                    "path": "payload.txt",
+                    "sha256": _sha256(payload),
+                    "bytes": payload.stat().st_size,
+                }
+            ],
+        },
+    )
+    source_manifest.chmod(0o444)
+    snapshot_root.chmod(0o555)
+    monkeypatch.setattr(evidence, "_POST_ROLLOUT_SNAPSHOT_ALLOWED_ROOT", snapshot_root.parent)
+    manifest_sha256 = _sha256(source_manifest)
+    contract = {
+        "source_root": str(snapshot_root),
+        "source_commit": source_commit,
+        "source_manifest_sha256": manifest_sha256,
+        "_stable_artifacts": {
+            "source_manifest": {
+                "path": str(source_manifest),
+                "sha256": manifest_sha256,
+            }
+        },
+        "_bound_json": {
+            "source_manifest": json.loads(source_manifest.read_text(encoding="utf-8")),
+        },
+    }
+
+    report = evidence._verify_snapshot_with_bound_manifest(contract)
+    assert report["status"] == "passed"
+    assert report["snapshot_root"] == str(snapshot_root)
+
+    contract["_bound_json"]["source_manifest"]["source_head"] = "b" * 40
+    with pytest.raises(ValueError, match="source_head differs"):
+        evidence._verify_snapshot_with_bound_manifest(contract)
+    snapshot_root.chmod(0o755)
+    payload.chmod(0o644)
+    source_manifest.chmod(0o644)
 
 
 @pytest.mark.parametrize("input_name", ["checkpoint", "assets"])
