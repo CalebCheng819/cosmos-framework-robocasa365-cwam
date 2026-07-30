@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 import subprocess
@@ -97,6 +98,73 @@ def _unknown_publisher_program() -> str:
     return script[start:end]
 
 
+def _output_initializer_program() -> str:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    marker = "\"$PINNED_SUBMISSION_ROOT\" <<'PY'\n"
+    start = script.index(marker) + len(marker)
+    end = script.index("\nPY\n}", start)
+    return script[start:end]
+
+
+def _run_output_initializer(personal_root: Path) -> subprocess.CompletedProcess[str]:
+    output_parent = personal_root / "outputs" / "cwam-robocasa365-eval"
+    return subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-c",
+            _output_initializer_program(),
+            str(personal_root),
+            str(output_parent),
+            str(output_parent / "runs"),
+            str(output_parent / "submission-reservations"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+def _render_submit_args(*, predict_only: bool) -> list[str]:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    start = script.index("SUBMIT_ARGS=(\n")
+    end = script.index('\n)\nif [[ "$RJOB_PREDICT_ONLY" == 1 ]]', start) + 2
+    array_program = script[start:end]
+    values = {
+        "RJOB_NAME": "unit-rjob",
+        "PINNED_QUOTA_GROUP": "unit-group",
+        "RJOB_REPLICAS": "1",
+        "PINNED_CONTAINER_IMAGE": "unit-image",
+        "RJOB_CPU": "16",
+        "RJOB_GPU": "1",
+        "RJOB_MEMORY_MIB": "187500",
+        "PINNED_EXCLUDED_NODE_TAG": "unit-negative-tag",
+        "PERSONAL_GPFS_MOUNT": "unit-personal-mount",
+        "PUBLIC_GPFS_MOUNT": "unit-public-mount",
+    }
+    assignments = "\n".join(f"{name}={value!r}" for name, value in values.items())
+    harness = "\n".join(
+        (
+            "set -Eeuo pipefail",
+            assignments,
+            array_program,
+            f"RJOB_PREDICT_ONLY={int(predict_only)}",
+            'if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then SUBMIT_ARGS+=(--predict-only true); fi',
+            "printf '%s\\n' \"${SUBMIT_ARGS[@]}\"",
+        )
+    )
+    result = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.splitlines()
+
+
 def _run_unknown_publisher(
     *,
     parent: Path,
@@ -150,6 +218,135 @@ def test_default_is_prediction_only_and_phase_resources_are_exact() -> None:
     assert "SUBMIT_ARGS+=(--predict-only true)" in script
 
 
+def test_output_infrastructure_first_run_is_secure_and_existing_roots_are_reused(
+    tmp_path: Path,
+) -> None:
+    personal_root = tmp_path / "personal"
+    personal_root.mkdir(mode=0o755)
+    first = _run_output_initializer(personal_root)
+    assert first.returncode == 0, first.stderr
+
+    managed = (
+        personal_root / "outputs",
+        personal_root / "outputs" / "cwam-robocasa365-eval",
+        personal_root / "outputs" / "cwam-robocasa365-eval" / "runs",
+        personal_root / "outputs" / "cwam-robocasa365-eval" / "submission-reservations",
+        personal_root / "outputs" / "cwam-robocasa365-eval" / "submission-reservations" / "by-experiment",
+        personal_root / "outputs" / "cwam-robocasa365-eval" / "submission-reservations" / "by-logical-run",
+    )
+    identities = {}
+    for path in managed:
+        metadata = path.lstat()
+        identities[path] = (metadata.st_dev, metadata.st_ino)
+        assert path.resolve(strict=True) == path
+        assert stat.S_ISDIR(metadata.st_mode)
+        assert not stat.S_ISLNK(metadata.st_mode)
+        assert stat.S_IMODE(metadata.st_mode) == 0o755
+        assert (metadata.st_uid, metadata.st_gid) == (os.geteuid(), os.getegid())
+
+    second = _run_output_initializer(personal_root)
+    assert second.returncode == 0, second.stderr
+    assert {path: (path.lstat().st_dev, path.lstat().st_ino) for path in managed} == identities
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "regular_file"])
+def test_output_infrastructure_rejects_symlink_and_wrong_type(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    personal_root = tmp_path / "personal"
+    personal_root.mkdir(mode=0o755)
+    if unsafe_kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (personal_root / "outputs").symlink_to(outside, target_is_directory=True)
+    else:
+        (personal_root / "outputs").write_text("not a directory", encoding="utf-8")
+
+    result = _run_output_initializer(personal_root)
+
+    assert result.returncode != 0
+    assert "must be a non-symlink directory" in result.stderr
+    assert not (tmp_path / "outside" / "cwam-robocasa365-eval").exists()
+
+
+def test_output_infrastructure_rejects_wrong_mode_and_ownership(tmp_path: Path) -> None:
+    personal_root = tmp_path / "personal"
+    personal_root.mkdir(mode=0o755)
+    assert _run_output_initializer(personal_root).returncode == 0
+    runs_root = personal_root / "outputs" / "cwam-robocasa365-eval" / "runs"
+
+    runs_root.chmod(0o775)
+    wrong_mode = _run_output_initializer(personal_root)
+    assert wrong_mode.returncode != 0
+    assert "unsafe mode" in wrong_mode.stderr
+    runs_root.chmod(0o755)
+
+    namespace = {"__name__": "initializer_unit_test"}
+    exec(compile(_output_initializer_program(), "<output-initializer>", "exec"), namespace)
+    with pytest.raises(SystemExit, match="unsafe ownership"):
+        namespace["initialize"](
+            personal_root,
+            personal_root / "outputs" / "cwam-robocasa365-eval",
+            runs_root,
+            personal_root / "outputs" / "cwam-robocasa365-eval" / "submission-reservations",
+            expected_uid=os.geteuid() + 1,
+            expected_gid=os.getegid(),
+        )
+
+
+def test_output_infrastructure_partial_failure_keeps_safe_roots_reentrant(
+    tmp_path: Path,
+) -> None:
+    personal_root = tmp_path / "personal"
+    personal_root.mkdir(mode=0o755)
+    submission_root = personal_root / "outputs" / "cwam-robocasa365-eval" / "submission-reservations"
+    submission_root.mkdir(mode=0o755, parents=True)
+    for path in (
+        personal_root / "outputs",
+        personal_root / "outputs" / "cwam-robocasa365-eval",
+        submission_root,
+    ):
+        path.chmod(0o755)
+    collision = submission_root / "by-logical-run"
+    collision.write_text("wrong type", encoding="utf-8")
+
+    failed = _run_output_initializer(personal_root)
+    assert failed.returncode != 0
+    assert "must be a non-symlink directory" in failed.stderr
+    assert (personal_root / "outputs" / "cwam-robocasa365-eval" / "runs").is_dir()
+    assert (submission_root / "by-experiment").is_dir()
+    assert collision.is_file()
+
+    collision.unlink()
+    retried = _run_output_initializer(personal_root)
+    assert retried.returncode == 0, retried.stderr
+    assert (submission_root / "by-logical-run").is_dir()
+
+
+def test_predict_only_cannot_initialize_or_reserve_output_infrastructure() -> None:
+    script = SUBMITTER.read_text(encoding="utf-8")
+    actual_branch = script.index('if [[ "$RJOB_PREDICT_ONLY" == 0 ]]; then')
+    initializer_call = script.index("    initialize_output_infrastructure\n", actual_branch)
+    predict_else = script.index("\nelse\n", initializer_call)
+    submit_array = script.index("SUBMIT_ARGS=(\n")
+
+    assert script.count("    initialize_output_infrastructure\n") == 1
+    assert actual_branch < initializer_call < predict_else < submit_array
+    assert "/usr/bin/mkdir -p --" not in script[actual_branch:predict_else]
+    assert _render_submit_args(predict_only=True)[-2:] == ["--predict-only", "true"]
+
+
+def test_actual_and_predict_only_submit_argv_pin_host_network_true_once() -> None:
+    for predict_only in (False, True):
+        arguments = _render_submit_args(predict_only=predict_only)
+        indices = [index for index, value in enumerate(arguments) if value == "--host-network"]
+        assert indices == [arguments.index("--host-network")]
+        index = indices[0]
+        assert arguments[index + 1] == "true"
+        assert arguments.count("--host-network") == 1
+
+
 def test_scheduler_image_mount_nvme_and_lifecycle_contract_are_pinned() -> None:
     script = SUBMITTER.read_text(encoding="utf-8")
 
@@ -165,6 +362,7 @@ def test_scheduler_image_mount_nvme_and_lifecycle_contract_are_pinned() -> None:
         "--termination-grace-period-seconds 60",
         "--backoff_limit 1",
         "--replicas",
+        "--host-network true",
         "node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn",
     ):
         assert token in script

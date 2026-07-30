@@ -76,6 +76,212 @@ sha256_file() {
     printf '%s\n' "$digest"
 }
 
+initialize_output_infrastructure() {
+    "$PYTHON3_BIN" -I - \
+        "$PINNED_PERSONAL_GPFS_ROOT" \
+        "$PINNED_OUTPUT_PARENT" \
+        "$PINNED_RUNS_ROOT" \
+        "$PINNED_SUBMISSION_ROOT" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+DIRECTORY_MODE = 0o755
+
+
+def identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+    )
+
+
+def open_existing_directory(path, label):
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise SystemExit(f"{label} is unavailable: {path}: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"{label} must be a non-symlink directory: {path}")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise SystemExit(f"{label} cannot be resolved safely: {path}: {error}") from error
+    if resolved != path:
+        raise SystemExit(f"{label} must be an exact canonical directory: {path}")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise SystemExit(f"{label} cannot be opened safely: {path}: {error}") from error
+    opened = os.fstat(descriptor)
+    final = path.lstat()
+    if identity(metadata) != identity(opened) or identity(opened) != identity(final):
+        os.close(descriptor)
+        raise SystemExit(f"{label} changed while it was opened: {path}")
+    return descriptor
+
+
+def open_or_create_managed_directory(parent_fd, name, path, expected_uid, expected_gid):
+    created = False
+    try:
+        os.mkdir(name, DIRECTORY_MODE, dir_fd=parent_fd)
+        created = True
+    except FileExistsError:
+        pass
+    except OSError as error:
+        raise SystemExit(f"cannot create fixed eval infrastructure directory {path}: {error}") from error
+
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as error:
+        raise SystemExit(f"cannot inspect fixed eval infrastructure directory {path}: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"fixed eval infrastructure path must be a non-symlink directory: {path}")
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as error:
+        raise SystemExit(f"cannot open fixed eval infrastructure directory {path}: {error}") from error
+
+    try:
+        opened = os.fstat(descriptor)
+        if identity(metadata) != identity(opened):
+            raise SystemExit(f"fixed eval infrastructure directory changed while opening: {path}")
+        if created:
+            os.fchmod(descriptor, DIRECTORY_MODE)
+            os.fsync(parent_fd)
+            opened = os.fstat(descriptor)
+        if stat.S_IMODE(opened.st_mode) != DIRECTORY_MODE:
+            raise SystemExit(
+                f"fixed eval infrastructure directory has unsafe mode: "
+                f"path={path} expected={DIRECTORY_MODE:04o} actual={stat.S_IMODE(opened.st_mode):04o}"
+            )
+        if (opened.st_uid, opened.st_gid) != (expected_uid, expected_gid):
+            raise SystemExit(
+                f"fixed eval infrastructure directory has unsafe ownership: "
+                f"path={path} expected={expected_uid}:{expected_gid} "
+                f"actual={opened.st_uid}:{opened.st_gid}"
+            )
+        final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if identity(opened) != identity(final):
+            raise SystemExit(f"fixed eval infrastructure directory changed after validation: {path}")
+        os.fsync(descriptor)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def initialize(personal_root, output_parent, runs_root, submission_root, *, expected_uid=None, expected_gid=None):
+    personal_root = pathlib.Path(personal_root)
+    output_parent = pathlib.Path(output_parent)
+    runs_root = pathlib.Path(runs_root)
+    submission_root = pathlib.Path(submission_root)
+    outputs_root = personal_root / "outputs"
+    expected_paths = (
+        personal_root / "outputs" / "cwam-robocasa365-eval",
+        personal_root / "outputs" / "cwam-robocasa365-eval" / "runs",
+        personal_root / "outputs" / "cwam-robocasa365-eval" / "submission-reservations",
+    )
+    if (output_parent, runs_root, submission_root) != expected_paths:
+        raise SystemExit("fixed eval infrastructure paths differ from the pinned hierarchy")
+    if expected_uid is None:
+        expected_uid = os.geteuid()
+    if expected_gid is None:
+        expected_gid = os.getegid()
+
+    descriptors = []
+    try:
+        personal_fd = open_existing_directory(personal_root, "pinned personal GPFS root")
+        descriptors.append(personal_fd)
+        outputs_fd = open_or_create_managed_directory(
+            personal_fd,
+            "outputs",
+            outputs_root,
+            expected_uid,
+            expected_gid,
+        )
+        descriptors.append(outputs_fd)
+        output_fd = open_or_create_managed_directory(
+            outputs_fd,
+            "cwam-robocasa365-eval",
+            output_parent,
+            expected_uid,
+            expected_gid,
+        )
+        descriptors.append(output_fd)
+        runs_fd = open_or_create_managed_directory(
+            output_fd,
+            "runs",
+            runs_root,
+            expected_uid,
+            expected_gid,
+        )
+        descriptors.append(runs_fd)
+        submission_fd = open_or_create_managed_directory(
+            output_fd,
+            "submission-reservations",
+            submission_root,
+            expected_uid,
+            expected_gid,
+        )
+        descriptors.append(submission_fd)
+        for name in ("by-experiment", "by-logical-run"):
+            descriptor = open_or_create_managed_directory(
+                submission_fd,
+                name,
+                submission_root / name,
+                expected_uid,
+                expected_gid,
+            )
+            descriptors.append(descriptor)
+
+        managed = (
+            outputs_root,
+            output_parent,
+            runs_root,
+            submission_root,
+            submission_root / "by-experiment",
+            submission_root / "by-logical-run",
+        )
+        for path, descriptor in zip(managed, descriptors[1:], strict=True):
+            metadata = path.lstat()
+            opened = os.fstat(descriptor)
+            if (
+                path.resolve(strict=True) != path
+                or identity(metadata) != identity(opened)
+                or stat.S_IMODE(metadata.st_mode) != DIRECTORY_MODE
+                or (metadata.st_uid, metadata.st_gid) != (expected_uid, expected_gid)
+            ):
+                raise SystemExit(f"fixed eval infrastructure directory failed final validation: {path}")
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 5:
+        raise SystemExit("usage: <personal-root> <output-parent> <runs-root> <submission-root>")
+    initialize(*sys.argv[1:])
+PY
+}
+
 readonly CALLER_INPUTS=(
     COSMOS_SOURCE
     COSMOS_ENV
@@ -876,9 +1082,7 @@ submission_signal() {
 }
 
 if [[ "$RJOB_PREDICT_ONLY" == 0 ]]; then
-    /usr/bin/mkdir -p -- \
-        "$PINNED_SUBMISSION_ROOT/by-experiment" \
-        "$PINNED_SUBMISSION_ROOT/by-logical-run"
+    initialize_output_infrastructure
     EXPERIMENT_RESERVATION_DIR="$PINNED_SUBMISSION_ROOT/by-experiment/$EVAL_EXPERIMENT_ID"
     RUN_RESERVATION_DIR="$PINNED_SUBMISSION_ROOT/by-logical-run/$EVAL_LOGICAL_RUN_ID"
     if ! /usr/bin/mkdir --mode=0700 -- "$EXPERIMENT_RESERVATION_DIR"; then
@@ -1142,6 +1346,7 @@ SUBMIT_ARGS=(
     --gpu "$RJOB_GPU"
     --memory "$RJOB_MEMORY_MIB"
     --negative-tags "$PINNED_EXCLUDED_NODE_TAG"
+    --host-network true
     --store-host-nvme
     --mount
     "$PERSONAL_GPFS_MOUNT"

@@ -601,6 +601,42 @@ def test_expanded_worker_rejects_duplicate_runtime_identity_bindings() -> None:
         validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
 
 
+@pytest.mark.parametrize("layer", ["template", "replica"])
+@pytest.mark.parametrize("bad_value", [None, False])
+def test_host_network_missing_or_false_remains_fail_closed(
+    layer: str,
+    bad_value: bool | None,
+) -> None:
+    raw_rjob = _raw_rjob()
+    template_spec = raw_rjob["spec"]["taskSpecs"]["t0"]["template"]["spec"]  # type: ignore[index]
+    raw_replicas = _raw_replicas()
+    replica_spec = raw_replicas["items"][0]["spec"]  # type: ignore[index]
+    target = template_spec if layer == "template" else replica_spec
+    if bad_value is None:
+        target.pop("hostNetwork")
+    else:
+        target["hostNetwork"] = bad_value
+
+    with pytest.raises(ReceiptValidationError, match="hostNetwork"):
+        validate_and_normalize_receipt(raw_rjob, raw_replicas, _expected())
+
+
+@pytest.mark.parametrize("bad_value", [None, "false"])
+def test_host_network_runtime_binding_missing_or_false_remains_fail_closed(
+    bad_value: str | None,
+) -> None:
+    replicas = _raw_replicas()
+    worker_env = replicas["items"][0]["spec"]["containers"][0]["env"]  # type: ignore[index]
+    binding = next(item for item in worker_env if item["name"] == "HOST_NETWORK")
+    if bad_value is None:
+        worker_env.remove(binding)
+    else:
+        binding["value"] = bad_value
+
+    with pytest.raises(ReceiptValidationError, match="HOST_NETWORK"):
+        validate_and_normalize_receipt(_raw_rjob(), replicas, _expected())
+
+
 @pytest.mark.parametrize(
     "command",
     [
