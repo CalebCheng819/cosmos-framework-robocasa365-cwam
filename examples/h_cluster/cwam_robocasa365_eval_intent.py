@@ -713,6 +713,11 @@ def build_intent(args: argparse.Namespace) -> dict[str, Any]:
                 args.expected_action_stats_sha256,
                 "action stats",
             ),
+            "wan2pt2_vae": _descriptor(
+                args.wan2pt2_vae,
+                args.expected_wan2pt2_vae_sha256,
+                "Wan2.2 VAE",
+            ),
             "cosmos_environment": {
                 "root": cosmos_env_root,
                 "manifest": cosmos_env_manifest,
@@ -911,6 +916,8 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--expected-training-config-sha256", required=True)
     parser.add_argument("--action-stats", type=Path, required=True)
     parser.add_argument("--expected-action-stats-sha256", required=True)
+    parser.add_argument("--wan2pt2-vae", type=Path, required=True)
+    parser.add_argument("--expected-wan2pt2-vae-sha256", required=True)
     parser.add_argument("--cosmos-env-root", type=Path, required=True)
     parser.add_argument("--cosmos-environment-manifest", type=Path, required=True)
     parser.add_argument("--expected-cosmos-environment-manifest-sha256", required=True)

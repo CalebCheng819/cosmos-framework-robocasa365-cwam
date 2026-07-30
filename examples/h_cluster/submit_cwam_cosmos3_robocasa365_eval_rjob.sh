@@ -28,6 +28,8 @@ readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
 readonly PINNED_ASSET_MANIFEST_SHA256="3dc62249192bf2a8fd4bef1a31c6de9124cbc10421aa91b6769dee8e39e4d3c0"
 readonly PINNED_ASSET_RECEIPT_SHA256="dc25dff483b1f42c904926cf72f91369f6ac94f0a4f50ab54e4c776299f93dca"
 readonly PINNED_EGL_VENDOR_JSON="/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+readonly PINNED_WAN22_VAE_PATH="/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+readonly PINNED_WAN22_VAE_SHA256="20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"
 readonly SUBMISSION_MAX_AGE_SECONDS=259200
 readonly SUBMISSION_MAX_FUTURE_SKEW_SECONDS=300
 readonly SUBMISSION_MAX_START_TO_VERIFICATION_SECONDS=7200
@@ -589,6 +591,7 @@ for expected_pair in \
     "checkpoint_manifest|$CHECKPOINT_MANIFEST|$EXPECTED_CHECKPOINT_MANIFEST_SHA256" \
     "training_config|$TRAINING_CONFIG|$EXPECTED_TRAINING_CONFIG_SHA256" \
     "action_stats|$ACTION_STATS|$EXPECTED_ACTION_STATS_SHA256" \
+    "wan2pt2_vae|$PINNED_WAN22_VAE_PATH|$PINNED_WAN22_VAE_SHA256" \
     "cosmos_environment_manifest|$COSMOS_ENVIRONMENT_MANIFEST|$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256" \
     "robocasa_environment_manifest|$ROBOCASA_ENVIRONMENT_MANIFEST|$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256" \
     "eval_intent_manifest|$EVAL_INTENT_MANIFEST|$EXPECTED_EVAL_INTENT_MANIFEST_SHA256" \
@@ -599,6 +602,35 @@ for expected_pair in \
     [[ "$actual_sha256" == "$expected_sha256" ]] ||
         die "$expected_label SHA-256 mismatch: expected=$expected_sha256 actual=$actual_sha256"
 done
+[[ "$("$REALPATH_BIN" -e -- "$PINNED_WAN22_VAE_PATH")" == "$PINNED_WAN22_VAE_PATH" &&
+    -f "$PINNED_WAN22_VAE_PATH" &&
+    ! -L "$PINNED_WAN22_VAE_PATH" ]] ||
+    die "pinned Wan2.2 VAE must be an exact canonical regular non-symlink file"
+"$COSMOS_ENV/bin/python" -I -B - "$TRAINING_CONFIG" "$PINNED_WAN22_VAE_PATH" <<'PY'
+import pathlib
+import sys
+
+import yaml
+
+tokenizer = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["model"]["config"]["tokenizer"]
+expected = {
+    "_target_": (
+        "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
+        "PrecomputedWan2pt2LatentTokenizer"
+    ),
+    "vae_path": sys.argv[2],
+    "latent_ch": 48,
+    "spatial_compression_factor": 16,
+    "temporal_compression_factor": 4,
+    "causal": True,
+}
+for key, value in expected.items():
+    if tokenizer.get(key) != value:
+        raise SystemExit(
+            f"training tokenizer contract mismatch for {key}: "
+            f"expected={value!r} actual={tokenizer.get(key)!r}"
+        )
+PY
 [[ "$("$STAT_BIN" -c %a -- "$EVAL_INTENT_MANIFEST")" == 444 ]] ||
     die "EVAL_INTENT_MANIFEST must be immutable mode 0444"
 [[ "$("$STAT_BIN" -c %a -- "$SOURCE_DCP_EXPORT_RECEIPT")" == 444 ]] ||
@@ -738,6 +770,8 @@ INTENT_VERIFY_ARGS=(
     --expected-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256"
     --action-stats "$ACTION_STATS"
     --expected-action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256"
+    --wan2pt2-vae "$PINNED_WAN22_VAE_PATH"
+    --expected-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"
     --cosmos-env-root "$COSMOS_ENV"
     --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST"
     --expected-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256"
@@ -840,6 +874,8 @@ if [[ "$EVAL_STAGE" == "formal" ]]; then
         --current-asset-publisher-receipt-sha256 "$PINNED_ASSET_RECEIPT_SHA256" \
         --current-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256" \
         --current-action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256" \
+        --current-wan2pt2-vae-path "$PINNED_WAN22_VAE_PATH" \
+        --current-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256" \
         --current-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256" \
         --current-robocasa-environment-manifest-sha256 "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256" \
         --current-demian-commit "$PINNED_DEMIAN_COMMIT" \

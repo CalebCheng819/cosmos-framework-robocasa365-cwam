@@ -164,6 +164,7 @@ def _fixture(tmp_path: Path, stage: str = "one_episode_gate") -> dict[str, objec
         ),
         "training_config": _write(tmp_path / "config.json", {"recipe": "cwam"}),
         "action_stats": _write(tmp_path / "stats.json", {"global_raw": {}}),
+        "wan2pt2_vae": _write(tmp_path / "Wan2.2_VAE.pth", b"Wan2.2 VAE fixture\n"),
         "asset_manifest": _write(tmp_path / "asset-manifest.json", {"files": []}),
         "asset_receipt": _write(tmp_path / "asset-receipt.json", {"status": "passed"}),
         "egl": _write(tmp_path / "10_nvidia.json", {"file_format_version": "1.0.0"}),
@@ -208,6 +209,8 @@ def _fixture(tmp_path: Path, stage: str = "one_episode_gate") -> dict[str, objec
         "expected_training_config_sha256": _sha(files["training_config"]),
         "action_stats": files["action_stats"],
         "expected_action_stats_sha256": _sha(files["action_stats"]),
+        "wan2pt2_vae": files["wan2pt2_vae"],
+        "expected_wan2pt2_vae_sha256": _sha(files["wan2pt2_vae"]),
         "cosmos_env_root": cosmos_env,
         "cosmos_environment_manifest": cosmos_env_manifest,
         "expected_cosmos_environment_manifest_sha256": _sha(cosmos_env_manifest),
@@ -261,13 +264,19 @@ def _create_and_verify(tmp_path: Path, values: dict[str, object]) -> tuple[Path,
 
 
 def test_positive_one_episode_gate(tmp_path: Path) -> None:
-    output, _ = _create_and_verify(tmp_path, _fixture(tmp_path))
+    values = _fixture(tmp_path)
+    output, _ = _create_and_verify(tmp_path, values)
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["identity"]["stage"] == "one_episode_gate"
     assert manifest["identity"]["evaluation_class"] == "exploratory"
     assert manifest["prior_gate"] is None
     assert manifest["protocol"]["expected_episode_count"] == 1
     assert manifest["resources"]["host_network"] is False
+    assert manifest["artifacts"]["wan2pt2_vae"] == {
+        "path": str(values["wan2pt2_vae"]),
+        "size_bytes": Path(values["wan2pt2_vae"]).stat().st_size,
+        "sha256": values["expected_wan2pt2_vae_sha256"],
+    }
 
 
 def test_positive_exploratory_formal_keeps_stage_and_class_orthogonal(tmp_path: Path) -> None:
@@ -384,6 +393,49 @@ def test_symlinked_artifact_is_rejected(tmp_path: Path) -> None:
     os.symlink(target, symlink)
     values["training_config"] = symlink
     with pytest.raises(intent.EvalIntentError, match="symlink components"):
+        intent.build_intent(_args(values))
+
+
+def test_wan2pt2_vae_content_drift_is_rejected(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    vae = Path(values["wan2pt2_vae"])
+    vae.write_bytes(b"drifted Wan2.2 VAE fixture\n")
+
+    with pytest.raises(intent.EvalIntentError, match="Wan2.2 VAE SHA-256 mismatch"):
+        intent.build_intent(_args(values))
+
+
+def test_wan2pt2_vae_replacement_cannot_match_a_sealed_intent(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    output, receipt = _create_and_verify(tmp_path, values)
+    vae = Path(values["wan2pt2_vae"])
+    vae.write_bytes(b"replacement Wan2.2 VAE fixture\n")
+    values["expected_wan2pt2_vae_sha256"] = _sha(vae)
+
+    with pytest.raises(intent.EvalIntentError, match="does not exactly match"):
+        intent.verify_intent_file(
+            output,
+            str(receipt["sha256"]),
+            intent.build_intent(_args(values)),
+        )
+
+
+def test_symlinked_wan2pt2_vae_is_rejected(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    target = Path(values["wan2pt2_vae"])
+    symlink = tmp_path / "Wan2.2_VAE-link.pth"
+    os.symlink(target, symlink)
+    values["wan2pt2_vae"] = symlink
+
+    with pytest.raises(intent.EvalIntentError, match="Wan2.2 VAE.*symlink components"):
+        intent.build_intent(_args(values))
+
+
+def test_missing_wan2pt2_vae_is_rejected(tmp_path: Path) -> None:
+    values = _fixture(tmp_path)
+    Path(values["wan2pt2_vae"]).unlink()
+
+    with pytest.raises(intent.EvalIntentError, match="Wan2.2 VAE does not resolve safely"):
         intent.build_intent(_args(values))
 
 

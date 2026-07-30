@@ -34,6 +34,9 @@ def test_runner_pins_causal_eval_and_required_evidence() -> None:
         "chmod 0444",
         "ROBOCASA365_EVAL_EXECUTION_SUCCESS",
         "ROBOCASA365_EVAL_EFFECT_GATE_PASSED",
+        "PINNED_WAN22_VAE_PATH",
+        "PINNED_WAN22_VAE_SHA256",
+        "WAN2PT2_VAE_VERIFIED",
     ):
         assert token in script
     for forbidden in (
@@ -141,7 +144,8 @@ def test_runner_reverifies_all_live_inputs_after_rollouts_before_summary() -> No
     servers_stopped = script.index('stop_child_pids "${SERVER_PIDS[@]}"', evaluators_reaped)
     post_rollout = script.index("verify-post-rollout")
     summary = script.index("SUMMARIZE_ARGS=(")
-    assert evaluators_reaped < servers_stopped < post_rollout < summary
+    vae_post_rollout = script.index("wan2pt2_vae_post_rollout")
+    assert evaluators_reaped < servers_stopped < vae_post_rollout < post_rollout < summary
     assert '--contract "$CONTRACT_PATH"' in script[post_rollout:summary]
     assert '--output "$POST_ROLLOUT_VERIFICATION_RECEIPT"' in script[post_rollout:summary]
     assert '--post-rollout-verification-receipt "$POST_ROLLOUT_VERIFICATION_RECEIPT"' in script
@@ -225,9 +229,19 @@ def test_runner_rejects_reused_outputs_and_non_nvme_scratch() -> None:
     assert "EVAL_NVME_ROOT must be a strict child of /nvme" in script
     assert "/nvme is not backed by /dev/nvme1n1" in script
     assert "/nvme/.cwam-robocasa365-eval/$EVAL_LOGICAL_RUN_ID" in script
+    assert 'readonly EVAL_NVME_PARENT="/nvme/.cwam-robocasa365-eval"' in script
+    assert 'mkdir --mode=0700 -- "$EVAL_NVME_PARENT" 2>/dev/null || true' in script
+    assert '[[ -d "$EVAL_NVME_PARENT" && ! -L "$EVAL_NVME_PARENT" ]]' in script
+    assert '"$(realpath -e -- "$EVAL_NVME_PARENT")" == "$EVAL_NVME_PARENT"' in script
+    assert '"$(stat -c %u:%g -- "$EVAL_NVME_PARENT")" == 0:0' in script
+    assert '"$(stat -c %a -- "$EVAL_NVME_PARENT")" == 700' in script
+    assert '[[ ! -e "$EVAL_NVME_ROOT" && ! -L "$EVAL_NVME_ROOT" ]]' in script
+    assert 'mkdir --mode=0700 -- "$EVAL_NVME_ROOT"' in script
     assert '/usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_ROOT"' in script
     assert "scoped NVMe cleanup did not remove" in script
-    assert script.index("trap 'cleanup $?' EXIT") < script.index('mkdir -- "$EVAL_NVME_ROOT"')
+    assert script.index("trap 'cleanup $?' EXIT") < script.index(
+        'mkdir --mode=0700 -- "$EVAL_NVME_ROOT"'
+    )
 
 
 def test_formal_mode_can_select_the_complete_split() -> None:
@@ -249,6 +263,8 @@ def test_formal_prior_gate_is_reverified_before_output_or_egl() -> None:
     assert '--current-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"' in script
     assert '--current-asset-manifest-sha256 "$EXPECTED_ROBOCASA_ASSET_MANIFEST_SHA256"' in script
     assert '--current-asset-publisher-receipt-sha256 "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256"' in script
+    assert '--current-wan2pt2-vae-path "$PINNED_WAN22_VAE_PATH"' in script
+    assert '--current-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"' in script
     assert script.index(verification) < script.index('mkdir -- "$EXPERIMENT_OUTPUT_ROOT"')
     assert script.index(verification) < script.index("MUJOCO_GL=egl")
 
@@ -262,8 +278,20 @@ def test_contract_directly_binds_intent_and_source_dcp_receipt() -> None:
     for token in (
         '--eval-intent-manifest "$EVAL_INTENT_MANIFEST"',
         '--source-dcp-export-receipt "$SOURCE_DCP_EXPORT_RECEIPT"',
+        '--wan2pt2-vae "$PINNED_WAN22_VAE_PATH"',
+        '--expected-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"',
     ):
         assert token in contract_block
+
+
+def test_runner_binds_wan2pt2_vae_into_intent_verification() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+    start = script.index("INTENT_VERIFY_ARGS=(")
+    end = script.index('    "${INTENT_VERIFY_ARGS[@]}" >/dev/null', start)
+    intent_block = script[start:end]
+
+    assert '--wan2pt2-vae "$PINNED_WAN22_VAE_PATH"' in intent_block
+    assert '--expected-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"' in intent_block
 
 
 def test_runner_has_no_hidden_phase_or_resource_defaults() -> None:
@@ -305,6 +333,6 @@ def test_all_embedded_python_programs_compile() -> None:
     script = RUNNER.read_text(encoding="utf-8")
     programs = re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|\Z)", script, re.DOTALL)
 
-    assert len(programs) == 5
+    assert len(programs) == 6
     for index, program in enumerate(programs, start=1):
         compile(program, f"{RUNNER.name}:heredoc-{index}", "exec")

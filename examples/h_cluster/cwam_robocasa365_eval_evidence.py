@@ -111,6 +111,7 @@ _EXPECTED_EGL_VENDOR_JSON = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
 _EXPECTED_CONTAINER_IMAGE = (
     "registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
 )
+_ONLINE_WAN2PT2_TARGET = "cosmos_framework.model.generator.tokenizers.wan2pt2_vae_4x16x16.Wan2pt2VAEInterface"
 _EXPECTED_SUBMISSION_MOUNTS = [
     "gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs",
     "gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public",
@@ -422,6 +423,7 @@ _PRIOR_GATE_REQUIRED_ARTIFACT_KEYS = frozenset(
         "source_dcp_export_receipt",
         "training_config",
         "action_stats",
+        "wan2pt2_vae",
         "cosmos_environment_manifest",
         "robocasa_environment_manifest",
         "eval_intent_manifest",
@@ -440,6 +442,7 @@ _PRIOR_GATE_ARTIFACT_KEYS = frozenset(
         "source_dcp_export_receipt",
         "training_config",
         "action_stats",
+        "wan2pt2_vae",
         "cosmos_environment_manifest",
         "robocasa_environment_manifest",
         "eval_intent_manifest",
@@ -484,6 +487,8 @@ _PRIOR_GATE_CURRENT_INPUT_KEYS = frozenset(
         "asset_publisher_receipt_sha256",
         "training_config_sha256",
         "action_stats_sha256",
+        "wan2pt2_vae_path",
+        "wan2pt2_vae_sha256",
         "cosmos_environment_manifest_sha256",
         "robocasa_environment_manifest_sha256",
         "demian_commit",
@@ -527,6 +532,7 @@ _POST_ROLLOUT_INPUT_KEYS = frozenset(
         "serving_checkpoint_manifest",
         "pre_rollout_checkpoint_verification_receipt",
         "pre_rollout_asset_verification_receipt",
+        "wan2pt2_vae",
     }
 )
 _POST_ROLLOUT_LIVE_KEYS = frozenset(
@@ -534,6 +540,7 @@ _POST_ROLLOUT_LIVE_KEYS = frozenset(
         "cosmos_snapshot",
         "serving_checkpoint",
         "robocasa_assets",
+        "wan2pt2_vae",
         "source_repositories",
     }
 )
@@ -541,6 +548,7 @@ _POST_ROLLOUT_SEMANTIC_MATCH_KEYS = frozenset(
     {
         "checkpoint_pre_and_post",
         "robocasa_assets_pre_and_post",
+        "wan2pt2_vae_pre_and_post",
     }
 )
 _POST_ROLLOUT_ELAPSED_KEYS = frozenset(
@@ -548,6 +556,7 @@ _POST_ROLLOUT_ELAPSED_KEYS = frozenset(
         "cosmos_snapshot",
         "serving_checkpoint",
         "robocasa_assets",
+        "wan2pt2_vae",
         "source_repositories",
         "total",
     }
@@ -557,10 +566,12 @@ _POST_ROLLOUT_VALIDATION_KEYS = frozenset(
         "cosmos_snapshot_full_file_verification_passed",
         "serving_checkpoint_full_file_verification_passed",
         "robocasa_asset_full_tree_verification_passed",
+        "wan2pt2_vae_content_rehash_passed",
         "source_heads_match_and_are_clean",
         "tracked_source_files_match_head_blobs",
         "pre_and_post_checkpoint_receipts_semantically_match",
         "pre_and_post_asset_receipts_semantically_match",
+        "pre_and_post_wan2pt2_vae_semantically_match",
     }
 )
 _POST_ROLLOUT_BINDING_KEYS = frozenset(
@@ -592,6 +603,7 @@ _CSV_EPISODE_FIELDS = (
     "checkpoint_manifest_sha256",
     "training_config_sha256",
     "action_stats_sha256",
+    "wan2pt2_vae_sha256",
     "demian_commit",
 )
 _CSV_TASK_FIELDS = (
@@ -611,6 +623,7 @@ _CSV_TASK_FIELDS = (
     "checkpoint_manifest_sha256",
     "training_config_sha256",
     "action_stats_sha256",
+    "wan2pt2_vae_sha256",
     "demian_commit",
 )
 
@@ -845,6 +858,60 @@ def _read_stable_regular_file(
         "path": str(supplied),
         "size_bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _hash_stable_regular_file(path: Path, label: str) -> dict[str, Any]:
+    """Stream-hash a canonical regular file while rejecting path/inode races."""
+
+    supplied = Path(os.path.abspath(path.expanduser()))
+    try:
+        canonical = supplied.resolve(strict=True)
+        path_before = supplied.lstat()
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        raise ValueError(f"{label} does not resolve to an existing file: {supplied}") from error
+    if supplied != canonical or stat.S_ISLNK(path_before.st_mode) or not stat.S_ISREG(path_before.st_mode):
+        raise ValueError(f"{label} must be a canonical regular non-symlink file: {supplied}")
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("O_NOFOLLOW is required for sealed evaluation artifact verification")
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(supplied, flags)
+    except OSError as error:
+        raise ValueError(f"{label} cannot be opened without following symlinks: {supplied}") from error
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        descriptor_before = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_before.st_mode) or _stable_file_identity(path_before) != _stable_file_identity(
+            descriptor_before
+        ):
+            raise RuntimeError(f"{label} was replaced while it was being opened: {supplied}")
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size_bytes += len(chunk)
+        descriptor_after = os.fstat(descriptor)
+        try:
+            path_after = supplied.lstat()
+        except OSError as error:
+            raise RuntimeError(f"{label} disappeared while it was being hashed: {supplied}") from error
+        stable_identity = _stable_file_identity(descriptor_before)
+        if stable_identity != _stable_file_identity(descriptor_after) or stable_identity != _stable_file_identity(
+            path_after
+        ):
+            raise RuntimeError(f"{label} changed or was replaced while it was being hashed: {supplied}")
+    finally:
+        os.close(descriptor)
+    if size_bytes != int(descriptor_before.st_size):
+        raise RuntimeError(f"{label} byte count changed while it was being hashed: {supplied}")
+    return {
+        "path": str(supplied),
+        "size_bytes": size_bytes,
+        "sha256": digest.hexdigest(),
     }
 
 
@@ -2425,6 +2492,7 @@ def _validate_eval_intent_binding(
             {
                 "training_config",
                 "action_stats",
+                "wan2pt2_vae",
                 "cosmos_environment",
                 "robocasa_environment",
                 "robocasa_assets",
@@ -2438,6 +2506,11 @@ def _validate_eval_intent_binding(
             expected=stable_artifacts[name],
             label=f"eval_intent_manifest.artifacts.{name}",
         )
+    _validate_post_file_descriptor(
+        artifacts.get("wan2pt2_vae"),
+        expected=stable_artifacts["wan2pt2_vae"],
+        label="eval_intent_manifest.artifacts.wan2pt2_vae",
+    )
     for name in ("cosmos", "robocasa"):
         label = f"eval_intent_manifest.artifacts.{name}_environment"
         environment = _require_dict(artifacts.get(f"{name}_environment"), label)
@@ -3238,6 +3311,8 @@ def verify_prior_gate(
     current_asset_publisher_receipt_sha256: str,
     current_training_config_sha256: str,
     current_action_stats_sha256: str,
+    current_wan2pt2_vae_path: Path,
+    current_wan2pt2_vae_sha256: str,
     current_cosmos_environment_manifest_sha256: str,
     current_robocasa_environment_manifest_sha256: str,
     current_demian_commit: str,
@@ -3261,6 +3336,11 @@ def verify_prior_gate(
     checkpoint_path = _canonical_existing_directory(
         current_checkpoint_path,
         "current formal checkpoint path",
+    )
+    wan2pt2_vae_path = _absolute_canonical_existing_path(
+        str(Path(os.path.abspath(current_wan2pt2_vae_path.expanduser()))),
+        "current formal Wan2.2 VAE path",
+        directory=False,
     )
     current_inputs = {
         "source_root": str(source_root),
@@ -3293,6 +3373,11 @@ def verify_prior_gate(
         "action_stats_sha256": _require_sha256(
             current_action_stats_sha256,
             "current formal action stats SHA256",
+        ),
+        "wan2pt2_vae_path": str(wan2pt2_vae_path),
+        "wan2pt2_vae_sha256": _require_sha256(
+            current_wan2pt2_vae_sha256,
+            "current formal Wan2.2 VAE SHA256",
         ),
         "cosmos_environment_manifest_sha256": _require_sha256(
             current_cosmos_environment_manifest_sha256,
@@ -3520,6 +3605,8 @@ def verify_prior_gate(
         "asset_publisher_receipt_sha256": gate_contract["_runtime_bindings"]["assets"]["publisher_receipt_sha256"],
         "training_config_sha256": gate_contract["_verified_artifacts"]["training_config"]["sha256"],
         "action_stats_sha256": gate_contract["_verified_artifacts"]["action_stats"]["sha256"],
+        "wan2pt2_vae_path": gate_contract["_verified_artifacts"]["wan2pt2_vae"]["path"],
+        "wan2pt2_vae_sha256": gate_contract["_verified_artifacts"]["wan2pt2_vae"]["sha256"],
         "cosmos_environment_manifest_sha256": gate_contract["_verified_artifacts"]["cosmos_environment_manifest"][
             "sha256"
         ],
@@ -3597,6 +3684,8 @@ def create_contract(
     source_dcp_export_receipt: Path,
     training_config: Path,
     action_stats: Path,
+    wan2pt2_vae: Path,
+    expected_wan2pt2_vae_sha256: str,
     cosmos_environment_manifest: Path,
     robocasa_environment_manifest: Path,
     eval_intent_manifest: Path,
@@ -3644,6 +3733,7 @@ def create_contract(
     source_dcp_export_receipt = source_dcp_export_receipt.expanduser().resolve()
     training_config = training_config.expanduser().resolve()
     action_stats = action_stats.expanduser().resolve()
+    wan2pt2_vae = Path(os.path.abspath(wan2pt2_vae.expanduser()))
     cosmos_environment_manifest = cosmos_environment_manifest.expanduser().resolve()
     robocasa_environment_manifest = robocasa_environment_manifest.expanduser().resolve()
     eval_intent_manifest = eval_intent_manifest.expanduser().resolve()
@@ -3685,6 +3775,22 @@ def create_contract(
     source_dcp_export_receipt_artifact = artifact(source_dcp_export_receipt)
     training_config_artifact = artifact(training_config)
     action_stats_artifact = artifact(action_stats)
+    wan2pt2_vae_stable = _hash_stable_regular_file(
+        wan2pt2_vae,
+        "Wan2.2 VAE",
+    )
+    expected_wan2pt2_vae_sha256 = _require_sha256(
+        expected_wan2pt2_vae_sha256,
+        "expected Wan2.2 VAE SHA256",
+    )
+    if wan2pt2_vae_stable["sha256"] != expected_wan2pt2_vae_sha256:
+        raise ValueError(
+            f"Wan2.2 VAE SHA256 mismatch: expected={expected_wan2pt2_vae_sha256}, actual={wan2pt2_vae_stable['sha256']}"
+        )
+    wan2pt2_vae_artifact = {
+        "path": wan2pt2_vae_stable["path"],
+        "sha256": wan2pt2_vae_stable["sha256"],
+    }
     cosmos_environment_manifest_artifact = artifact(cosmos_environment_manifest)
     robocasa_environment_manifest_artifact = artifact(robocasa_environment_manifest)
     eval_intent_manifest_artifact = artifact(eval_intent_manifest)
@@ -3730,6 +3836,8 @@ def create_contract(
             current_asset_publisher_receipt_sha256=current_asset_publisher_receipt_sha256,
             current_training_config_sha256=training_config_artifact["sha256"],
             current_action_stats_sha256=action_stats_artifact["sha256"],
+            current_wan2pt2_vae_path=Path(wan2pt2_vae_artifact["path"]),
+            current_wan2pt2_vae_sha256=wan2pt2_vae_artifact["sha256"],
             current_cosmos_environment_manifest_sha256=cosmos_environment_manifest_artifact["sha256"],
             current_robocasa_environment_manifest_sha256=robocasa_environment_manifest_artifact["sha256"],
             current_demian_commit=demian_commit,
@@ -3799,6 +3907,7 @@ def create_contract(
             "source_dcp_export_receipt": source_dcp_export_receipt_artifact,
             "training_config": training_config_artifact,
             "action_stats": action_stats_artifact,
+            "wan2pt2_vae": wan2pt2_vae_artifact,
             "cosmos_environment_manifest": cosmos_environment_manifest_artifact,
             "robocasa_environment_manifest": robocasa_environment_manifest_artifact,
             "eval_intent_manifest": eval_intent_manifest_artifact,
@@ -4096,6 +4205,7 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
                 "source_dcp_export_receipt",
                 "training_config",
                 "action_stats",
+                "wan2pt2_vae",
                 "cosmos_environment_manifest",
                 "robocasa_environment_manifest",
                 "eval_intent_manifest",
@@ -4135,6 +4245,43 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
             name,
             expected_mode=expected_mode,
         )
+    wan2pt2_vae_descriptor = _require_dict(
+        artifacts.get("wan2pt2_vae"),
+        "contract.artifacts.wan2pt2_vae",
+    )
+    _require_exact_keys(
+        wan2pt2_vae_descriptor,
+        frozenset({"path", "sha256"}),
+        "contract.artifacts.wan2pt2_vae",
+    )
+    wan2pt2_vae_path = Path(
+        _require_nonempty_str(
+            wan2pt2_vae_descriptor.get("path"),
+            "contract.artifacts.wan2pt2_vae.path",
+        )
+    )
+    if not wan2pt2_vae_path.is_absolute():
+        raise ValueError("contract.artifacts.wan2pt2_vae.path must be absolute")
+    expected_wan2pt2_vae_sha256 = _require_sha256(
+        wan2pt2_vae_descriptor.get("sha256"),
+        "contract.artifacts.wan2pt2_vae.sha256",
+    )
+    wan2pt2_vae_stable = _hash_stable_regular_file(
+        wan2pt2_vae_path,
+        "contract.artifacts.wan2pt2_vae",
+    )
+    if wan2pt2_vae_stable["sha256"] != expected_wan2pt2_vae_sha256:
+        raise RuntimeError(
+            "wan2pt2_vae SHA256 mismatch: "
+            f"expected={expected_wan2pt2_vae_sha256}, "
+            f"actual={wan2pt2_vae_stable['sha256']}, "
+            f"path={wan2pt2_vae_path}"
+        )
+    verified["wan2pt2_vae"] = {
+        "path": wan2pt2_vae_stable["path"],
+        "sha256": wan2pt2_vae_stable["sha256"],
+    }
+    stable_artifacts["wan2pt2_vae"] = wan2pt2_vae_stable
     receipt_descriptors = artifacts.get("server_runtime_receipts")
     if not isinstance(receipt_descriptors, list) or len(receipt_descriptors) != num_shards:
         raise ValueError("contract.artifacts.server_runtime_receipts must contain one entry per shard")
@@ -4284,6 +4431,8 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
             current_asset_publisher_receipt_sha256=runtime_bindings["assets"]["publisher_receipt_sha256"],
             current_training_config_sha256=verified["training_config"]["sha256"],
             current_action_stats_sha256=verified["action_stats"]["sha256"],
+            current_wan2pt2_vae_path=Path(verified["wan2pt2_vae"]["path"]),
+            current_wan2pt2_vae_sha256=verified["wan2pt2_vae"]["sha256"],
             current_cosmos_environment_manifest_sha256=verified["cosmos_environment_manifest"]["sha256"],
             current_robocasa_environment_manifest_sha256=verified["robocasa_environment_manifest"]["sha256"],
             current_demian_commit=demian["commit"],
@@ -4321,6 +4470,7 @@ def _post_rollout_input_descriptors(contract: dict[str, Any]) -> dict[str, dict[
         "serving_checkpoint_manifest": dict(stable_artifacts["checkpoint_manifest"]),
         "pre_rollout_checkpoint_verification_receipt": dict(stable_artifacts["checkpoint_verification_receipt"]),
         "pre_rollout_asset_verification_receipt": dict(stable_artifacts["asset_verification_receipt"]),
+        "wan2pt2_vae": dict(stable_artifacts["wan2pt2_vae"]),
     }
 
 
@@ -4530,6 +4680,13 @@ def _collect_post_rollout_live_verification(
     assets_elapsed = time.perf_counter() - phase_started
 
     phase_started = time.perf_counter()
+    wan2pt2_vae = _hash_stable_regular_file(
+        Path(contract["_verified_artifacts"]["wan2pt2_vae"]["path"]),
+        "post-rollout Wan2.2 VAE",
+    )
+    wan2pt2_vae_elapsed = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
     source_repositories = {
         "cosmos": {
             "root": snapshot["snapshot_root"],
@@ -4573,19 +4730,24 @@ def _collect_post_rollout_live_verification(
         raise ValueError("post-rollout checkpoint verification does not exactly match the pre-rollout receipt")
     if assets != pre_assets:
         raise ValueError("post-rollout asset verification does not exactly match the pre-rollout receipt")
+    if wan2pt2_vae != contract["_stable_artifacts"]["wan2pt2_vae"]:
+        raise ValueError("post-rollout Wan2.2 VAE descriptor does not exactly match the pre-rollout descriptor")
 
     semantic_matches = {
         "checkpoint_pre_and_post": True,
         "robocasa_assets_pre_and_post": True,
+        "wan2pt2_vae_pre_and_post": True,
     }
     validation = {
         "cosmos_snapshot_full_file_verification_passed": True,
         "serving_checkpoint_full_file_verification_passed": True,
         "robocasa_asset_full_tree_verification_passed": True,
+        "wan2pt2_vae_content_rehash_passed": True,
         "source_heads_match_and_are_clean": True,
         "tracked_source_files_match_head_blobs": True,
         "pre_and_post_checkpoint_receipts_semantically_match": True,
         "pre_and_post_asset_receipts_semantically_match": True,
+        "pre_and_post_wan2pt2_vae_semantically_match": True,
     }
     return {
         "schema_version": 1,
@@ -4599,6 +4761,7 @@ def _collect_post_rollout_live_verification(
             "cosmos_snapshot": snapshot,
             "serving_checkpoint": checkpoint,
             "robocasa_assets": assets,
+            "wan2pt2_vae": wan2pt2_vae,
             "source_repositories": source_repositories,
         },
         "semantic_matches": semantic_matches,
@@ -4606,6 +4769,7 @@ def _collect_post_rollout_live_verification(
             "cosmos_snapshot": snapshot_elapsed,
             "serving_checkpoint": checkpoint_elapsed,
             "robocasa_assets": assets_elapsed,
+            "wan2pt2_vae": wan2pt2_vae_elapsed,
             "source_repositories": source_elapsed,
             "total": time.perf_counter() - started,
         },
@@ -4630,6 +4794,7 @@ def _validate_post_rollout_elapsed(value: Any, label: str) -> dict[str, float]:
             "cosmos_snapshot",
             "serving_checkpoint",
             "robocasa_assets",
+            "wan2pt2_vae",
             "source_repositories",
         )
     )
@@ -4821,6 +4986,9 @@ def _validate_server_receipt(contract: dict[str, Any]) -> None:
         "num_steps": contract["evaluation"]["policy_sampling"]["num_steps"],
         "reuse_policy_seed_per_request": True,
         "use_ema_weights": True,
+        "guardrails": False,
+        "vision_tokenizer": _ONLINE_WAN2PT2_TARGET,
+        "online_pixel_encoding": True,
         "model_action": "[dpos3,rot6d_columns6,gripper1]",
         "output_action": "[dpos3,axisangle3,gripper1]",
         "format_prompt_as_json": True,
@@ -5091,6 +5259,7 @@ def _collect_rows(
                 "checkpoint_manifest_sha256": artifacts["checkpoint_manifest"]["sha256"],
                 "training_config_sha256": artifacts["training_config"]["sha256"],
                 "action_stats_sha256": artifacts["action_stats"]["sha256"],
+                "wan2pt2_vae_sha256": artifacts["wan2pt2_vae"]["sha256"],
                 "demian_commit": contract["demian"]["commit"],
             }
             for episode_index, episode in enumerate(validated_episodes):
@@ -5504,6 +5673,8 @@ def _build_parser() -> argparse.ArgumentParser:
     contract_parser.add_argument("--source-dcp-export-receipt", type=Path, required=True)
     contract_parser.add_argument("--training-config", type=Path, required=True)
     contract_parser.add_argument("--action-stats", type=Path, required=True)
+    contract_parser.add_argument("--wan2pt2-vae", type=Path, required=True)
+    contract_parser.add_argument("--expected-wan2pt2-vae-sha256", required=True)
     contract_parser.add_argument("--cosmos-environment-manifest", type=Path, required=True)
     contract_parser.add_argument("--robocasa-environment-manifest", type=Path, required=True)
     contract_parser.add_argument("--eval-intent-manifest", type=Path, required=True)
@@ -5587,6 +5758,8 @@ def _build_parser() -> argparse.ArgumentParser:
     prior_gate_parser.add_argument("--current-asset-publisher-receipt-sha256", required=True)
     prior_gate_parser.add_argument("--current-training-config-sha256", required=True)
     prior_gate_parser.add_argument("--current-action-stats-sha256", required=True)
+    prior_gate_parser.add_argument("--current-wan2pt2-vae-path", type=Path, required=True)
+    prior_gate_parser.add_argument("--current-wan2pt2-vae-sha256", required=True)
     prior_gate_parser.add_argument("--current-cosmos-environment-manifest-sha256", required=True)
     prior_gate_parser.add_argument("--current-robocasa-environment-manifest-sha256", required=True)
     prior_gate_parser.add_argument("--current-demian-commit", required=True)
@@ -5612,6 +5785,8 @@ def main() -> None:
             source_dcp_export_receipt=args.source_dcp_export_receipt,
             training_config=args.training_config,
             action_stats=args.action_stats,
+            wan2pt2_vae=args.wan2pt2_vae,
+            expected_wan2pt2_vae_sha256=args.expected_wan2pt2_vae_sha256,
             cosmos_environment_manifest=args.cosmos_environment_manifest,
             robocasa_environment_manifest=args.robocasa_environment_manifest,
             eval_intent_manifest=args.eval_intent_manifest,
@@ -5695,6 +5870,8 @@ def main() -> None:
             current_asset_publisher_receipt_sha256=args.current_asset_publisher_receipt_sha256,
             current_training_config_sha256=args.current_training_config_sha256,
             current_action_stats_sha256=args.current_action_stats_sha256,
+            current_wan2pt2_vae_path=args.current_wan2pt2_vae_path,
+            current_wan2pt2_vae_sha256=args.current_wan2pt2_vae_sha256,
             current_cosmos_environment_manifest_sha256=args.current_cosmos_environment_manifest_sha256,
             current_robocasa_environment_manifest_sha256=args.current_robocasa_environment_manifest_sha256,
             current_demian_commit=args.current_demian_commit,

@@ -578,6 +578,8 @@ def test_formal_prior_gate_is_verified_before_any_reservation_or_submission() ->
     assert verification in script
     assert '--current-checkpoint-manifest-sha256 "$EXPECTED_CHECKPOINT_MANIFEST_SHA256"' in script
     assert '--current-source-dcp-export-receipt-sha256 "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"' in script
+    assert '--current-wan2pt2-vae-path "$PINNED_WAN22_VAE_PATH"' in script
+    assert '--current-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"' in script
     asset_manifest_arg = '--current-asset-manifest-sha256 "$PINNED_ASSET_MANIFEST_SHA256"'
     asset_receipt_arg = '--current-asset-publisher-receipt-sha256 "$PINNED_ASSET_RECEIPT_SHA256"'
     assert asset_manifest_arg in script
@@ -596,6 +598,7 @@ def test_all_live_model_inputs_and_repository_heads_are_verified_before_reservat
         '"checkpoint_manifest|$CHECKPOINT_MANIFEST|$EXPECTED_CHECKPOINT_MANIFEST_SHA256"',
         '"training_config|$TRAINING_CONFIG|$EXPECTED_TRAINING_CONFIG_SHA256"',
         '"action_stats|$ACTION_STATS|$EXPECTED_ACTION_STATS_SHA256"',
+        '"wan2pt2_vae|$PINNED_WAN22_VAE_PATH|$PINNED_WAN22_VAE_SHA256"',
         '"cosmos_environment_manifest|$COSMOS_ENVIRONMENT_MANIFEST|$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256"',
         '"robocasa_environment_manifest|$ROBOCASA_ENVIRONMENT_MANIFEST|$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256"',
         '"$CHECKPOINT_HELPER" verify',
@@ -647,6 +650,9 @@ def test_full_asset_repository_and_intent_preflights_precede_reservation() -> No
         < submission
     )
     assert '--workers "$ASSET_VERIFY_WORKERS"' in script[full_asset_verify:repository_preflight]
+    intent_block = script[intent_arguments:intent_verification]
+    assert '--wan2pt2-vae "$PINNED_WAN22_VAE_PATH"' in intent_block
+    assert '--expected-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"' in intent_block
     worker_environment = script[script.index("readonly WORKER_ENV_NAMES=(") : script.index("WORKER_SCRIPT=")]
     assert re.search(r"^\s+ASSET_VERIFY_WORKERS$", worker_environment, flags=re.MULTILINE)
     for token in (

@@ -204,6 +204,12 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     )
     config = _artifact(tmp_path, "training-config", {"recipe": "robocasa365"})
     stats = _artifact(tmp_path, "action-stats", {"global_raw": {}})
+    wan2pt2_vae_path = tmp_path / "Wan2.2_VAE.pth"
+    wan2pt2_vae_path.write_bytes(b"Wan2.2 VAE fixture\n")
+    wan2pt2_vae = {
+        "path": str(wan2pt2_vae_path.resolve()),
+        "sha256": _sha256(wan2pt2_vae_path),
+    }
     demian_evaluator = _path_artifact(
         demian_repo / "demian_wam" / "eval_utils" / "run_robocasa_eval.py",
         {"source": "evaluator"},
@@ -319,6 +325,9 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         "num_steps": 30,
         "reuse_policy_seed_per_request": True,
         "use_ema_weights": True,
+        "guardrails": False,
+        "vision_tokenizer": evidence._ONLINE_WAN2PT2_TARGET,
+        "online_pixel_encoding": True,
     }
     receipt_artifact = _artifact(tmp_path, "server-runtime-receipt", receipt)
     cosmos_environment_value = json.loads(Path(cosmos_environment["path"]).read_text(encoding="utf-8"))
@@ -662,6 +671,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "artifacts": {
                 "training_config": file_descriptor(config),
                 "action_stats": file_descriptor(stats),
+                "wan2pt2_vae": file_descriptor(wan2pt2_vae),
                 "cosmos_environment": {
                     "root": str(cosmos_prefix.resolve()),
                     "manifest": file_descriptor(cosmos_environment),
@@ -963,6 +973,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
             "source_dcp_export_receipt": source_dcp_export_receipt,
             "training_config": config,
             "action_stats": stats,
+            "wan2pt2_vae": wan2pt2_vae,
             "cosmos_environment_manifest": cosmos_environment,
             "robocasa_environment_manifest": robocasa_environment,
             "eval_intent_manifest": intent,
@@ -1193,6 +1204,8 @@ def _gate_evidence_fixture(
         "current_asset_publisher_receipt_sha256": asset_verification["publisher_receipt_sha256"],
         "current_training_config_sha256": contract["artifacts"]["training_config"]["sha256"],
         "current_action_stats_sha256": contract["artifacts"]["action_stats"]["sha256"],
+        "current_wan2pt2_vae_path": Path(contract["artifacts"]["wan2pt2_vae"]["path"]),
+        "current_wan2pt2_vae_sha256": contract["artifacts"]["wan2pt2_vae"]["sha256"],
         "current_cosmos_environment_manifest_sha256": contract["artifacts"]["cosmos_environment_manifest"]["sha256"],
         "current_robocasa_environment_manifest_sha256": contract["artifacts"]["robocasa_environment_manifest"][
             "sha256"
@@ -1249,6 +1262,7 @@ def test_summarize_writes_complete_episode_and_task_csvs(
     assert result["artifacts"]["raw_shards"][0]["shard"] == 0
     assert result["artifacts"]["raw_shards"][0]["args"]["sha256"] == _sha256(results_dir / "args.json")
     assert result["artifacts"]["raw_shards"][0]["results"]["sha256"] == _sha256(results_dir / "results_shard0.json")
+    assert result["artifacts"]["wan2pt2_vae"]["sha256"] == _sha256(Path(result["artifacts"]["wan2pt2_vae"]["path"]))
     assert stat.S_IMODE(summary_csv.stat().st_mode) == 0o444
     assert stat.S_IMODE(task_csv.stat().st_mode) == 0o444
     assert stat.S_IMODE(evidence_json.stat().st_mode) == 0o444
@@ -1259,6 +1273,7 @@ def test_summarize_writes_complete_episode_and_task_csvs(
     assert rows[0]["episode_index"] == "0"
     assert rows[0]["seed"] == "42"
     assert rows[0]["success"] == "true"
+    assert rows[0]["wan2pt2_vae_sha256"] == result["artifacts"]["wan2pt2_vae"]["sha256"]
     with task_csv.open(newline="", encoding="utf-8") as handle:
         task_rows = list(csv.DictReader(handle))
     assert task_rows[0]["success_rate"] == "1.000000000000"
@@ -1634,6 +1649,24 @@ def test_verify_prior_gate_rejects_hash_mode_and_current_input_drift(
             }
         )
 
+    alternate_vae = tmp_path / "alternate-Wan2.2_VAE.pth"
+    alternate_vae.write_bytes(Path(arguments["current_wan2pt2_vae_path"]).read_bytes())
+    with pytest.raises(ValueError, match="inputs differ"):
+        evidence.verify_prior_gate(
+            **{
+                **arguments,
+                "current_wan2pt2_vae_path": alternate_vae.resolve(),
+            }
+        )
+
+    with pytest.raises(ValueError, match="inputs differ"):
+        evidence.verify_prior_gate(
+            **{
+                **arguments,
+                "current_wan2pt2_vae_sha256": "7" * 64,
+            }
+        )
+
 
 def test_contract_rejects_rehashed_intent_threshold_drift(tmp_path: Path) -> None:
     contract_path, _results_dir = _fixture(tmp_path)
@@ -1656,6 +1689,76 @@ def test_contract_rejects_rehashed_intent_threshold_drift(tmp_path: Path) -> Non
     _rewrite_submission_and_runtime_binding(contract_path, rebind_intent)
     with pytest.raises(ValueError, match="intent thresholds differ"):
         evidence._validate_contract(contract_path)
+
+
+def test_contract_rejects_rehashed_intent_wan2pt2_vae_descriptor_drift(
+    tmp_path: Path,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    intent_path = Path(contract["artifacts"]["eval_intent_manifest"]["path"])
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    intent["artifacts"]["wan2pt2_vae"]["sha256"] = "9" * 64
+    _write_json(intent_path, intent)
+    intent_path.chmod(0o444)
+    intent_sha256 = _sha256(intent_path)
+    contract["artifacts"]["eval_intent_manifest"]["sha256"] = intent_sha256
+    _write_json(contract_path, contract)
+
+    def rebind_intent(submission: dict[str, object]) -> None:
+        descriptor = submission["eval_intent_manifest"]
+        assert isinstance(descriptor, dict)
+        descriptor["size_bytes"] = intent_path.stat().st_size
+        descriptor["sha256"] = intent_sha256
+
+    _rewrite_submission_and_runtime_binding(contract_path, rebind_intent)
+    with pytest.raises(ValueError, match="wan2pt2_vae.*exact live file descriptor"):
+        evidence._validate_contract(contract_path)
+
+
+def test_contract_rejects_wan2pt2_vae_content_and_path_drift(tmp_path: Path) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    vae_path = Path(contract["artifacts"]["wan2pt2_vae"]["path"])
+    vae_path.write_bytes(b"drifted Wan2.2 VAE fixture\n")
+
+    with pytest.raises(RuntimeError, match="wan2pt2_vae SHA256 mismatch"):
+        evidence._validate_contract(contract_path)
+
+    vae_path.write_bytes(b"Wan2.2 VAE fixture\n")
+    symlink_path = tmp_path / "Wan2.2_VAE-link.pth"
+    symlink_path.symlink_to(vae_path)
+    contract["artifacts"]["wan2pt2_vae"]["path"] = str(symlink_path)
+    _write_json(contract_path, contract)
+    with pytest.raises(ValueError, match="canonical regular non-symlink"):
+        evidence._validate_contract(contract_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("guardrails", True),
+        ("vision_tokenizer", "wrong.online.Tokenizer"),
+        ("online_pixel_encoding", False),
+    ],
+)
+def test_server_receipt_requires_online_wan2pt2_pixel_encoding(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract_value = json.loads(contract_path.read_text(encoding="utf-8"))
+    descriptor = contract_value["artifacts"]["server_runtime_receipts"][0]
+    receipt_path = Path(descriptor["path"])
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt[field] = value
+    _write_json(receipt_path, receipt)
+    descriptor["sha256"] = _sha256(receipt_path)
+    _write_json(contract_path, contract_value)
+    contract = evidence._validate_contract(contract_path)
+    with pytest.raises(ValueError, match=field):
+        evidence._validate_server_receipt(contract)
 
 
 def test_contract_rejects_non_json_source_dcp_receipt_even_when_rehashed(
@@ -1881,6 +1984,7 @@ def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
             "cosmos_snapshot",
             "serving_checkpoint",
             "robocasa_assets",
+            "wan2pt2_vae",
             "source_repositories",
         )
     )
@@ -2008,6 +2112,33 @@ def test_post_rollout_requires_exact_pre_and_post_semantic_match(
     output = tmp_path / "post-rollout-receipt.json"
     with pytest.raises(ValueError, match="does not exactly match"):
         evidence.verify_post_rollout(contract_path=contract_path, output=output)
+    assert not output.exists()
+
+
+def test_post_rollout_rehash_rejects_wan2pt2_vae_drift_after_contract_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    _patch_post_rollout_verifiers(monkeypatch, contract_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    vae_path = Path(contract["artifacts"]["wan2pt2_vae"]["path"])
+    real_hash = evidence._hash_stable_regular_file
+    drifted = False
+
+    def drift_after_contract_hash(path: Path, label: str) -> dict[str, object]:
+        nonlocal drifted
+        descriptor = real_hash(path, label)
+        if label == "contract.artifacts.wan2pt2_vae" and not drifted:
+            drifted = True
+            vae_path.write_bytes(b"post-contract Wan2.2 VAE drift\n")
+        return descriptor
+
+    monkeypatch.setattr(evidence, "_hash_stable_regular_file", drift_after_contract_hash)
+    output = tmp_path / "post-rollout-receipt.json"
+    with pytest.raises(ValueError, match="post-rollout Wan2.2 VAE descriptor"):
+        evidence.verify_post_rollout(contract_path=contract_path, output=output)
+    assert drifted
     assert not output.exists()
 
 
@@ -2153,6 +2284,107 @@ def test_formal_contract_requires_full_canonical_atomic_suite(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="canonical ordered task list"):
         evidence._validate_contract(contract_path)
+
+
+def test_formal_eight_shards_produce_exactly_340_unique_episode_rows(
+    tmp_path: Path,
+) -> None:
+    logical_run_id = "CWAM-E35-R12-FORMAL-S42"
+    results_dir = tmp_path / "formal-results" / logical_run_id
+    results_dir.mkdir(parents=True)
+    checkpoint_path = str((tmp_path / "checkpoint").resolve())
+    Path(checkpoint_path).mkdir()
+    wan_sha256 = "d" * 64
+    contract = {
+        "experiment_id": "CWAM-E35-R12-FORMAL",
+        "logical_run_id": logical_run_id,
+        "checkpoint_path": checkpoint_path,
+        "run_name": logical_run_id,
+        "results_dir": str(results_dir.resolve()),
+        "demian": {"commit": "2" * 40},
+        "evaluation": {
+            "stage": "formal",
+            "role": "primary",
+            "split": "atomic",
+            "tasks": list(evidence.ATOMIC_TASKS),
+            "episodes_per_task": 20,
+            "base_seed": 42,
+            "max_steps": 400,
+            "open_loop_horizon": 12,
+            "num_shards": 8,
+        },
+        "_verified_artifacts": {
+            "checkpoint_manifest": {"sha256": "a" * 64},
+            "training_config": {"sha256": "b" * 64},
+            "action_stats": {"sha256": "c" * 64},
+            "wan2pt2_vae": {"sha256": wan_sha256},
+        },
+    }
+
+    for shard in range(8):
+        expected_tasks = [task for index, task in enumerate(evidence.ATOMIC_TASKS) if index % 8 == shard]
+        _write_json(
+            results_dir / f"args_shard{shard}.json",
+            {
+                "tasks": list(evidence.ATOMIC_TASKS),
+                "split": "atomic",
+                "task_shard": shard,
+                "num_shards": 8,
+                "episodes": 20,
+                "episodes_start": 0,
+                "max_steps": 400,
+                "open_loop_horizon": 12,
+                "seed": 42,
+                "checkpoint": checkpoint_path,
+                "results_dir": str(results_dir.parent),
+                "run_name": logical_run_id,
+                "eval_dataset": None,
+                "save_video": False,
+                "headless": True,
+                "dynamic_instructions_file": None,
+                "gt_reasoning_file": None,
+                "vlm_captions_file": None,
+                "fg_captions_path": None,
+            },
+        )
+        shard_results: dict[str, object] = {}
+        for task in expected_tasks:
+            task_index = evidence.ATOMIC_TASKS.index(task)
+            episode_results = [
+                {
+                    "success": (task_index + episode_index) % 2 == 0,
+                    "place_anytime": False,
+                    "place_first_step": None,
+                    "steps": 1,
+                    "subtask_successes": [],
+                    "action_log": [[0.0] * 7],
+                    "instruction": f"execute {task}",
+                }
+                for episode_index in range(20)
+            ]
+            successes = sum(int(episode["success"]) for episode in episode_results)
+            shard_results[task] = {
+                "success_rate": successes / 20,
+                "successes": successes,
+                "place_anytime_rate": 0.0,
+                "place_anytime_count": 0,
+                "episodes": 20,
+                "episode_results": episode_results,
+                "split": "atomic",
+                "complete": True,
+            }
+        _write_json(results_dir / f"results_shard{shard}.json", shard_results)
+
+    episode_rows, task_rows, raw_shards = evidence._collect_rows(contract, results_dir)
+    episode_identities = {(row["task"], int(row["episode_index"])) for row in episode_rows}
+    csv_rows = list(csv.DictReader(evidence._render_csv(evidence._CSV_EPISODE_FIELDS, episode_rows).splitlines()))
+
+    assert len(raw_shards) == 8
+    assert {item["shard"] for item in raw_shards} == set(range(8))
+    assert len(task_rows) == len(evidence.ATOMIC_TASKS) == 17
+    assert len(episode_rows) == len(csv_rows) == 340
+    assert len(episode_identities) == 340
+    assert all(row["wan2pt2_vae_sha256"] == wan_sha256 for row in episode_rows)
 
 
 def test_contract_and_artifact_schemas_reject_unknown_fields(tmp_path: Path) -> None:

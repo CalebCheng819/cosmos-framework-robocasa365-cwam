@@ -123,6 +123,8 @@ readonly PINNED_CONTAINER_IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:592
 readonly PINNED_ASSET_MANIFEST_SHA256="3dc62249192bf2a8fd4bef1a31c6de9124cbc10421aa91b6769dee8e39e4d3c0"
 readonly PINNED_ASSET_RECEIPT_SHA256="dc25dff483b1f42c904926cf72f91369f6ac94f0a4f50ab54e4c776299f93dca"
 readonly PINNED_ASSET_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"
+readonly PINNED_WAN22_VAE_PATH="/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+readonly PINNED_WAN22_VAE_SHA256="20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"
 readonly SCHEDULER_READBACK_WAIT_SECONDS=900
 readonly CLEANUP_GRACE_SECONDS=30
 readonly MAX_ASSET_VERIFY_WORKERS=64
@@ -406,6 +408,36 @@ done
 verify_sha256 checkpoint_manifest "$CHECKPOINT_MANIFEST" "$EXPECTED_CHECKPOINT_MANIFEST_SHA256"
 verify_sha256 training_config "$TRAINING_CONFIG" "$EXPECTED_TRAINING_CONFIG_SHA256"
 verify_sha256 action_stats "$ACTION_STATS" "$EXPECTED_ACTION_STATS_SHA256"
+[[ "$(canonical_existing "$PINNED_WAN22_VAE_PATH")" == "$PINNED_WAN22_VAE_PATH" &&
+    ! -L "$PINNED_WAN22_VAE_PATH" ]] ||
+    die "pinned Wan2.2 VAE must be an exact canonical regular non-symlink file"
+verify_sha256 wan2pt2_vae_pre_rollout "$PINNED_WAN22_VAE_PATH" "$PINNED_WAN22_VAE_SHA256"
+"$COSMOS_ENV/bin/python" -I -B - "$TRAINING_CONFIG" "$PINNED_WAN22_VAE_PATH" <<'PY'
+import pathlib
+import sys
+
+import yaml
+
+tokenizer = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["model"]["config"]["tokenizer"]
+expected = {
+    "_target_": (
+        "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
+        "PrecomputedWan2pt2LatentTokenizer"
+    ),
+    "vae_path": sys.argv[2],
+    "latent_ch": 48,
+    "spatial_compression_factor": 16,
+    "temporal_compression_factor": 4,
+    "causal": True,
+}
+for key, value in expected.items():
+    if tokenizer.get(key) != value:
+        raise SystemExit(
+            f"training tokenizer contract mismatch for {key}: "
+            f"expected={value!r} actual={tokenizer.get(key)!r}"
+        )
+PY
+echo "WAN2PT2_VAE_VERIFIED phase=pre_rollout path=$PINNED_WAN22_VAE_PATH sha256=$PINNED_WAN22_VAE_SHA256"
 verify_sha256 \
     cosmos_environment_manifest \
     "$COSMOS_ENVIRONMENT_MANIFEST" \
@@ -485,6 +517,8 @@ INTENT_VERIFY_ARGS=(
     --expected-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256"
     --action-stats "$ACTION_STATS"
     --expected-action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256"
+    --wan2pt2-vae "$PINNED_WAN22_VAE_PATH"
+    --expected-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"
     --cosmos-env-root "$COSMOS_ENV"
     --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST"
     --expected-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256"
@@ -541,6 +575,8 @@ if [[ "$EVAL_STAGE" == "formal" ]]; then
         --current-asset-publisher-receipt-sha256 "$EXPECTED_ROBOCASA_ASSET_RECEIPT_SHA256" \
         --current-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256" \
         --current-action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256" \
+        --current-wan2pt2-vae-path "$PINNED_WAN22_VAE_PATH" \
+        --current-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256" \
         --current-cosmos-environment-manifest-sha256 "$EXPECTED_COSMOS_ENVIRONMENT_MANIFEST_SHA256" \
         --current-robocasa-environment-manifest-sha256 "$EXPECTED_ROBOCASA_ENVIRONMENT_MANIFEST_SHA256" \
         --current-demian-commit "$EXPECTED_DEMIAN_COMMIT" \
@@ -799,8 +835,9 @@ trap 'cleanup $?' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
+readonly EVAL_NVME_PARENT="/nvme/.cwam-robocasa365-eval"
 EVAL_NVME_ROOT="$(realpath -m -- "$EVAL_NVME_ROOT")"
-[[ "$EVAL_NVME_ROOT" == "/nvme/.cwam-robocasa365-eval/$EVAL_LOGICAL_RUN_ID" ]] ||
+[[ "$EVAL_NVME_ROOT" == "$EVAL_NVME_PARENT/$EVAL_LOGICAL_RUN_ID" ]] ||
     die "EVAL_NVME_ROOT must be derived exactly from EVAL_LOGICAL_RUN_ID"
 case "$EVAL_NVME_ROOT/" in
     /nvme/*/) ;;
@@ -809,8 +846,20 @@ esac
 [[ "$(findmnt -n -T /nvme -o TARGET)" == /nvme ]] || die "/nvme is not a distinct mount target"
 [[ "$(findmnt -n -T /nvme -o SOURCE)" == /dev/nvme1n1 ]] || die "/nvme is not backed by /dev/nvme1n1"
 [[ "$(findmnt -n -T /nvme -o FSTYPE)" == xfs ]] || die "/nvme is not xfs"
-[[ ! -e "$EVAL_NVME_ROOT" ]] || die "Refusing to reuse EVAL_NVME_ROOT: $EVAL_NVME_ROOT"
-mkdir -- "$EVAL_NVME_ROOT"
+if [[ ! -e "$EVAL_NVME_PARENT" && ! -L "$EVAL_NVME_PARENT" ]]; then
+    mkdir --mode=0700 -- "$EVAL_NVME_PARENT" 2>/dev/null || true
+fi
+[[ -d "$EVAL_NVME_PARENT" && ! -L "$EVAL_NVME_PARENT" ]] ||
+    die "eval NVMe parent must be a real directory"
+[[ "$(realpath -e -- "$EVAL_NVME_PARENT")" == "$EVAL_NVME_PARENT" ]] ||
+    die "eval NVMe parent must be canonical"
+[[ "$(stat -c %u:%g -- "$EVAL_NVME_PARENT")" == 0:0 ]] ||
+    die "eval NVMe parent must be owned by root:root"
+[[ "$(stat -c %a -- "$EVAL_NVME_PARENT")" == 700 ]] ||
+    die "eval NVMe parent must be mode 0700"
+[[ ! -e "$EVAL_NVME_ROOT" && ! -L "$EVAL_NVME_ROOT" ]] ||
+    die "Refusing to reuse EVAL_NVME_ROOT: $EVAL_NVME_ROOT"
+mkdir --mode=0700 -- "$EVAL_NVME_ROOT"
 NVME_CREATED=1
 
 "$COSMOS_PY" - "$NUM_SHARDS" <<'PY'
@@ -921,6 +970,8 @@ CONTRACT_ARGS=(
     --source-dcp-export-receipt "$SOURCE_DCP_EXPORT_RECEIPT"
     --training-config "$TRAINING_CONFIG"
     --action-stats "$ACTION_STATS"
+    --wan2pt2-vae "$PINNED_WAN22_VAE_PATH"
+    --expected-wan2pt2-vae-sha256 "$PINNED_WAN22_VAE_SHA256"
     --cosmos-environment-manifest "$COSMOS_ENVIRONMENT_MANIFEST"
     --robocasa-environment-manifest "$ROBOCASA_ENVIRONMENT_MANIFEST"
     --eval-intent-manifest "$EVAL_INTENT_MANIFEST"
@@ -1026,6 +1077,8 @@ require_accepted_submission_terminal_state
 stop_child_pids "${SERVER_PIDS[@]}"
 SERVER_PIDS=()
 
+verify_sha256 wan2pt2_vae_post_rollout "$PINNED_WAN22_VAE_PATH" "$PINNED_WAN22_VAE_SHA256"
+echo "WAN2PT2_VAE_VERIFIED phase=post_rollout path=$PINNED_WAN22_VAE_PATH sha256=$PINNED_WAN22_VAE_SHA256"
 PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
     verify-post-rollout \
     --contract "$CONTRACT_PATH" \
