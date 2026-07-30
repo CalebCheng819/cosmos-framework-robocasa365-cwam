@@ -43,6 +43,26 @@ H_DRIVER_LIBRARY_PATH = "/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 PINNED_EGL_VENDOR_JSON = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
 SUBMISSION_VERIFICATION_KIND = "cwam_robocasa365_eval_submission_verification"
 ASSET_VERIFICATION_KIND = "cwam_robocasa_asset_tree_verification_receipt"
+EVAL_INTENT_KIND = "cwam_robocasa365_eval_intent"
+SUBMISSION_VERIFICATION_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "status",
+        "verified_at_utc",
+        "identity",
+        "freshness",
+        "evaluation",
+        "eval_intent_manifest",
+        "preflight",
+        "preflight_sha256",
+        "scheduler",
+        "reservation",
+        "scheduler_readback_receipt",
+        "scheduler_artifacts",
+        "validation",
+    }
+)
 MAX_START_TO_CAPTURE_SECONDS = 2 * 60 * 60
 MAX_FUTURE_SKEW_SECONDS = 5 * 60
 FORBIDDEN_GRAPHICS_ENVIRONMENT = (
@@ -644,6 +664,173 @@ def _prepare_bound_json_receipt(
         "kind": kind,
         "schema_version": schema_version,
     }
+
+
+def _validate_submission_eval_intent_manifest(value: object) -> dict[str, Any]:
+    label = "submission verification receipt.eval_intent_manifest"
+    descriptor = _require_mapping(value, label)
+    _require_exact_keys(
+        descriptor,
+        frozenset({"path", "size_bytes", "sha256"}),
+        label,
+    )
+    path = _canonical_path(
+        _require_string(descriptor.get("path"), f"{label}.path"),
+        f"{label}.path",
+        kind="file",
+    )
+    payload = _read_stable_file(path, label)
+    if stat.S_IMODE(path.stat().st_mode) != 0o444:
+        raise RuntimeReceiptValidationError(f"{label} must be immutable mode 0444")
+    size_bytes = _require_int(
+        descriptor.get("size_bytes"),
+        f"{label}.size_bytes",
+        minimum=1,
+    )
+    digest = _require_sha256(descriptor.get("sha256"), f"{label}.sha256")
+    actual_digest = hashlib.sha256(payload).hexdigest()
+    if size_bytes != len(payload) or digest != actual_digest:
+        raise RuntimeReceiptValidationError(f"{label} descriptor differs from live bytes")
+    intent = _require_mapping(_strict_json_bytes(payload, label), label)
+    if intent.get("schema_version") != 1 or intent.get("kind") != EVAL_INTENT_KIND:
+        raise RuntimeReceiptValidationError(f"{label} must describe a schema-1 {EVAL_INTENT_KIND!r} document")
+    return {
+        "path": str(path),
+        "size_bytes": len(payload),
+        "sha256": actual_digest,
+    }
+
+
+def _validate_submission_preflight(
+    value: object,
+    expected_sha256: object,
+    *,
+    asset_verification: Mapping[str, Any],
+    sources: Mapping[str, Mapping[str, Any]],
+) -> None:
+    label = "submission verification receipt.preflight"
+    preflight = _require_mapping(value, label)
+    _require_exact_keys(
+        preflight,
+        frozenset({"asset_tree", "repositories", "validation"}),
+        label,
+    )
+    digest = _require_sha256(
+        expected_sha256,
+        "submission verification receipt.preflight_sha256",
+    )
+    try:
+        encoded = json.dumps(
+            preflight,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise RuntimeReceiptValidationError(f"{label} is not canonical finite JSON") from error
+    if hashlib.sha256(encoded).hexdigest() != digest:
+        raise RuntimeReceiptValidationError(f"{label} canonical SHA-256 mismatch")
+
+    asset_tree = _require_mapping(preflight.get("asset_tree"), f"{label}.asset_tree")
+    if asset_tree != asset_verification:
+        raise RuntimeReceiptValidationError(f"{label} asset tree differs from the live asset verification receipt")
+
+    repositories = _require_mapping(preflight.get("repositories"), f"{label}.repositories")
+    _require_exact_keys(
+        repositories,
+        frozenset({"demian", "robocasa", "robosuite"}),
+        f"{label}.repositories",
+    )
+    tracked_keys = frozenset(
+        {
+            "object_format",
+            "head_tree_oid",
+            "tracked_entry_count",
+            "tracked_regular_file_count",
+            "tracked_non_regular_entry_count",
+            "tracked_regular_total_bytes",
+            "tracked_regular_manifest_sha256",
+            "all_tracked_regular_files_match_head_blobs",
+        }
+    )
+    for name in ("demian", "robocasa", "robosuite"):
+        repository_label = f"{label}.repositories.{name}"
+        report = _require_mapping(repositories.get(name), repository_label)
+        _require_exact_keys(
+            report,
+            frozenset({"root", "expected_commit", "actual_commit", "clean", "tracked_files"}),
+            repository_label,
+        )
+        source = _require_mapping(sources.get(name), f"live sources.{name}")
+        root = _canonical_path(
+            _require_string(report.get("root"), f"{repository_label}.root"),
+            f"{repository_label}.root",
+            kind="directory",
+        )
+        expected_commit = _require_commit(
+            report.get("expected_commit"),
+            f"{repository_label}.expected_commit",
+        )
+        actual_commit = _require_commit(
+            report.get("actual_commit"),
+            f"{repository_label}.actual_commit",
+        )
+        if str(root) != source.get("root"):
+            raise RuntimeReceiptValidationError(f"{repository_label}.root differs from the live source root")
+        if expected_commit != source.get("expected_commit") or actual_commit != source.get("actual_commit"):
+            raise RuntimeReceiptValidationError(f"{repository_label} commit differs from the live source commit")
+        if report.get("clean") is not True or source.get("clean") is not True:
+            raise RuntimeReceiptValidationError(f"{repository_label} is not a live clean source")
+
+        tracked = _require_mapping(report.get("tracked_files"), f"{repository_label}.tracked_files")
+        _require_exact_keys(tracked, tracked_keys, f"{repository_label}.tracked_files")
+        object_format = _require_string(
+            tracked.get("object_format"),
+            f"{repository_label}.tracked_files.object_format",
+        )
+        if object_format not in {"sha1", "sha256"}:
+            raise RuntimeReceiptValidationError(f"{repository_label}.tracked_files.object_format is unsupported")
+        oid_length = 40 if object_format == "sha1" else 64
+        head_tree_oid = tracked.get("head_tree_oid")
+        if not isinstance(head_tree_oid, str) or re.fullmatch(rf"[0-9a-f]{{{oid_length}}}", head_tree_oid) is None:
+            raise RuntimeReceiptValidationError(f"{repository_label}.tracked_files.head_tree_oid is invalid")
+        entry_count = _require_int(
+            tracked.get("tracked_entry_count"),
+            f"{repository_label}.tracked_files.tracked_entry_count",
+            minimum=1,
+        )
+        regular_count = _require_int(
+            tracked.get("tracked_regular_file_count"),
+            f"{repository_label}.tracked_files.tracked_regular_file_count",
+            minimum=1,
+        )
+        non_regular_count = _require_int(
+            tracked.get("tracked_non_regular_entry_count"),
+            f"{repository_label}.tracked_files.tracked_non_regular_entry_count",
+        )
+        _require_int(
+            tracked.get("tracked_regular_total_bytes"),
+            f"{repository_label}.tracked_files.tracked_regular_total_bytes",
+        )
+        if entry_count != regular_count + non_regular_count:
+            raise RuntimeReceiptValidationError(f"{repository_label}.tracked_files entry counts are inconsistent")
+        _require_sha256(
+            tracked.get("tracked_regular_manifest_sha256"),
+            f"{repository_label}.tracked_files.tracked_regular_manifest_sha256",
+        )
+        if tracked.get("all_tracked_regular_files_match_head_blobs") is not True:
+            raise RuntimeReceiptValidationError(
+                f"{repository_label}.tracked_files is not an all-true tracked blob verdict"
+            )
+
+    expected_validation = {
+        "asset_tree_full_hash_match": True,
+        "repository_heads_clean": True,
+        "tracked_regular_files_match_head_blobs": True,
+    }
+    validation = _require_mapping(preflight.get("validation"), f"{label}.validation")
+    if validation != expected_validation:
+        raise RuntimeReceiptValidationError(f"{label}.validation is not the exact all-true verdict")
 
 
 def _parse_utc(value: object, label: str) -> datetime:
@@ -1668,23 +1855,11 @@ def capture_runtime_receipt(
     )
     _require_exact_keys(
         submission_verification,
-        frozenset(
-            {
-                "schema_version",
-                "kind",
-                "status",
-                "verified_at_utc",
-                "identity",
-                "freshness",
-                "evaluation",
-                "scheduler",
-                "reservation",
-                "scheduler_readback_receipt",
-                "scheduler_artifacts",
-                "validation",
-            }
-        ),
+        SUBMISSION_VERIFICATION_KEYS,
         "submission verification receipt",
+    )
+    submission_eval_intent_manifest = _validate_submission_eval_intent_manifest(
+        submission_verification.get("eval_intent_manifest")
     )
     submission_identity = _require_mapping(
         submission_verification.get("identity"),
@@ -1848,6 +2023,12 @@ def capture_runtime_receipt(
             )
             for name, root, commit in source_specs
         }
+    )
+    _validate_submission_preflight(
+        submission_verification.get("preflight"),
+        submission_verification.get("preflight_sha256"),
+        asset_verification=asset_verification,
+        sources=sources,
     )
     cosmos_root = Path(sources["cosmos"]["root"])
     demian_root = Path(sources["demian"]["root"])
@@ -2062,6 +2243,11 @@ def capture_runtime_receipt(
         raise RuntimeReceiptValidationError("submission verification receipt changed during runtime capture")
     if asset_after != asset_verification or asset_descriptor_after != asset_verification_descriptor:
         raise RuntimeReceiptValidationError("asset verification receipt changed during runtime capture")
+    submission_eval_intent_manifest_after = _validate_submission_eval_intent_manifest(
+        submission_after.get("eval_intent_manifest")
+    )
+    if submission_eval_intent_manifest_after != submission_eval_intent_manifest:
+        raise RuntimeReceiptValidationError("submission verification eval intent changed during runtime capture")
 
     captured_at = _clock_utc(clock, "capture completion")
     if captured_at < capture_started:

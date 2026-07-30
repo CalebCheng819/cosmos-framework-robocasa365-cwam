@@ -191,6 +191,12 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         "robocasa": tmp_path / "sources" / "robocasa",
         "robosuite": tmp_path / "sources" / "robosuite",
     }
+    commits = {
+        str(source_roots["cosmos"]): "1" * 40,
+        str(source_roots["demian"]): "2" * 40,
+        str(source_roots["robocasa"]): "3" * 40,
+        str(source_roots["robosuite"]): "4" * 40,
+    }
     module_paths = {
         "cosmos_framework": source_roots["cosmos"] / "cosmos_framework" / "__init__.py",
         "environment_helper": (source_roots["cosmos"] / runtime_receipt.ENVIRONMENT_MANIFEST_HELPER_REL),
@@ -208,39 +214,6 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
 
-    submitted_at = "2026-07-29T00:50:00Z"
-    submission_verification_value = {
-        "schema_version": 1,
-        "kind": runtime_receipt.SUBMISSION_VERIFICATION_KIND,
-        "status": "passed",
-        "verified_at_utc": "2026-07-29T01:01:00Z",
-        "identity": {
-            "experiment_id": "CWAM-E35-R12-GATE",
-            "logical_run_id": "CWAM-E35-R12-GATE-S42",
-            "run_name": "CWAM-E35-R12-GATE-S42",
-            "submission_nonce": "e" * 64,
-            "submitted_at_utc": submitted_at,
-        },
-        "freshness": {
-            "age_seconds": 660.0,
-            "expires_at_utc": "2026-08-01T00:50:00Z",
-            "max_age_seconds": 259200,
-            "max_future_skew_seconds": runtime_receipt.MAX_FUTURE_SKEW_SECONDS,
-            "scheduler_started_at_utc": "2026-07-29T01:00:00Z",
-            "start_age_seconds": 60.0,
-            "max_start_to_verification_seconds": (runtime_receipt.MAX_START_TO_CAPTURE_SECONDS),
-        },
-        "evaluation": {},
-        "scheduler": {},
-        "reservation": {},
-        "scheduler_readback_receipt": {},
-        "scheduler_artifacts": {},
-        "validation": {},
-    }
-    submission_verification, submission_verification_sha = _write_json(
-        tmp_path / "receipts" / "submission-verification.json",
-        submission_verification_value,
-    )
     asset_verification_value = {
         "schema_version": 1,
         "kind": runtime_receipt.ASSET_VERIFICATION_KIND,
@@ -269,6 +242,88 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         tmp_path / "receipts" / "asset-verification.json",
         asset_verification_value,
     )
+    eval_intent, eval_intent_sha = _write_json(
+        tmp_path / "intent" / "eval-intent.json",
+        {"kind": runtime_receipt.EVAL_INTENT_KIND, "schema_version": 1},
+    )
+    eval_intent.chmod(0o444)
+    eval_intent_payload = eval_intent.read_bytes()
+    eval_intent_descriptor = {
+        "path": str(eval_intent.resolve(strict=True)),
+        "size_bytes": len(eval_intent_payload),
+        "sha256": eval_intent_sha,
+    }
+    repositories = {}
+    for index, name in enumerate(("demian", "robocasa", "robosuite"), start=2):
+        root = source_roots[name]
+        commit = commits[str(root)]
+        repositories[name] = {
+            "root": str(root),
+            "expected_commit": commit,
+            "actual_commit": commit,
+            "clean": True,
+            "tracked_files": {
+                "all_tracked_regular_files_match_head_blobs": True,
+                "head_tree_oid": f"{index}" * 40,
+                "object_format": "sha1",
+                "tracked_entry_count": 1,
+                "tracked_non_regular_entry_count": 0,
+                "tracked_regular_file_count": 1,
+                "tracked_regular_manifest_sha256": f"{index}" * 64,
+                "tracked_regular_total_bytes": 1,
+            },
+        }
+    preflight = {
+        "asset_tree": asset_verification_value,
+        "repositories": repositories,
+        "validation": {
+            "asset_tree_full_hash_match": True,
+            "repository_heads_clean": True,
+            "tracked_regular_files_match_head_blobs": True,
+        },
+    }
+    preflight_payload = json.dumps(
+        preflight,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    submitted_at = "2026-07-29T00:50:00Z"
+    submission_verification_value = {
+        "schema_version": 1,
+        "kind": runtime_receipt.SUBMISSION_VERIFICATION_KIND,
+        "status": "passed",
+        "verified_at_utc": "2026-07-29T01:01:00Z",
+        "identity": {
+            "experiment_id": "CWAM-E35-R12-GATE",
+            "logical_run_id": "CWAM-E35-R12-GATE-S42",
+            "run_name": "CWAM-E35-R12-GATE-S42",
+            "submission_nonce": "e" * 64,
+            "submitted_at_utc": submitted_at,
+        },
+        "freshness": {
+            "age_seconds": 660.0,
+            "expires_at_utc": "2026-08-01T00:50:00Z",
+            "max_age_seconds": 259200,
+            "max_future_skew_seconds": runtime_receipt.MAX_FUTURE_SKEW_SECONDS,
+            "scheduler_started_at_utc": "2026-07-29T01:00:00Z",
+            "start_age_seconds": 60.0,
+            "max_start_to_verification_seconds": (runtime_receipt.MAX_START_TO_CAPTURE_SECONDS),
+        },
+        "evaluation": {},
+        "eval_intent_manifest": eval_intent_descriptor,
+        "preflight": preflight,
+        "preflight_sha256": hashlib.sha256(preflight_payload).hexdigest(),
+        "scheduler": {},
+        "reservation": {},
+        "scheduler_readback_receipt": {},
+        "scheduler_artifacts": {},
+        "validation": {},
+    }
+    submission_verification, submission_verification_sha = _write_json(
+        tmp_path / "receipts" / "submission-verification.json",
+        submission_verification_value,
+    )
 
     manifest_value = {
         "schema_version": 1,
@@ -284,12 +339,6 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         tmp_path / "manifests" / "robocasa.json",
         manifest_value,
     )
-    commits = {
-        str(source_roots["cosmos"]): "1" * 40,
-        str(source_roots["demian"]): "2" * 40,
-        str(source_roots["robocasa"]): "3" * 40,
-        str(source_roots["robosuite"]): "4" * 40,
-    }
     cosmos_source_manifest, cosmos_source_manifest_sha = _write_json(
         source_roots["cosmos"] / "SNAPSHOT_MANIFEST.json",
         {
@@ -426,6 +475,10 @@ def valid_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         "graphics_userspace": graphics_userspace,
         "submission_verification": submission_verification,
         "submission_verification_sha": submission_verification_sha,
+        "submission_verification_value": submission_verification_value,
+        "eval_intent": eval_intent,
+        "eval_intent_descriptor": eval_intent_descriptor,
+        "preflight": preflight,
         "asset_verification": asset_verification,
         "asset_verification_sha": asset_verification_sha,
         "submitted_at": submitted_at,
@@ -468,6 +521,26 @@ def _capture_arguments(fixture: dict[str, Any]) -> dict[str, Any]:
         "output": fixture["output"],
         "clock": lambda: datetime(2026, 7, 29, 1, 2, 3, tzinfo=timezone.utc),
     }
+
+
+def _rewrite_submission_verification(
+    fixture: dict[str, Any],
+    value: dict[str, Any],
+) -> dict[str, Any]:
+    _, digest = _write_json(fixture["submission_verification"], value)
+    arguments = _capture_arguments(fixture)
+    arguments["expected_submission_verification_receipt_sha256"] = digest
+    return arguments
+
+
+def _rehash_preflight(submission_value: dict[str, Any]) -> None:
+    encoded = json.dumps(
+        submission_value["preflight"],
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    submission_value["preflight_sha256"] = hashlib.sha256(encoded).hexdigest()
 
 
 def _run_valid_capture(fixture: dict[str, Any]) -> tuple[dict[str, Any], str, FakeRunner]:
@@ -981,6 +1054,156 @@ def test_external_submission_and_asset_receipts_are_identity_bound(
                 valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
             ),
         )
+
+
+@pytest.mark.parametrize("mutation", ("missing", "extra"))
+def test_submission_verification_expanded_top_level_schema_is_exact(
+    valid_fixture: dict[str, Any],
+    mutation: str,
+) -> None:
+    value = copy.deepcopy(valid_fixture["submission_verification_value"])
+    if mutation == "missing":
+        value.pop("preflight")
+    else:
+        value["unexpected"] = True
+    arguments = _rewrite_submission_verification(valid_fixture, value)
+    runner = FakeRunner(valid_fixture)
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="keys mismatch"):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert runner.calls == []
+    assert not valid_fixture["output"].exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("digest", "canonical SHA-256 mismatch"),
+        ("asset", "asset tree"),
+        ("validation", "validation"),
+    ),
+)
+def test_submission_preflight_digest_asset_and_verdict_are_bound(
+    valid_fixture: dict[str, Any],
+    mutation: str,
+    match: str,
+) -> None:
+    value = copy.deepcopy(valid_fixture["submission_verification_value"])
+    if mutation == "digest":
+        value["preflight"]["validation"]["repository_heads_clean"] = False
+    elif mutation == "asset":
+        value["preflight"]["asset_tree"]["payload_total_bytes"] += 1
+        _rehash_preflight(value)
+    else:
+        value["preflight"]["validation"]["repository_heads_clean"] = False
+        _rehash_preflight(value)
+    arguments = _rewrite_submission_verification(valid_fixture, value)
+    runner = FakeRunner(valid_fixture)
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match=match):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert not valid_fixture["output"].exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("root", "root"),
+        ("commit", "commit"),
+        ("clean", "clean"),
+        ("tracked_schema", "keys mismatch"),
+        ("tracked_verdict", "tracked"),
+    ),
+)
+def test_submission_preflight_repository_evidence_is_live_source_bound(
+    valid_fixture: dict[str, Any],
+    mutation: str,
+    match: str,
+) -> None:
+    value = copy.deepcopy(valid_fixture["submission_verification_value"])
+    repository = value["preflight"]["repositories"]["demian"]
+    if mutation == "root":
+        repository["root"] = str(valid_fixture["source_roots"]["robocasa"])
+    elif mutation == "commit":
+        repository["actual_commit"] = "f" * 40
+    elif mutation == "clean":
+        repository["clean"] = False
+    elif mutation == "tracked_schema":
+        repository["tracked_files"].pop("head_tree_oid")
+    else:
+        repository["tracked_files"]["all_tracked_regular_files_match_head_blobs"] = False
+    _rehash_preflight(value)
+    arguments = _rewrite_submission_verification(valid_fixture, value)
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match=match):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=FakeRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert not valid_fixture["output"].exists()
+
+
+@pytest.mark.parametrize(("mutation", "match"), (("hash", "descriptor"), ("mode", "0444")))
+def test_eval_intent_descriptor_is_live_file_bound(
+    valid_fixture: dict[str, Any],
+    mutation: str,
+    match: str,
+) -> None:
+    value = copy.deepcopy(valid_fixture["submission_verification_value"])
+    if mutation == "hash":
+        value["eval_intent_manifest"]["sha256"] = "f" * 64
+    else:
+        valid_fixture["eval_intent"].chmod(0o644)
+    arguments = _rewrite_submission_verification(valid_fixture, value)
+    runner = FakeRunner(valid_fixture)
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match=match):
+        runtime_receipt.capture_runtime_receipt(
+            **arguments,
+            runner=runner,
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert runner.calls == []
+    assert not valid_fixture["output"].exists()
+
+
+def test_eval_intent_drift_during_runtime_capture_is_rejected(
+    valid_fixture: dict[str, Any],
+) -> None:
+    intent = valid_fixture["eval_intent"]
+
+    class IntentDriftingRunner(FakeRunner):
+        def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            result = super().__call__(argv, **kwargs)
+            if self._label(argv) == "nvidia-smi":
+                payload = intent.read_bytes().replace(b"cwam_", b"xwam_", 1)
+                intent.chmod(0o644)
+                intent.write_bytes(payload)
+                intent.chmod(0o444)
+            return result
+
+    with pytest.raises(runtime_receipt.RuntimeReceiptValidationError, match="descriptor"):
+        runtime_receipt.capture_runtime_receipt(
+            **_capture_arguments(valid_fixture),
+            runner=IntentDriftingRunner(valid_fixture),
+            executable_resolver=lambda name: str(
+                valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
+            ),
+        )
+    assert not valid_fixture["output"].exists()
 
 
 def test_graphics_userspace_is_nvidia_cross_shard_and_live_file_bound(

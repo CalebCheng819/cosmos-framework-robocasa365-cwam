@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from examples.h_cluster import capture_robocasa365_eval_runtime as runtime_receipt
 from examples.h_cluster import cwam_robocasa365_eval_evidence as evidence
 from examples.h_cluster import verify_cwam_robocasa365_eval_submission as submission
 
@@ -264,6 +265,7 @@ def test_happy_path_seals_external_identity_and_scheduler_artifacts(
     valid_records: dict[str, object],
 ) -> None:
     receipt, digest = submission.verify_submission(**_arguments(valid_records))
+    assert frozenset(receipt) == runtime_receipt.SUBMISSION_VERIFICATION_KEYS
     output = valid_records["output"]
     assert isinstance(output, Path)
     assert receipt["identity"]["submission_nonce"] == "a" * 64
