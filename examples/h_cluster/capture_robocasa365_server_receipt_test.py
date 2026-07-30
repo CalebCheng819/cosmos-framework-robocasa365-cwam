@@ -48,6 +48,11 @@ def _metadata() -> dict:
         "reuse_policy_seed_per_request": True,
         "use_ema_weights": True,
         "guardrails": False,
+        "vision_tokenizer": (
+            "cosmos_framework.model.generator.tokenizers.wan2pt2_vae_4x16x16."
+            "Wan2pt2VAEInterface"
+        ),
+        "online_pixel_encoding": True,
     }
 
 

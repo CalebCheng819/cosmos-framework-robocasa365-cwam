@@ -73,6 +73,8 @@ readonly PINNED_ASSET_MANIFEST_SHA256="3dc62249192bf2a8fd4bef1a31c6de9124cbc1042
 readonly PINNED_ASSET_RECEIPT_SHA256="dc25dff483b1f42c904926cf72f91369f6ac94f0a4f50ab54e4c776299f93dca"
 readonly PINNED_ASSET_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"
 readonly PINNED_EGL_VENDOR_JSON="/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+readonly PINNED_WAN22_VAE_PATH="/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+readonly PINNED_WAN22_VAE_SHA256="20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"
 readonly PINNED_QUICK_OUTPUT_PARENT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-quick-eval/runs"
 readonly H_NVIDIA_DRIVER_BIN="/usr/local/nvidia/bin"
 readonly H_NVIDIA_DRIVER_LIB="/usr/local/nvidia/lib"
@@ -233,10 +235,39 @@ verify_sha256 robocasa_environment_manifest \
 verify_sha256 source_dcp_export_receipt \
     "$SOURCE_DCP_EXPORT_RECEIPT" "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"
 verify_sha256 egl_vendor_json "$EVAL_EGL_VENDOR_JSON" "$EXPECTED_EGL_VENDOR_JSON_SHA256"
+[[ "$(canonical_existing "$PINNED_WAN22_VAE_PATH")" == "$PINNED_WAN22_VAE_PATH" ]] ||
+    die "pinned Wan2.2 VAE path is not canonical"
+verify_sha256 wan2pt2_vae "$PINNED_WAN22_VAE_PATH" "$PINNED_WAN22_VAE_SHA256"
 verify_sha256 demian_evaluator \
     "$DEMIAN_REPO/$DEMIAN_EVALUATOR_REL" "$EXPECTED_DEMIAN_EVALUATOR_SHA256"
 verify_sha256 demian_task_registry \
     "$DEMIAN_REPO/$DEMIAN_TASK_REGISTRY_REL" "$EXPECTED_DEMIAN_TASK_REGISTRY_SHA256"
+
+"$COSMOS_PY" -I -B - "$TRAINING_CONFIG" "$PINNED_WAN22_VAE_PATH" <<'PY'
+import pathlib
+import sys
+
+import yaml
+
+tokenizer = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["model"]["config"]["tokenizer"]
+expected = {
+    "_target_": (
+        "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
+        "PrecomputedWan2pt2LatentTokenizer"
+    ),
+    "vae_path": sys.argv[2],
+    "latent_ch": 48,
+    "spatial_compression_factor": 16,
+    "temporal_compression_factor": 4,
+    "causal": True,
+}
+for key, value in expected.items():
+    if tokenizer.get(key) != value:
+        raise SystemExit(
+            f"training tokenizer contract mismatch for {key}: "
+            f"expected={value!r} actual={tokenizer.get(key)!r}"
+        )
+PY
 
 "$COSMOS_PY" -I -B - "$SOURCE_MANIFEST" "$EXPECTED_SOURCE_COMMIT" <<'PY'
 import json
@@ -376,7 +407,8 @@ fi
     die "quick NVMe parent must be owned by root:root"
 [[ "$(stat -c %a -- "$EVAL_NVME_PARENT")" == 700 ]] ||
     die "quick NVMe parent must be mode 0700"
-[[ ! -e "$EVAL_NVME_ROOT" ]] || die "refusing to reuse quick NVMe root"
+[[ ! -e "$EVAL_NVME_ROOT" && ! -L "$EVAL_NVME_ROOT" ]] ||
+    die "refusing to reuse quick NVMe root"
 mkdir --mode=0700 -- "$EVAL_NVME_ROOT"
 NVME_CREATED=1
 
@@ -536,6 +568,7 @@ SEAL_ARGS=(
     --input source_dcp_export_receipt \
         "$SOURCE_DCP_EXPORT_RECEIPT" "$EXPECTED_SOURCE_DCP_EXPORT_RECEIPT_SHA256"
     --input egl_vendor_json "$EVAL_EGL_VENDOR_JSON" "$EXPECTED_EGL_VENDOR_JSON_SHA256"
+    --input wan2pt2_vae "$PINNED_WAN22_VAE_PATH" "$PINNED_WAN22_VAE_SHA256"
     --input asset_manifest "$ROBOCASA_ASSET_TREE_MANIFEST" "$PINNED_ASSET_MANIFEST_SHA256"
     --input asset_publisher_receipt "$ROBOCASA_ASSET_TREE_RECEIPT" "$PINNED_ASSET_RECEIPT_SHA256"
     --input quick_asset_metadata_receipt \

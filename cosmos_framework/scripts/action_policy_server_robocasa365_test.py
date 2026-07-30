@@ -16,6 +16,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import torch
+from omegaconf import OmegaConf
 from PIL import Image
 
 with patch("cosmos_framework.inference.common.init._init_script", lambda **kwargs: None):
@@ -27,6 +28,8 @@ with patch("cosmos_framework.inference.common.init._init_script", lambda **kwarg
         if module_name in sys.modules:
             del sys.modules[module_name]
     from cosmos_framework.scripts import action_policy_server_robocasa365 as server  # noqa: E402
+    from cosmos_framework.model.generator.tokenizers import wan2pt2_vae_4x16x16 as wan  # noqa: E402
+    from cosmos_framework.utils.lazy_config import instantiate  # noqa: E402
 
 pytestmark = [pytest.mark.L0, pytest.mark.CPU]
 
@@ -67,6 +70,55 @@ def test_server_args_disable_generative_media_guardrails() -> None:
     overrides = args.build_setup_overrides()
 
     assert overrides.guardrails is False
+    assert overrides.experiment_overrides[-1] == (
+        "model.config.tokenizer._target_="
+        "cosmos_framework.model.generator.tokenizers.wan2pt2_vae_4x16x16."
+        "Wan2pt2VAEInterface"
+    )
+
+
+def test_frozen_cached_config_resolves_to_online_wan_for_serving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = server.RoboCasa365ServerArgs.model_validate(
+        {
+            "checkpoint": {"checkpoint_path": "/checkpoint/model"},
+            "launch_nonce": "a" * 64,
+        }
+    )
+    frozen = OmegaConf.create(
+        {
+            "model": {
+                "config": {
+                    "tokenizer": {
+                        "_target_": (
+                            "cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2."
+                            "PrecomputedWan2pt2LatentTokenizer"
+                        ),
+                        "vae_path": "/tmp/Wan2.2_VAE.pth",
+                        "latent_ch": 48,
+                        "spatial_compression_factor": 16,
+                        "temporal_compression_factor": 4,
+                        "causal": True,
+                    }
+                }
+            }
+        }
+    )
+    merged = OmegaConf.merge(
+        frozen,
+        OmegaConf.from_dotlist(args.build_setup_overrides().experiment_overrides),
+    )
+    monkeypatch.setattr(
+        wan,
+        "WanVAE",
+        lambda **_kwargs: SimpleNamespace(dtype=torch.bfloat16),
+    )
+
+    tokenizer = instantiate(merged.model.config.tokenizer)
+
+    assert type(tokenizer) is wan.Wan2pt2VAEInterface
+    assert tokenizer.latent_ch == 48
 
 
 def test_extract_training_observation_uses_left_then_wrist_only() -> None:

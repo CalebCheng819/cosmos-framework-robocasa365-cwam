@@ -323,6 +323,8 @@ def test_quick_runner_and_submitter_are_isolated_from_formal_artifacts() -> None
         "quick-nonformal-control",
         "quick-nonformal-results",
         "seal-result",
+        "PINNED_WAN22_VAE_SHA256",
+        "--input wan2pt2_vae",
     ):
         assert token in runner
     for forbidden in (
@@ -344,6 +346,7 @@ def test_quick_runner_and_submitter_are_isolated_from_formal_artifacts() -> None
     assert '"$(realpath -e -- "$EVAL_NVME_PARENT")" == "$EVAL_NVME_PARENT"' in runner
     assert '"$(stat -c %u:%g -- "$EVAL_NVME_PARENT")" == 0:0' in runner
     assert '"$(stat -c %a -- "$EVAL_NVME_PARENT")" == 700' in runner
+    assert '[[ ! -e "$EVAL_NVME_ROOT" && ! -L "$EVAL_NVME_ROOT" ]]' in runner
     assert 'mkdir --mode=0700 -- "$EVAL_NVME_ROOT"' in runner
     assert '/usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_ROOT"' in runner
     assert '/usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_PARENT"' not in runner

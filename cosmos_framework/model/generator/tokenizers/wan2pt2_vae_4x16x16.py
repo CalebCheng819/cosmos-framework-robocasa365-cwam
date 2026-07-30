@@ -1366,7 +1366,14 @@ class Wan2pt2VAEInterface(VideoTokenizerInterface):
         temporal_window: int | None = None,
         encode_bucket_multiple: int | None = None,
         causal: bool = True,
+        # Serialized configs produced by metadata-only latent-cache training
+        # carry this explicit contract field. Accept it when the same config
+        # is switched back to the online tokenizer for closed-loop serving.
+        latent_ch: int = 48,
     ):
+        if isinstance(latent_ch, bool) or not isinstance(latent_ch, int) or latent_ch != 48:
+            raise ValueError("Wan2.2 VAE requires latent_ch=48.")
+
         # Remove temporal_window and encode_bucket_multiple once they have been
         # removed from the uploaded HuggingFace checkpoint.
         if temporal_window is not None:

@@ -59,6 +59,10 @@ _STATE_KEY = "observation/state"
 _RAW_ACTION_DIM = 10
 _ENV_ACTION_DIM = 7
 _LAUNCH_NONCE_RE = re.compile(r"^[0-9a-f]{64}$")
+_ONLINE_WAN2PT2_TARGET = (
+    "cosmos_framework.model.generator.tokenizers.wan2pt2_vae_4x16x16."
+    "Wan2pt2VAEInterface"
+)
 _TRAINING_CAMERA_DESCRIPTION = (
     "The left half shows the left third-person agent view; "
     "the right half shows the wrist-mounted camera."
@@ -217,9 +221,18 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     """Per-process 256-bit nonce used to bind receipts to this exact launch."""
 
     def build_setup_overrides(self) -> Any:
-        """Disable generative-media guardrails for the robot action service."""
+        """Build the fail-closed online action-serving configuration."""
         overrides = super().build_setup_overrides()
         overrides.guardrails = False
+        # R14 was trained from checksum-bound, precomputed Wan latents and its
+        # serialized config therefore names the metadata-only tokenizer.  A
+        # closed-loop evaluator supplies fresh pixels, so serving must restore
+        # the weight-compatible online Wan2.2 encoder.  Keep this override
+        # local to action serving; training continues to use the strict cache.
+        overrides.experiment_overrides = [
+            *overrides.experiment_overrides,
+            f"model.config.tokenizer._target_={_ONLINE_WAN2PT2_TARGET}",
+        ]
         return overrides
 
 
@@ -262,6 +275,13 @@ class RoboCasa365PolicyService(ActionModelService):
 
         if self.setup_args.guardrails:
             raise RuntimeError("RoboCasa365 action serving must keep generative-media guardrails disabled")
+        tokenizer_cls = type(self.model.tokenizer_vision_gen)
+        tokenizer_type = f"{tokenizer_cls.__module__}.{tokenizer_cls.__qualname__}"
+        if tokenizer_type != _ONLINE_WAN2PT2_TARGET:
+            raise RuntimeError(
+                "RoboCasa365 online serving requires the pixel-encoding Wan2.2 tokenizer, "
+                f"got {tokenizer_type!r}"
+            )
         if self.raw_action_dim != _RAW_ACTION_DIM:
             raise RuntimeError(f"Resolved action stats width must be 10, got {self.raw_action_dim}")
         if self.cfg.action_chunk_size != 16 or self.cfg.fps != 20:
@@ -366,6 +386,8 @@ class RoboCasa365PolicyService(ActionModelService):
             "reuse_policy_seed_per_request": True,
             "use_ema_weights": bool(self.setup_args.use_ema_weights),
             "guardrails": bool(self.setup_args.guardrails),
+            "vision_tokenizer": _ONLINE_WAN2PT2_TARGET,
+            "online_pixel_encoding": True,
         }
 
 
