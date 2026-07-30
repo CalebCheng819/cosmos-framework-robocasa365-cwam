@@ -224,6 +224,7 @@ shard_index = int(sys.argv[2])
 expected_vendor_json = pathlib.Path(sys.argv[3])
 expected_device = str(shard_index)
 sys.path.insert(0, str(robosuite_source_root))
+launch_ld_library_path = os.environ.get("LD_LIBRARY_PATH")
 
 expected_environment = {
     "CUDA_VISIBLE_DEVICES": expected_device,
@@ -385,7 +386,10 @@ payload = {
     "mujoco_egl_device_id": os.environ["MUJOCO_EGL_DEVICE_ID"],
     "mujoco_gl": os.environ["MUJOCO_GL"],
     "pyopengl_platform": os.environ["PYOPENGL_PLATFORM"],
-    "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
+    # Third-party imports such as cv2 may mutate os.environ after process
+    # startup. Bind the audited loader environment that launched this probe;
+    # the live descriptors below separately bind the libraries actually used.
+    "ld_library_path": launch_ld_library_path,
     "egl_vendor_library_filenames": os.environ.get("__EGL_VENDOR_LIBRARY_FILENAMES"),
     "glx_vendor_library_name": os.environ.get("__GLX_VENDOR_LIBRARY_NAME"),
     "robosuite_module_path": str(pathlib.Path(robosuite.__file__).resolve(strict=True)),

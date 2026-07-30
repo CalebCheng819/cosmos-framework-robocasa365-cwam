@@ -34,6 +34,14 @@ def test_graphics_probe_distinguishes_glvnd_frontends_from_vendor_abis() -> None
     assert '("libGLX_nvidia", "libGLX_nvidia.so.0", "glXGetProcAddress", "resolved_and_dlopen_verified")' not in probe
 
 
+def test_graphics_probe_binds_loader_path_before_third_party_imports() -> None:
+    probe = runtime_receipt._ROBOCASA_EGL_PROBE
+    capture = 'launch_ld_library_path = os.environ.get("LD_LIBRARY_PATH")'
+    assert probe.index(capture) < probe.index("    import robosuite")
+    assert '"ld_library_path": launch_ld_library_path' in probe
+    assert '"ld_library_path": os.environ.get("LD_LIBRARY_PATH")' not in probe
+
+
 def _write_executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
