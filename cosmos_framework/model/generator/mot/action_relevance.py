@@ -97,7 +97,8 @@ class ActionRelevanceAdapter(nn.Module):
             nn.Linear(64, num_heads),
         )
         initial_logit = math.log(initial_residual_gate / (1.0 - initial_residual_gate))
-        self.residual_gate_logit = nn.Parameter(torch.tensor(initial_logit))
+        # FSDP2 rejects zero-dimensional parameters.
+        self.residual_gate_logit = nn.Parameter(torch.tensor([initial_logit]))
 
     def init_weights(self) -> None:
         nn.init.ones_(self.query_norm.weight)
@@ -173,7 +174,7 @@ class ActionRelevanceAdapter(nn.Module):
                 "entropy": zero,
                 "topk_mass": zero,
                 "effective_support": zero,
-                "residual_gate": self.residual_gate_logit.sigmoid(),
+                "residual_gate": self.residual_gate_logit.sigmoid().squeeze(0),
             }
         if context_indexes.numel() == 0:
             raise ValueError("action relevance requires task or clean-vision context tokens")
@@ -269,7 +270,7 @@ class ActionRelevanceAdapter(nn.Module):
             [routed[sample_id, :query_length] for sample_id, query_length in enumerate(query_lengths) if query_length],
             dim=0,
         )
-        residual_gate = self.residual_gate_logit.sigmoid()
+        residual_gate = self.residual_gate_logit.sigmoid().squeeze(0)
         updated_hidden = hidden_states.index_add(0, ordered_indexes, residual_gate * ordered_residuals)
 
         per_head_entropy = -(weights.clamp_min(1.0e-12).log() * weights).sum(dim=-1)

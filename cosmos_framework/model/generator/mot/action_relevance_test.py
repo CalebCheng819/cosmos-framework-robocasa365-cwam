@@ -35,6 +35,8 @@ def test_action_relevance_updates_only_action_tokens_and_backpropagates() -> Non
         initial_residual_gate=0.1,
     )
     adapter.init_weights()
+    assert adapter.residual_gate_logit.shape == (1,)
+    assert all(parameter.ndim > 0 for parameter in adapter.parameters())
     hidden = torch.randn(12, 16, requires_grad=True)
     action_indexes = torch.tensor([4, 5, 10, 11])
     context_indexes = torch.tensor([0, 1, 2, 6, 7, 8])
