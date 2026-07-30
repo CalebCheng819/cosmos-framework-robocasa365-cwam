@@ -4405,6 +4405,7 @@ class OmniMoTModel(ImaginaireModel):
                 - "preds_vision": list[Tensor[C,T,H,W]], one per sample.
                 - "preds_action": Velocity prediction for action modality (if action_gen enabled).
                 - "preds_sound": Velocity prediction for sound modality (if sound_gen enabled).
+                - "action_relevance_*": S1 routing losses and diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
         """
@@ -4421,7 +4422,7 @@ class OmniMoTModel(ImaginaireModel):
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
-            if "lbl_metadata_" in key:
+            if key.startswith("action_relevance_") or "lbl_metadata_" in key:
                 output_dict[key] = value
 
         return output_dict
