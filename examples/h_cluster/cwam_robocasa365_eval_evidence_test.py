@@ -1027,6 +1027,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
 def _patch_post_rollout_verifiers(
     monkeypatch: pytest.MonkeyPatch,
     contract_path: Path,
+    *,
+    expected_asset_workers: int = 1,
 ) -> None:
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     monkeypatch.setattr(
@@ -1063,8 +1065,13 @@ def _patch_post_rollout_verifiers(
         assert Path(checkpoint_path) == Path(contract["checkpoint_path"])
         return json.loads(checkpoint_receipt_path.read_text(encoding="utf-8"))
 
-    def verify_assets(bound_contract: dict[str, object]) -> dict[str, object]:
+    def verify_assets(
+        bound_contract: dict[str, object],
+        *,
+        asset_workers: int,
+    ) -> dict[str, object]:
         assert bound_contract["simulator"] == contract["simulator"]
+        assert asset_workers == expected_asset_workers
         return json.loads(asset_receipt_path.read_text(encoding="utf-8"))
 
     def verify_git_repository(
@@ -1121,9 +1128,19 @@ def _mock_post_rollout_receipt(
     monkeypatch: pytest.MonkeyPatch,
     contract_path: Path,
     output: Path,
+    *,
+    asset_workers: int = 1,
 ) -> Path:
-    _patch_post_rollout_verifiers(monkeypatch, contract_path)
-    evidence.verify_post_rollout(contract_path=contract_path, output=output)
+    _patch_post_rollout_verifiers(
+        monkeypatch,
+        contract_path,
+        expected_asset_workers=asset_workers,
+    )
+    evidence.verify_post_rollout(
+        contract_path=contract_path,
+        output=output,
+        asset_workers=asset_workers,
+    )
     return output
 
 
@@ -1196,6 +1213,7 @@ def test_summarize_writes_complete_episode_and_task_csvs(
         monkeypatch,
         contract,
         tmp_path / "post-rollout-receipt.json",
+        asset_workers=4,
     )
     summary_csv = tmp_path / "summary.csv"
     task_csv = tmp_path / "task_success_rates.csv"
@@ -1209,6 +1227,7 @@ def test_summarize_writes_complete_episode_and_task_csvs(
         task_success_rates_csv=task_csv,
         evidence_json=evidence_json,
         require_effect_pass=True,
+        asset_workers=4,
     )
 
     assert result["execution_complete"] is True
@@ -1834,7 +1853,7 @@ def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path, _results_dir = _fixture(tmp_path)
-    _patch_post_rollout_verifiers(monkeypatch, contract_path)
+    _patch_post_rollout_verifiers(monkeypatch, contract_path, expected_asset_workers=16)
     receipt_path = tmp_path / "post-rollout-receipt.json"
     other_parent = tmp_path / "other"
     other_parent.mkdir()
@@ -1848,6 +1867,7 @@ def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
     payload = evidence.verify_post_rollout(
         contract_path=contract_path,
         output=receipt_path,
+        asset_workers=16,
     )
 
     assert payload["kind"] == evidence._POST_ROLLOUT_VERIFICATION_KIND
@@ -1870,6 +1890,7 @@ def test_post_rollout_receipt_is_strict_exclusive_read_only_and_reverified(
         receipt_path=receipt_path,
         contract_path=contract_path,
         contract=contract,
+        asset_workers=16,
     )
     assert binding["receipt"]["sha256"] == _sha256(receipt_path)
     assert binding["validation"]["tracked_source_files_match_head_blobs"] is True
@@ -1968,7 +1989,12 @@ def test_post_rollout_requires_exact_pre_and_post_semantic_match(
     else:
         receipt_path = Path(contract["artifacts"]["asset_verification_receipt"]["path"])
 
-        def mismatched_assets(_contract: dict[str, object]) -> dict[str, object]:
+        def mismatched_assets(
+            _contract: dict[str, object],
+            *,
+            asset_workers: int,
+        ) -> dict[str, object]:
+            assert asset_workers == 1
             result = json.loads(receipt_path.read_text(encoding="utf-8"))
             result["payload_file_count"] += 1
             return result

@@ -211,6 +211,8 @@ def test_default_is_prediction_only_and_phase_resources_are_exact() -> None:
     script = SUBMITTER.read_text(encoding="utf-8")
 
     assert ': "${RJOB_PREDICT_ONLY:=1}"' in script
+    assert ': "${ASSET_VERIFY_WORKERS:=1}"' in script
+    assert "readonly MAX_ASSET_VERIFY_WORKERS=64" in script
     assert "RJOB_CPU=16\n        RJOB_MEMORY_MIB=187500\n        RJOB_GPU=1" in script
     assert "RJOB_CPU=128\n        RJOB_MEMORY_MIB=1500000\n        RJOB_GPU=8" in script
     assert '[[ "$NUM_SHARDS" == 1 ]]' in script
@@ -397,6 +399,7 @@ def test_external_nonce_scheduler_readback_and_graphics_environment_are_forwarde
         "scheduler_started_at_utc",
         "WORKER_COMMAND_SHA256",
         "worker-env-contract.json",
+        "ASSET_VERIFY_WORKERS",
         "__EGL_VENDOR_LIBRARY_FILENAMES",
         "__GLX_VENDOR_LIBRARY_NAME",
         "unset BASH_ENV ENV PYTHONHOME PYTHONOPTIMIZE PYTHONPATH",
@@ -427,6 +430,17 @@ def test_missing_inputs_and_phase_drift_fail_before_any_rjob_call() -> None:
     result = _run_early(invalid_identity)
     assert result.returncode != 0
     assert "path-safe characters with alphanumeric endpoints" in result.stderr
+
+    for invalid_workers, message in (
+        ("0", "must be a positive integer"),
+        ("abc", "must be a positive integer"),
+        ("65", "must be <= 64"),
+    ):
+        invalid_worker_env = _gate_environment()
+        invalid_worker_env["ASSET_VERIFY_WORKERS"] = invalid_workers
+        result = _run_early(invalid_worker_env)
+        assert result.returncode != 0
+        assert message in result.stderr
 
 
 def test_real_mode_uses_dual_exclusive_reservations_and_preserves_tombstones() -> None:
@@ -632,6 +646,9 @@ def test_full_asset_repository_and_intent_preflights_precede_reservation() -> No
         < reservation
         < submission
     )
+    assert '--workers "$ASSET_VERIFY_WORKERS"' in script[full_asset_verify:repository_preflight]
+    worker_environment = script[script.index("readonly WORKER_ENV_NAMES=(") : script.index("WORKER_SCRIPT=")]
+    assert re.search(r"^\s+ASSET_VERIFY_WORKERS$", worker_environment, flags=re.MULTILINE)
     for token in (
         'if asset.get("status") != "passed":',
         '"asset_tree_full_hash_match": True',

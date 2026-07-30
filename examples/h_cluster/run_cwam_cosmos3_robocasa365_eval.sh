@@ -96,6 +96,7 @@ export PYTHONNOUSERSITE=1
 : "${SERVER_READY_TIMEOUT_SECONDS:?Set SERVER_READY_TIMEOUT_SECONDS explicitly}"
 : "${ALLOWED_OUTPUT_PARENT:?Set ALLOWED_OUTPUT_PARENT explicitly}"
 : "${EVAL_NVME_ROOT:?Set EVAL_NVME_ROOT explicitly}"
+: "${ASSET_VERIFY_WORKERS:=1}"
 
 readonly DEMIAN_EVALUATOR_REL="demian_wam/eval_utils/run_robocasa_eval.py"
 readonly DEMIAN_TASK_REGISTRY_REL="demian_wam/eval_utils/robocasa_task_list.py"
@@ -124,6 +125,7 @@ readonly PINNED_ASSET_RECEIPT_SHA256="dc25dff483b1f42c904926cf72f91369f6ac94f0a4
 readonly PINNED_ASSET_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"
 readonly SCHEDULER_READBACK_WAIT_SECONDS=900
 readonly CLEANUP_GRACE_SECONDS=30
+readonly MAX_ASSET_VERIFY_WORKERS=64
 
 die() {
     echo "ERROR: $*" >&2
@@ -203,9 +205,13 @@ require_positive_int MAX_STEPS "$MAX_STEPS"
 require_positive_int OPEN_LOOP_HORIZON "$OPEN_LOOP_HORIZON"
 require_positive_int POLICY_NUM_STEPS "$POLICY_NUM_STEPS"
 require_positive_int SERVER_READY_TIMEOUT_SECONDS "$SERVER_READY_TIMEOUT_SECONDS"
+require_positive_int ASSET_VERIFY_WORKERS "$ASSET_VERIFY_WORKERS"
 require_nonnegative_int BASE_SEED "$BASE_SEED"
 require_nonnegative_int POLICY_SEED "$POLICY_SEED"
 require_nonnegative_int MINIMUM_SUCCESSFUL_TASKS "$MINIMUM_SUCCESSFUL_TASKS"
+((10#$ASSET_VERIFY_WORKERS <= MAX_ASSET_VERIFY_WORKERS)) ||
+    die "ASSET_VERIFY_WORKERS must be <= $MAX_ASSET_VERIFY_WORKERS"
+readonly ASSET_VERIFY_WORKERS
 [[ "$EVAL_STAGE" == "one_episode_gate" || "$EVAL_STAGE" == "formal" ]] ||
     die "EVAL_STAGE must be one_episode_gate or formal"
 [[ "$EVAL_EVALUATION_CLASS" == exploratory || "$EVAL_EVALUATION_CLASS" == confirmatory ]] ||
@@ -653,6 +659,7 @@ asset_verification_started_seconds=$SECONDS
     "$COSMOS_PY" "$COSMOS_SOURCE/$ASSET_VERIFY_HELPER_REL" \
     verify \
     --asset-root "$ROBOCASA_ASSET_ROOT" \
+    --workers "$ASSET_VERIFY_WORKERS" \
     --output "$ASSET_VERIFICATION_RECEIPT"
 "$COSMOS_PY" - \
     "$ASSET_VERIFICATION_RECEIPT" \
@@ -1022,6 +1029,7 @@ SERVER_PIDS=()
 PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
     verify-post-rollout \
     --contract "$CONTRACT_PATH" \
+    --asset-workers "$ASSET_VERIFY_WORKERS" \
     --output "$POST_ROLLOUT_VERIFICATION_RECEIPT" \
     >"$CONTROL_DIR/post-rollout-verification.log"
 echo "POST_ROLLOUT_INPUTS_VERIFIED receipt=$POST_ROLLOUT_VERIFICATION_RECEIPT"
@@ -1035,6 +1043,7 @@ SUMMARIZE_ARGS=(
     --summary-csv "$SUMMARY_CSV"
     --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV"
     --evidence-json "$EVIDENCE_JSON"
+    --asset-workers "$ASSET_VERIFY_WORKERS"
 )
 PYTHONPATH="$COSMOS_SOURCE" "$COSMOS_PY" "$COSMOS_SOURCE/$EVIDENCE_HELPER_REL" \
     "${SUMMARIZE_ARGS[@]}" | tee "$CONTROL_DIR/summarize.log"

@@ -148,6 +148,17 @@ def test_runner_reverifies_all_live_inputs_after_rollouts_before_summary() -> No
     assert '"$POST_ROLLOUT_VERIFICATION_RECEIPT" \\' in script
 
 
+def test_runner_threads_a_bounded_asset_worker_count_through_every_full_hash() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+
+    assert ': "${ASSET_VERIFY_WORKERS:=1}"' in script
+    assert "readonly MAX_ASSET_VERIFY_WORKERS=64" in script
+    assert 'require_positive_int ASSET_VERIFY_WORKERS "$ASSET_VERIFY_WORKERS"' in script
+    assert 'die "ASSET_VERIFY_WORKERS must be <= $MAX_ASSET_VERIFY_WORKERS"' in script
+    assert 'verify \\\n    --asset-root "$ROBOCASA_ASSET_ROOT" \\\n    --workers "$ASSET_VERIFY_WORKERS" \\\n' in script
+    assert script.count('--asset-workers "$ASSET_VERIFY_WORKERS"') == 2
+
+
 def test_runner_reaggregates_only_after_raw_results_are_sealed() -> None:
     script = RUNNER.read_text(encoding="utf-8")
     raw_seal = script.index('chmod 0555 "$RESULTS_DIR"')

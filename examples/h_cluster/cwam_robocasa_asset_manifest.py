@@ -29,6 +29,7 @@ import sys
 import unicodedata
 import uuid
 from collections.abc import Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -46,6 +47,8 @@ EXCLUDED_TOP_LEVEL_PATHS = (".cwam_provenance", ".git")
 PROVENANCE_FILE_MODE = 0o444
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
+DEFAULT_HASH_WORKERS = 1
+MAX_HASH_WORKERS = 64
 MAX_RECEIPT_BYTES = 1024 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024 * 1024
 MAX_MANIFEST_LINE_BYTES = 1024 * 1024
@@ -322,6 +325,13 @@ def _require_positive_int(value: object, label: str) -> int:
     return integer
 
 
+def _validated_hash_workers(value: object) -> int:
+    workers = _require_positive_int(value, "asset hash workers")
+    if workers > MAX_HASH_WORKERS:
+        raise RoboCasaAssetManifestError(f"asset hash workers must be <= {MAX_HASH_WORKERS}, got {workers}")
+    return workers
+
+
 def _require_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise RoboCasaAssetManifestError(f"{label} must be a lowercase SHA-256, got {value!r}")
@@ -582,7 +592,7 @@ def _relative_child_path(base: PurePosixPath, name: str, label: str) -> PurePosi
     return base / name
 
 
-def _scan_payload_tree(asset_root: Path) -> tuple[list[dict[str, Any]], int]:
+def _scan_payload_tree_serial(asset_root: Path) -> tuple[list[dict[str, Any]], int]:
     root_before = _require_path(asset_root, "asset root", expected_kind="directory")[1]
     records: list[dict[str, Any]] = []
     observed_exclusions: set[str] = set()
@@ -659,6 +669,159 @@ def _scan_payload_tree(asset_root: Path) -> tuple[list[dict[str, Any]], int]:
     return records, stat.S_IMODE(root_after.st_mode)
 
 
+def _hash_file_tasks_bounded(
+    tasks: list[tuple[Path, str]],
+    workers: int,
+) -> list[tuple[int, int, str]]:
+    """Hash files with at most ``workers`` submitted futures at any time."""
+
+    results: dict[int, tuple[int, int, str]] = {}
+    failures: dict[int, Exception] = {}
+    task_iterator = iter(enumerate(tasks))
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="asset-sha256") as executor:
+        pending: dict[Future[tuple[int, int, str]], int] = {}
+
+        def fill_available_slots() -> None:
+            while len(pending) < workers:
+                try:
+                    task_index, (path, label) = next(task_iterator)
+                except StopIteration:
+                    return
+                pending[executor.submit(_hash_stable_regular_file, path, label)] = task_index
+
+        fill_available_slots()
+        while pending:
+            completed, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+            for future in completed:
+                task_index = pending.pop(future)
+                try:
+                    results[task_index] = future.result()
+                except Exception as error:
+                    failures[task_index] = error
+            fill_available_slots()
+
+    if failures:
+        raise failures[min(failures)]
+    return [results[index] for index in range(len(tasks))]
+
+
+def _scan_payload_tree_parallel(
+    asset_root: Path,
+    *,
+    workers: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Discover deterministically, hash concurrently, and retain record order."""
+
+    root_before = _require_path(asset_root, "asset root", expected_kind="directory")[1]
+    records: list[dict[str, Any] | None] = []
+    file_tasks: list[tuple[Path, str]] = []
+    file_record_indexes: list[int] = []
+    file_relative_paths: list[str] = []
+    observed_exclusions: set[str] = set()
+    directory_checks: list[tuple[Path, str, os.stat_result]] = []
+
+    def scan_directory(directory: Path, relative_base: PurePosixPath) -> None:
+        directory_label = f"asset directory {relative_base.as_posix() or '.'}"
+        directory_before = _require_path(
+            directory,
+            directory_label,
+            expected_kind="directory",
+        )[1]
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as error:
+            raise RoboCasaAssetManifestError(f"cannot enumerate asset directory {directory}: {error}") from error
+
+        for entry in entries:
+            entry_label = f"asset entry {entry.path}"
+            _validate_component(entry.name, entry_label)
+            entry_path = directory / entry.name
+            if not relative_base.parts and entry.name in EXCLUDED_TOP_LEVEL_PATHS:
+                _require_path(entry_path, f"excluded top-level path {entry.name}", expected_kind="directory")
+                observed_exclusions.add(entry.name)
+                continue
+
+            relative = _relative_child_path(relative_base, entry.name, entry_label)
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except FileNotFoundError as error:
+                raise RoboCasaAssetManifestError(f"asset entry disappeared during scan: {entry_path}") from error
+            except OSError as error:
+                raise RoboCasaAssetManifestError(f"cannot inspect asset entry {entry_path}: {error}") from error
+
+            if stat.S_ISLNK(metadata.st_mode):
+                raise RoboCasaAssetManifestError(f"asset tree must not contain symlinks: {entry_path}")
+            if stat.S_ISDIR(metadata.st_mode):
+                records.append(
+                    {
+                        "mode": stat.S_IMODE(metadata.st_mode),
+                        "path": relative.as_posix(),
+                        "type": "directory",
+                    }
+                )
+                scan_directory(entry_path, relative)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RoboCasaAssetManifestError(f"asset tree contains a special file: {entry_path}")
+            file_record_indexes.append(len(records))
+            file_tasks.append((entry_path, entry_label))
+            file_relative_paths.append(relative.as_posix())
+            records.append(None)
+
+        # Preserve the serial scanner's depth-first directory validation order,
+        # but perform the checks after every concurrent file hash has finished.
+        directory_checks.append((directory, directory_label, directory_before))
+
+    scan_directory(asset_root, PurePosixPath())
+    missing_exclusions = sorted(set(EXCLUDED_TOP_LEVEL_PATHS) - observed_exclusions)
+    if missing_exclusions:
+        raise RoboCasaAssetManifestError(f"required excluded top-level paths are missing: {missing_exclusions}")
+
+    hash_results = _hash_file_tasks_bounded(file_tasks, workers)
+    for task_index, (record_index, (mode, size_bytes, sha256)) in enumerate(
+        zip(file_record_indexes, hash_results, strict=True)
+    ):
+        relative_path = records[record_index]
+        if relative_path is not None:
+            raise RuntimeError("internal asset record slot was unexpectedly populated")
+        records[record_index] = {
+            "mode": mode,
+            "path": file_relative_paths[task_index],
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "type": "file",
+        }
+
+    for directory, directory_label, directory_before in directory_checks:
+        directory_after = _require_path(
+            directory,
+            directory_label,
+            expected_kind="directory",
+        )[1]
+        if _stable_identity(directory_before) != _stable_identity(directory_after):
+            raise RoboCasaAssetManifestError(f"asset directory changed during scan: {directory}")
+
+    root_after = _require_path(asset_root, "asset root", expected_kind="directory")[1]
+    if _stable_identity(root_before) != _stable_identity(root_after):
+        raise RoboCasaAssetManifestError(f"asset root changed during scan: {asset_root}")
+    if any(record is None for record in records):
+        raise RuntimeError("internal asset record slot was not populated")
+    return [record for record in records if record is not None], stat.S_IMODE(root_after.st_mode)
+
+
+def _scan_payload_tree(
+    asset_root: Path,
+    *,
+    workers: int = DEFAULT_HASH_WORKERS,
+) -> tuple[list[dict[str, Any]], int]:
+    workers = _validated_hash_workers(workers)
+    if workers == 1:
+        return _scan_payload_tree_serial(asset_root)
+    return _scan_payload_tree_parallel(asset_root, workers=workers)
+
+
 def _payload_summary(records: list[dict[str, Any]]) -> dict[str, int]:
     directories = sum(record["type"] == "directory" for record in records)
     files = sum(record["type"] == "file" for record in records)
@@ -719,9 +882,14 @@ def _compare_manifest_and_live_tree(
         )
 
 
-def verify_robocasa_asset_tree(asset_root: str | os.PathLike[str]) -> dict[str, Any]:
+def verify_robocasa_asset_tree(
+    asset_root: str | os.PathLike[str],
+    *,
+    workers: int = DEFAULT_HASH_WORKERS,
+) -> dict[str, Any]:
     """Verify a published asset tree and return a structured pass receipt."""
 
+    workers = _validated_hash_workers(workers)
     root, _ = _require_path(asset_root, "asset root", expected_kind="directory")
     provenance_root, _ = _require_path(
         root / PROVENANCE_DIRECTORY,
@@ -770,7 +938,7 @@ def verify_robocasa_asset_tree(asset_root: str | os.PathLike[str]) -> dict[str, 
                 f"manifest={expected_summary[summary_key]}, receipt={receipt[receipt_key]}"
             )
 
-    actual_records, asset_root_mode = _scan_payload_tree(root)
+    actual_records, asset_root_mode = _scan_payload_tree(root, workers=workers)
     _compare_manifest_and_live_tree(expected_records, actual_records)
     actual_summary = _payload_summary(actual_records)
     if actual_summary != expected_summary:
@@ -853,13 +1021,19 @@ def _build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify", help="verify the exact published RoboCasa asset tree")
     verify.add_argument("--asset-root", type=Path, required=True)
     verify.add_argument("--output", type=Path)
+    verify.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_HASH_WORKERS,
+        help=f"bounded regular-file SHA-256 workers (default: {DEFAULT_HASH_WORKERS}, max: {MAX_HASH_WORKERS})",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        result = verify_robocasa_asset_tree(args.asset_root)
+        result = verify_robocasa_asset_tree(args.asset_root, workers=args.workers)
         if args.output is not None:
             digest = write_verification_receipt(args.output, result)
     except RoboCasaAssetManifestError as error:

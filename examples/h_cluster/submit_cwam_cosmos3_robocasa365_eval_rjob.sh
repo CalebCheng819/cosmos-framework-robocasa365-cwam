@@ -35,6 +35,7 @@ readonly SCHEDULER_RECEIPT_ATTEMPTS=86400
 readonly SCHEDULER_RECEIPT_RETRY_SECONDS=1
 readonly SCHEDULER_RECEIPT_TIMEOUT_SECONDS=90000
 readonly RJOB_REPLICAS=1
+readonly MAX_ASSET_VERIFY_WORKERS=64
 readonly REALPATH_BIN="/usr/bin/realpath"
 readonly SHA256SUM_BIN="/usr/bin/sha256sum"
 readonly PYTHON3_BIN="/usr/bin/python3"
@@ -339,8 +340,14 @@ require_nonempty_env "${CALLER_INPUTS[@]}"
 [[ -v EXPECTED_PRIOR_GATE_EVIDENCE_SHA256 ]] ||
     die "EXPECTED_PRIOR_GATE_EVIDENCE_SHA256 must be explicitly set (empty only for one_episode_gate)"
 : "${RJOB_PREDICT_ONLY:=1}"
+: "${ASSET_VERIFY_WORKERS:=1}"
 
 [[ "$RJOB_PREDICT_ONLY" =~ ^[01]$ ]] || die "RJOB_PREDICT_ONLY must be 0 or 1"
+[[ "$ASSET_VERIFY_WORKERS" =~ ^[1-9][0-9]*$ ]] ||
+    die "ASSET_VERIFY_WORKERS must be a positive integer"
+((10#$ASSET_VERIFY_WORKERS <= MAX_ASSET_VERIFY_WORKERS)) ||
+    die "ASSET_VERIFY_WORKERS must be <= $MAX_ASSET_VERIFY_WORKERS"
+readonly ASSET_VERIFY_WORKERS
 [[ "$EVAL_EVALUATION_CLASS" == exploratory || "$EVAL_EVALUATION_CLASS" == confirmatory ]] ||
     die "EVAL_EVALUATION_CLASS must be exploratory or confirmatory"
 [[ "$SOURCE_GIT_PUSHED" == true || "$SOURCE_GIT_PUSHED" == false ]] ||
@@ -620,7 +627,8 @@ readonly ROBOCASA_ASSET_TREE_RECEIPT="$ROBOCASA_REPO/.cwam_provenance/asset-tree
     die "RoboCasa asset receipt differs from the audited publication"
 ASSET_PREFLIGHT_JSON="$(
     "$PYTHON3_BIN" "$ASSET_VERIFY_HELPER" verify \
-        --asset-root "$ROBOCASA_REPO"
+        --asset-root "$ROBOCASA_REPO" \
+        --workers "$ASSET_VERIFY_WORKERS"
 )"
 TRACKED_REPOSITORY_PREFLIGHT_JSON="$(
     "$PYTHON3_BIN" - \
@@ -1281,6 +1289,7 @@ readonly WORKER_ENV_NAMES=(
     BASE_SEED
     MAX_STEPS
     OPEN_LOOP_HORIZON
+    ASSET_VERIFY_WORKERS
     POLICY_SAMPLER
     POLICY_SEED
     POLICY_GUIDANCE

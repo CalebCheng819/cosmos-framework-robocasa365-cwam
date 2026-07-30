@@ -191,14 +191,31 @@ def test_verify_returns_runner_ready_structured_receipt(published_tree: Path) ->
     }
 
 
+def test_worker_counts_return_identical_receipts(published_tree: Path) -> None:
+    expected = asset_manifest.verify_robocasa_asset_tree(published_tree)
+
+    assert asset_manifest.verify_robocasa_asset_tree(published_tree, workers=1) == expected
+    assert asset_manifest.verify_robocasa_asset_tree(published_tree, workers=4) == expected
+    assert asset_manifest.verify_robocasa_asset_tree(published_tree, workers=16) == expected
+
+
 def test_cli_prints_verification_receipt(
     published_tree: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert asset_manifest.main(["verify", "--asset-root", str(published_tree)]) == 0
+    assert asset_manifest.main(["verify", "--asset-root", str(published_tree), "--workers", "4"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "passed"
     assert output["manifest_sha256"] == _sha256(_manifest_path(published_tree))
+
+
+@pytest.mark.parametrize("workers", [0, -1, asset_manifest.MAX_HASH_WORKERS + 1, True])
+def test_worker_count_must_be_a_bounded_positive_integer(
+    published_tree: Path,
+    workers: object,
+) -> None:
+    with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="asset hash workers"):
+        asset_manifest.verify_robocasa_asset_tree(published_tree, workers=workers)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra"])
@@ -442,6 +459,71 @@ def test_live_tree_rejects_size_and_full_sha_drift(published_tree: Path) -> None
     readme.write_bytes(b"X" * len(original))
     with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="SHA-256 mismatch"):
         asset_manifest.verify_robocasa_asset_tree(published_tree)
+
+
+@pytest.mark.parametrize("workers", [1, 4, 16])
+def test_worker_counts_reject_wrong_full_sha(
+    published_tree: Path,
+    workers: int,
+) -> None:
+    readme = published_tree / "README.md"
+    readme.write_bytes(b"X" * readme.stat().st_size)
+
+    with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="SHA-256 mismatch"):
+        asset_manifest.verify_robocasa_asset_tree(published_tree, workers=workers)
+
+
+@pytest.mark.parametrize("workers", [1, 4, 16])
+def test_worker_counts_reject_added_file(
+    published_tree: Path,
+    workers: int,
+) -> None:
+    extra = published_tree / "unexpected.txt"
+    extra.write_text("extra", encoding="utf-8")
+    extra.chmod(0o644)
+
+    with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="extra=.*unexpected.txt"):
+        asset_manifest.verify_robocasa_asset_tree(published_tree, workers=workers)
+
+
+@pytest.mark.parametrize("workers", [1, 4, 16])
+def test_worker_counts_reject_symlink(
+    published_tree: Path,
+    workers: int,
+) -> None:
+    readme = published_tree / "README.md"
+    readme.unlink()
+    readme.symlink_to("assets/texture.png")
+
+    with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="must not contain symlinks"):
+        asset_manifest.verify_robocasa_asset_tree(published_tree, workers=workers)
+
+
+@pytest.mark.parametrize("workers", [1, 4, 16])
+def test_worker_counts_reject_mode_drift(
+    published_tree: Path,
+    workers: int,
+) -> None:
+    (published_tree / "README.md").chmod(0o600)
+
+    with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="mode mismatch"):
+        asset_manifest.verify_robocasa_asset_tree(published_tree, workers=workers)
+
+
+def test_parallel_scan_rechecks_directories_after_hashing(
+    published_tree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_hash_tasks = asset_manifest._hash_file_tasks_bounded
+
+    def hash_then_add_file(tasks: list[tuple[Path, str]], workers: int) -> list[tuple[int, int, str]]:
+        results = real_hash_tasks(tasks, workers)
+        (published_tree / "assets" / "racing-extra.bin").write_bytes(b"race")
+        return results
+
+    monkeypatch.setattr(asset_manifest, "_hash_file_tasks_bounded", hash_then_add_file)
+    with pytest.raises(asset_manifest.RoboCasaAssetManifestError, match="directory changed during scan"):
+        asset_manifest.verify_robocasa_asset_tree(published_tree, workers=4)
 
 
 def test_manifest_record_mode_drift_is_rejected(published_tree: Path) -> None:

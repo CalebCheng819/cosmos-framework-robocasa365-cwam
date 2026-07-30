@@ -4414,7 +4414,11 @@ def _verify_snapshot_with_bound_manifest(contract: dict[str, Any]) -> dict[str, 
     }
 
 
-def _verify_asset_tree_with_bound_provenance(contract: dict[str, Any]) -> dict[str, Any]:
+def _verify_asset_tree_with_bound_provenance(
+    contract: dict[str, Any],
+    *,
+    asset_workers: int = cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
+) -> dict[str, Any]:
     root, _ = cwam_robocasa_asset_manifest._require_path(
         contract["simulator"]["robocasa_repo"],
         "asset root",
@@ -4445,7 +4449,10 @@ def _verify_asset_tree_with_bound_provenance(contract: dict[str, Any]) -> dict[s
         if expected_summary[summary_key] != receipt[receipt_key]:
             raise ValueError(f"bound asset manifest {summary_key} differs from the publisher receipt")
 
-    actual_records, asset_root_mode = cwam_robocasa_asset_manifest._scan_payload_tree(root)
+    actual_records, asset_root_mode = cwam_robocasa_asset_manifest._scan_payload_tree(
+        root,
+        workers=asset_workers,
+    )
     cwam_robocasa_asset_manifest._compare_manifest_and_live_tree(expected_records, actual_records)
     actual_summary = cwam_robocasa_asset_manifest._payload_summary(actual_records)
     if actual_summary != expected_summary:
@@ -4480,6 +4487,7 @@ def _collect_post_rollout_live_verification(
     *,
     contract_path: Path,
     contract: dict[str, Any],
+    asset_workers: int = cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
 ) -> dict[str, Any]:
     """Re-verify live payload trees after rollout.
 
@@ -4488,6 +4496,7 @@ def _collect_post_rollout_live_verification(
     reverified against those immutable control bytes.
     """
 
+    asset_workers = cwam_robocasa_asset_manifest._validated_hash_workers(asset_workers)
     started = time.perf_counter()
     contract_descriptor = dict(contract["_contract_descriptor"])
     contract_descriptor.update(
@@ -4514,7 +4523,10 @@ def _collect_post_rollout_live_verification(
     checkpoint_elapsed = time.perf_counter() - phase_started
 
     phase_started = time.perf_counter()
-    assets = _verify_asset_tree_with_bound_provenance(contract)
+    assets = _verify_asset_tree_with_bound_provenance(
+        contract,
+        asset_workers=asset_workers,
+    )
     assets_elapsed = time.perf_counter() - phase_started
 
     phase_started = time.perf_counter()
@@ -4630,6 +4642,7 @@ def verify_post_rollout(
     *,
     contract_path: Path,
     output: Path,
+    asset_workers: int = cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
 ) -> dict[str, Any]:
     contract_path = Path(os.path.abspath(contract_path.expanduser()))
     output = Path(os.path.abspath(output.expanduser()))
@@ -4652,6 +4665,7 @@ def verify_post_rollout(
     payload = _collect_post_rollout_live_verification(
         contract_path=contract_path,
         contract=contract,
+        asset_workers=asset_workers,
     )
     rendered = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
     _atomic_write_exclusive(output, rendered, create_parent=False)
@@ -4670,6 +4684,7 @@ def _validate_post_rollout_verification_receipt(
     receipt_path: Path,
     contract_path: Path,
     contract: dict[str, Any],
+    asset_workers: int = cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
 ) -> dict[str, Any]:
     contract_path = Path(os.path.abspath(contract_path.expanduser()))
     receipt_path = Path(os.path.abspath(receipt_path.expanduser()))
@@ -4705,6 +4720,7 @@ def _validate_post_rollout_verification_receipt(
     expected = _collect_post_rollout_live_verification(
         contract_path=contract_path,
         contract=contract,
+        asset_workers=asset_workers,
     )
     contract_descriptor = _require_dict(
         receipt.get("contract"),
@@ -5187,6 +5203,7 @@ def summarize(
     task_success_rates_csv: Path,
     evidence_json: Path,
     require_effect_pass: bool,
+    asset_workers: int = cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
 ) -> dict[str, Any]:
     contract_path = contract_path.expanduser().resolve()
     results_dir = results_dir.expanduser().resolve()
@@ -5196,6 +5213,7 @@ def summarize(
         receipt_path=post_rollout_verification_receipt,
         contract_path=contract_path,
         contract=contract,
+        asset_workers=asset_workers,
     )
     expected_results_dir = Path(contract["results_dir"]).expanduser().resolve()
     if results_dir != expected_results_dir:
@@ -5531,6 +5549,11 @@ def _build_parser() -> argparse.ArgumentParser:
     summarize_parser.add_argument("--task-success-rates-csv", type=Path, required=True)
     summarize_parser.add_argument("--evidence-json", type=Path, required=True)
     summarize_parser.add_argument("--require-effect-pass", action="store_true")
+    summarize_parser.add_argument(
+        "--asset-workers",
+        type=int,
+        default=cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
+    )
     sealed_parser = subparsers.add_parser("verify-sealed-evidence")
     sealed_parser.add_argument("--contract", type=Path, required=True)
     sealed_parser.add_argument(
@@ -5546,6 +5569,11 @@ def _build_parser() -> argparse.ArgumentParser:
     post_rollout_parser = subparsers.add_parser("verify-post-rollout")
     post_rollout_parser.add_argument("--contract", type=Path, required=True)
     post_rollout_parser.add_argument("--output", type=Path, required=True)
+    post_rollout_parser.add_argument(
+        "--asset-workers",
+        type=int,
+        default=cwam_robocasa_asset_manifest.DEFAULT_HASH_WORKERS,
+    )
     prior_gate_parser = subparsers.add_parser("verify-prior-gate")
     prior_gate_parser.add_argument("--gate-evidence", type=Path, required=True)
     prior_gate_parser.add_argument("--expected-gate-evidence-sha256", required=True)
@@ -5629,6 +5657,7 @@ def main() -> None:
             task_success_rates_csv=args.task_success_rates_csv,
             evidence_json=args.evidence_json,
             require_effect_pass=args.require_effect_pass,
+            asset_workers=args.asset_workers,
         )
         print(json.dumps(evidence, indent=2, sort_keys=True))
         return
@@ -5648,6 +5677,7 @@ def main() -> None:
         receipt = verify_post_rollout(
             contract_path=args.contract,
             output=args.output,
+            asset_workers=args.asset_workers,
         )
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return
