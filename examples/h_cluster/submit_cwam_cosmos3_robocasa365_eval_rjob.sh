@@ -1346,7 +1346,7 @@ SUBMIT_ARGS=(
     --gpu "$RJOB_GPU"
     --memory "$RJOB_MEMORY_MIB"
     --negative-tags "$PINNED_EXCLUDED_NODE_TAG"
-    --host-network true
+    --host-network
     --store-host-nvme
     --mount
     "$PERSONAL_GPFS_MOUNT"

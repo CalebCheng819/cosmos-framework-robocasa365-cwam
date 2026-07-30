@@ -337,14 +337,15 @@ def test_predict_only_cannot_initialize_or_reserve_output_infrastructure() -> No
     assert _render_submit_args(predict_only=True)[-2:] == ["--predict-only", "true"]
 
 
-def test_actual_and_predict_only_submit_argv_pin_host_network_true_once() -> None:
+def test_actual_and_predict_only_submit_argv_use_bare_host_network_flag_once() -> None:
     for predict_only in (False, True):
         arguments = _render_submit_args(predict_only=predict_only)
         indices = [index for index, value in enumerate(arguments) if value == "--host-network"]
         assert indices == [arguments.index("--host-network")]
         index = indices[0]
-        assert arguments[index + 1] == "true"
+        assert arguments[index : index + 2] == ["--host-network", "--store-host-nvme"]
         assert arguments.count("--host-network") == 1
+        assert arguments.count("true") == int(predict_only)
 
 
 def test_scheduler_image_mount_nvme_and_lifecycle_contract_are_pinned() -> None:
@@ -362,10 +363,11 @@ def test_scheduler_image_mount_nvme_and_lifecycle_contract_are_pinned() -> None:
         "--termination-grace-period-seconds 60",
         "--backoff_limit 1",
         "--replicas",
-        "--host-network true",
+        "--host-network",
         "node/gpu-lg-cmc-h-h200-0685.host.h.pjlab.org.cn",
     ):
         assert token in script
+    assert "--host-network true" not in script
     assert '--image "$PINNED_CONTAINER_IMAGE"' in script
     assert '--cpu "$RJOB_CPU"' in script
     assert '--memory "$RJOB_MEMORY_MIB"' in script
