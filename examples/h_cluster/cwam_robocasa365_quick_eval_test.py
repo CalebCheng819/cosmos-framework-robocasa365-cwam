@@ -338,6 +338,15 @@ def test_quick_runner_and_submitter_are_isolated_from_formal_artifacts() -> None
     assert "CWAM_QUICK_EVAL" not in formal_runner
     assert runner.index('wait "$EVALUATOR_PID"') < runner.index('stop_child_pids "$SERVER_PID"')
     assert runner.index('stop_child_pids "$SERVER_PID"') < runner.index("seal-result")
+    assert 'readonly EVAL_NVME_PARENT="/nvme/.cwam-robocasa365-quick-eval"' in runner
+    assert 'mkdir --mode=0700 -- "$EVAL_NVME_PARENT"' in runner
+    assert '[[ -d "$EVAL_NVME_PARENT" && ! -L "$EVAL_NVME_PARENT" ]]' in runner
+    assert '"$(realpath -e -- "$EVAL_NVME_PARENT")" == "$EVAL_NVME_PARENT"' in runner
+    assert '"$(stat -c %u:%g -- "$EVAL_NVME_PARENT")" == 0:0' in runner
+    assert '"$(stat -c %a -- "$EVAL_NVME_PARENT")" == 700' in runner
+    assert 'mkdir --mode=0700 -- "$EVAL_NVME_ROOT"' in runner
+    assert '/usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_ROOT"' in runner
+    assert '/usr/bin/rm --one-file-system -rf -- "$EVAL_NVME_PARENT"' not in runner
 
     assert "--predict-only" not in submitter
     assert "scheduler-readback" not in submitter

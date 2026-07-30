@@ -358,14 +358,26 @@ trap 'cleanup $?' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
+readonly EVAL_NVME_PARENT="/nvme/.cwam-robocasa365-quick-eval"
 EVAL_NVME_ROOT="$(realpath -m -- "$EVAL_NVME_ROOT")"
-[[ "$EVAL_NVME_ROOT" == "/nvme/.cwam-robocasa365-quick-eval/$EVAL_LOGICAL_RUN_ID" ]] ||
+[[ "$EVAL_NVME_ROOT" == "$EVAL_NVME_PARENT/$EVAL_LOGICAL_RUN_ID" ]] ||
     die "EVAL_NVME_ROOT must derive exactly from EVAL_LOGICAL_RUN_ID"
 [[ "$(findmnt -n -T /nvme -o TARGET)" == /nvme ]] || die "/nvme is not a distinct mount target"
 [[ "$(findmnt -n -T /nvme -o SOURCE)" == /dev/nvme1n1 ]] || die "/nvme is not backed by /dev/nvme1n1"
 [[ "$(findmnt -n -T /nvme -o FSTYPE)" == xfs ]] || die "/nvme is not xfs"
+if [[ ! -e "$EVAL_NVME_PARENT" && ! -L "$EVAL_NVME_PARENT" ]]; then
+    mkdir --mode=0700 -- "$EVAL_NVME_PARENT" 2>/dev/null || true
+fi
+[[ -d "$EVAL_NVME_PARENT" && ! -L "$EVAL_NVME_PARENT" ]] ||
+    die "quick NVMe parent must be a real directory"
+[[ "$(realpath -e -- "$EVAL_NVME_PARENT")" == "$EVAL_NVME_PARENT" ]] ||
+    die "quick NVMe parent must be canonical"
+[[ "$(stat -c %u:%g -- "$EVAL_NVME_PARENT")" == 0:0 ]] ||
+    die "quick NVMe parent must be owned by root:root"
+[[ "$(stat -c %a -- "$EVAL_NVME_PARENT")" == 700 ]] ||
+    die "quick NVMe parent must be mode 0700"
 [[ ! -e "$EVAL_NVME_ROOT" ]] || die "refusing to reuse quick NVMe root"
-mkdir -- "$EVAL_NVME_ROOT"
+mkdir --mode=0700 -- "$EVAL_NVME_ROOT"
 NVME_CREATED=1
 
 "$COSMOS_PY" - <<'PY'
