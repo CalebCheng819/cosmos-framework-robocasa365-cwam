@@ -343,4 +343,6 @@ def test_quick_runner_and_submitter_are_isolated_from_formal_artifacts() -> None
     assert "scheduler-readback" not in submitter
     assert submitter.count('"$RJOB_BIN" "${SUBMIT_ARGS[@]}"') == 1
     assert "--gpu 1" in submitter
+    assert "--host-network" not in submitter
+    assert "RJOB_HOST_NETWORK=false" in submitter
     assert "exec $BASH_BIN" in submitter

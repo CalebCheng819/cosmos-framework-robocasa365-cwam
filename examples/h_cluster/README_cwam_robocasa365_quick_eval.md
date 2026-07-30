@@ -66,7 +66,7 @@ Then make exactly one state-changing submission call:
 
 The quick submitter has no predict phase and performs exactly one
 `/usr/local/bin/rjob submit`. It requests one H200, 16 CPUs, 187500 MiB memory,
-host networking, and node-local NVMe. It does not authenticate scheduler
+pod networking with host networking disabled, and node-local NVMe. It does not authenticate scheduler
 acceptance or produce a formal runtime receipt.
 
 On successful completion, inspect only:

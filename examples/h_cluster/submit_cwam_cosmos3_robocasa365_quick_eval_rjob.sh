@@ -265,7 +265,6 @@ SUBMIT_ARGS=(
     --gpu 1
     --memory 187500
     --negative-tags "$PINNED_EXCLUDED_NODE_TAG"
-    --host-network
     --store-host-nvme
     --mount
     "$PERSONAL_GPFS_MOUNT"
@@ -278,6 +277,7 @@ echo "RJOB_NAME=$RJOB_NAME"
 echo "EVAL_EXPERIMENT_ID=$EVAL_EXPERIMENT_ID"
 echo "EVAL_LOGICAL_RUN_ID=$EVAL_LOGICAL_RUN_ID"
 echo "EVAL_TASK=$EVAL_TASKS_CSV"
+echo "RJOB_HOST_NETWORK=false"
 echo "WORKER_COMMAND_SHA256=$WORKER_COMMAND_SHA256"
 
 # The only state-changing scheduler call in this quick submitter.
