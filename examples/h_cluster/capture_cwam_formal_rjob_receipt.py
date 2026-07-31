@@ -467,7 +467,12 @@ def _normalize_task_statuses(value: object) -> dict[str, dict[str, int]]:
     for key, count in task.items():
         _require_string(key, f"rjob.status.taskStatuses.{_TASK_NAME} key")
         normalized[key] = _require_int(count, f"rjob.status.taskStatuses.{_TASK_NAME}.{key}", minimum=0)
-    if sum(normalized.values()) != 1:
+    status_count = sum(normalized.values())
+    if status_count == 0:
+        raise ReceiptNotReady(
+            "rjob.status.taskStatuses counts are all zero while the scheduler materializes the one expected replica"
+        )
+    if status_count != 1:
         raise ReceiptValidationError("rjob.status.taskStatuses counts must sum to the one expected replica")
     return {_TASK_NAME: dict(sorted(normalized.items()))}
 

@@ -754,6 +754,31 @@ def test_incomplete_scheduler_materialization_is_retryable(mutator, message: str
         validate_and_normalize_receipt(raw_rjob, raw_replicas, _expected())
 
 
+def test_zero_task_status_counts_are_retryable_during_scheduler_materialization() -> None:
+    raw_rjob = _raw_rjob()
+    raw_rjob["status"]["taskStatuses"] = {  # type: ignore[index]
+        "t0": {
+            "active": 0,
+            "createdFailed": 0,
+            "failed": 0,
+            "pending": 0,
+            "stopped": 0,
+            "succeeded": 0,
+        }
+    }
+    with pytest.raises(ReceiptNotReady, match="counts are all zero"):
+        validate_and_normalize_receipt(raw_rjob, _raw_replicas(), _expected())
+
+
+def test_multiple_task_status_counts_remain_a_contract_mismatch() -> None:
+    raw_rjob = _raw_rjob()
+    raw_rjob["status"]["taskStatuses"] = {  # type: ignore[index]
+        "t0": {"active": 1, "pending": 1}
+    }
+    with pytest.raises(ReceiptValidationError, match="counts must sum"):
+        validate_and_normalize_receipt(raw_rjob, _raw_replicas(), _expected())
+
+
 def test_replica_identity_and_ownership_must_match() -> None:
     replicas = _raw_replicas()
     replicas["items"][0]["metadata"]["labels"]["rjob.brainpp.cn/rjob-name"] = "other-job"
@@ -912,6 +937,69 @@ def test_capture_retries_only_transient_or_not_ready_failures() -> None:
     with pytest.raises(ReceiptValidationError, match="backoffLimit"):
         capture_with_retries(object(), _expected(), attempts=5, fetcher=invalid_fetcher)
     assert validation_calls == 1
+
+
+def test_capture_retries_zero_task_status_counts_until_one_replica_is_counted() -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def fetcher(client, name):
+        nonlocal calls
+        del client
+        assert name == _SCHEDULER_NAME
+        calls += 1
+        raw = _raw_rjob()
+        if calls == 1:
+            raw["status"]["taskStatuses"] = {  # type: ignore[index]
+                "t0": {
+                    "active": 0,
+                    "createdFailed": 0,
+                    "failed": 0,
+                    "pending": 0,
+                    "stopped": 0,
+                    "succeeded": 0,
+                }
+            }
+        return raw, _raw_replicas()
+
+    receipt = capture_with_retries(
+        object(),
+        _expected(),
+        attempts=2,
+        retry_seconds=0.25,
+        sleeper=sleeps.append,
+        fetcher=fetcher,
+        captured_at_factory=lambda: "2026-07-28T00:00:02+00:00",
+    )
+    assert receipt["status"]["task_statuses"] == {"t0": {"pending": 1}}
+    assert calls == 2
+    assert sleeps == [0.25]
+
+
+def test_capture_does_not_retry_multiple_counted_replicas() -> None:
+    calls = 0
+
+    def fetcher(client, name):
+        nonlocal calls
+        del client
+        assert name == _SCHEDULER_NAME
+        calls += 1
+        raw = _raw_rjob()
+        raw["status"]["taskStatuses"] = {  # type: ignore[index]
+            "t0": {"active": 1, "pending": 1}
+        }
+        return raw, _raw_replicas()
+
+    with pytest.raises(ReceiptValidationError, match="counts must sum"):
+        capture_with_retries(
+            object(),
+            _expected(),
+            attempts=5,
+            retry_seconds=0,
+            sleeper=lambda _: None,
+            fetcher=fetcher,
+        )
+    assert calls == 1
 
 
 def test_capture_exhaustion_reports_no_receipt() -> None:
