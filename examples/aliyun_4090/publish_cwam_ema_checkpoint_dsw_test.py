@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -342,6 +343,23 @@ def _fake_closure(
     )
 
 
+def _make_uncommitted_split(
+    contract: publisher.PublicationContract,
+    stage: Path,
+    final: Path,
+    moved_count: int,
+) -> None:
+    names = sorted({*contract.root_files, "model"})
+    if not 0 <= moved_count <= len(names):
+        raise ValueError("moved_count is outside the checkpoint closure")
+    final.mkdir(mode=0o755)
+    final.chmod(0o755)
+    for name in names[:moved_count]:
+        os.rename(stage / name, final / name)
+    if moved_count == len(names):
+        stage.rmdir()
+
+
 def test_audit_only_is_read_only(tmp_path: Path) -> None:
     contract, stage, final, receipt, lock = _fake_closure(tmp_path)
 
@@ -362,7 +380,9 @@ def test_audit_only_is_read_only(tmp_path: Path) -> None:
     assert not lock.exists()
 
 
-def test_publish_uses_no_replace_rename_and_writes_receipt(tmp_path: Path) -> None:
+def test_publish_uses_cpfs_transaction_and_writes_commit_receipt(
+    tmp_path: Path,
+) -> None:
     contract, stage, final, receipt, lock = _fake_closure(tmp_path)
 
     result = publisher.publish_checkpoint(
@@ -375,7 +395,25 @@ def test_publish_uses_no_replace_rename_and_writes_receipt(tmp_path: Path) -> No
     )
 
     assert result["status"] == "published"
-    assert result["publication"]["primitive"] == "renameat2(RENAME_NOREPLACE)"
+    assert result["schema_version"] == 2
+    assert result["mode"] == "cpfs_transaction_publish"
+    assert result["publication"] == {
+        "primitive": (
+            "mkdir(final)+per-entry-rename+exclusive-receipt-hardlink"
+        ),
+        "same_parent_same_filesystem": True,
+        "parent_fsync_before_and_after": True,
+        "stage_absent_after": True,
+        "final_present_after": True,
+        "directory_visibility_atomic": False,
+        "committed_visibility_atomic": True,
+        "final_root_exclusive_reservation": True,
+        "final_root_inode_verified_throughout": True,
+        "receipt_is_commit_point": True,
+        "receipt_required_for_success": True,
+        "rollback_on_precommit_failure": True,
+        "no_rollback_after_receipt_commit": True,
+    }
     assert not stage.exists()
     assert final.is_dir()
     assert receipt.is_file()
@@ -387,10 +425,30 @@ def test_publish_uses_no_replace_rename_and_writes_receipt(tmp_path: Path) -> No
         == contract.tree_sha256
     )
     assert persisted["publication"]["receipt_required_for_success"] is True
-    assert (
-        persisted["publication"]["rollback_on_postpublication_failure"]
-        is True
-    )
+    assert persisted["publication"]["rollback_on_precommit_failure"] is True
+    assert persisted["publication"]["receipt_is_commit_point"] is True
+
+
+def test_exclusive_reservation_is_0755_under_restrictive_umask(
+    tmp_path: Path,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    previous_umask = os.umask(0o077)
+    try:
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert final.is_dir()
+    assert stat.S_IMODE(final.stat().st_mode) == 0o755
+    assert receipt.is_file()
 
 
 def test_extra_top_level_file_fails_closed(tmp_path: Path) -> None:
@@ -444,12 +502,13 @@ def test_model_hash_or_mode_failure_never_publishes(
 def test_existing_final_is_never_replaced(tmp_path: Path) -> None:
     contract, stage, final, receipt, lock = _fake_closure(tmp_path)
     final.mkdir()
+    final.chmod(0o755)
     sentinel = final / "sentinel"
     sentinel.write_bytes(b"keep")
 
     with pytest.raises(
         publisher.CheckpointPublicationError,
-        match="hidden stage and final checkpoint both exist",
+        match="extra entries",
     ):
         publisher.publish_checkpoint(
             stage_root=stage,
@@ -463,28 +522,112 @@ def test_existing_final_is_never_replaced(tmp_path: Path) -> None:
     assert stage.is_dir()
 
 
-def test_tamper_after_rename_rolls_final_back_to_hidden_stage(
+def test_final_reservation_inode_replacement_is_detected_and_preserved(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     contract, stage, final, receipt, lock = _fake_closure(tmp_path)
-    real_rename_noreplace = publisher._rename_noreplace
+    real_move = publisher._move_entry_to_absent_destination
+    displaced = tmp_path / "displaced-final-reservation"
     injected = False
 
-    def rename_then_tamper(source: Path, destination: Path) -> None:
+    def move_then_replace_final(**kwargs: object) -> None:
         nonlocal injected
-        real_rename_noreplace(source, destination)
-        if destination == final and not injected:
+        real_move(**kwargs)
+        if kwargs["destination_root"] == final and not injected:
             injected = True
-            shard = final / "model" / "__0_0.distcp"
-            shard.chmod(0o644)
-            shard.write_bytes(b"tampered-after-preaudit")
-            shard.chmod(0o444)
+            os.rename(final, displaced)
+            final.mkdir(mode=0o755)
+            final.chmod(0o755)
+            (final / "foreign-sentinel").write_bytes(b"keep-foreign")
 
-    monkeypatch.setattr(publisher, "_rename_noreplace", rename_then_tamper)
+    monkeypatch.setattr(
+        publisher,
+        "_move_entry_to_absent_destination",
+        move_then_replace_final,
+    )
     with pytest.raises(
         publisher.CheckpointPublicationError,
-        match="content mismatch",
+        match="rollback could not restore the hidden stage",
+    ):
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+
+    assert injected is True
+    assert (final / "foreign-sentinel").read_bytes() == b"keep-foreign"
+    assert displaced.is_dir()
+    assert not receipt.exists()
+
+
+def test_destination_entry_race_never_overwrites_foreign_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    real_move = publisher._move_entry_to_absent_destination
+    injected_path: Path | None = None
+
+    def inject_destination_then_move(**kwargs: object) -> None:
+        nonlocal injected_path
+        if kwargs["destination_root"] == final and injected_path is None:
+            injected_path = final / str(kwargs["name"])
+            injected_path.write_bytes(b"keep-foreign-destination")
+        real_move(**kwargs)
+
+    monkeypatch.setattr(
+        publisher,
+        "_move_entry_to_absent_destination",
+        inject_destination_then_move,
+    )
+    with pytest.raises(
+        publisher.CheckpointPublicationError,
+        match="rollback could not restore the hidden stage",
+    ):
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+
+    assert injected_path is not None
+    assert injected_path.read_bytes() == b"keep-foreign-destination"
+    assert not receipt.exists()
+
+
+def test_move_failure_rolls_complement_back_to_hidden_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    real_move = publisher._move_entry_to_absent_destination
+    move_count = 0
+    injected = False
+
+    def move_then_fail(**kwargs: object) -> None:
+        nonlocal injected, move_count
+        real_move(**kwargs)
+        move_count += 1
+        if move_count == 3 and not injected:
+            injected = True
+            raise publisher.CheckpointPublicationError("injected move failure")
+
+    monkeypatch.setattr(
+        publisher,
+        "_move_entry_to_absent_destination",
+        move_then_fail,
+    )
+    with pytest.raises(
+        publisher.CheckpointPublicationError,
+        match="injected move failure",
     ):
         publisher.publish_checkpoint(
             stage_root=stage,
@@ -499,6 +642,53 @@ def test_tamper_after_rename_rolls_final_back_to_hidden_stage(
     assert stage.is_dir()
     assert not final.exists()
     assert not receipt.exists()
+    assert (
+        publisher.audit_checkpoint_root(stage, contract=contract)["model"][
+            "tree_sha256"
+        ]
+        == contract.tree_sha256
+    )
+
+
+def test_tamper_before_receipt_never_claims_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    real_move_entries = publisher._move_entries
+    injected = False
+
+    def move_then_tamper(**kwargs: object) -> None:
+        nonlocal injected
+        real_move_entries(**kwargs)
+        if kwargs["destination_root"] == final and not injected:
+            injected = True
+            shard = final / "model" / "__0_0.distcp"
+            shard.chmod(0o644)
+            shard.write_bytes(b"tampered-after-preaudit")
+            shard.chmod(0o444)
+
+    monkeypatch.setattr(publisher, "_move_entries", move_then_tamper)
+    with pytest.raises(
+        publisher.CheckpointPublicationError,
+        match="rollback could not restore the hidden stage",
+    ):
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+
+    assert injected is True
+    assert stage.is_dir()
+    assert final.is_dir()
+    assert not any(os.scandir(final))
+    assert not receipt.exists()
+    with pytest.raises(publisher.CheckpointPublicationError):
+        publisher.audit_checkpoint_root(stage, contract=contract)
 
 
 def test_receipt_failure_rolls_final_back_to_hidden_stage(
@@ -535,11 +725,44 @@ def test_receipt_failure_rolls_final_back_to_hidden_stage(
     )
 
 
-def test_valid_interrupted_final_without_receipt_is_recovered(
+def test_receipt_mode_persistence_failure_rolls_back_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     contract, stage, final, receipt, lock = _fake_closure(tmp_path)
-    publisher._rename_noreplace(stage, final)
+
+    def fail_fchmod(_descriptor: int, _mode: int) -> None:
+        raise OSError("injected receipt fchmod failure")
+
+    monkeypatch.setattr(publisher.os, "fchmod", fail_fchmod)
+    with pytest.raises(OSError, match="injected receipt fchmod failure"):
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+
+    assert stage.is_dir()
+    assert not final.exists()
+    assert not receipt.exists()
+    assert (
+        publisher.audit_checkpoint_root(stage, contract=contract)["model"][
+            "tree_sha256"
+        ]
+        == contract.tree_sha256
+    )
+
+
+@pytest.mark.parametrize("moved_count", range(10))
+def test_complementary_interrupted_transaction_is_recovered(
+    tmp_path: Path,
+    moved_count: int,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    _make_uncommitted_split(contract, stage, final, moved_count)
 
     result = publisher.publish_checkpoint(
         stage_root=stage,
@@ -557,7 +780,95 @@ def test_valid_interrupted_final_without_receipt_is_recovered(
     assert receipt.is_file()
 
 
-def test_receipt_readback_failure_removes_only_created_receipt(
+@pytest.mark.parametrize("mutation", ["overlap", "extra", "missing"])
+def test_unknown_split_state_fails_closed_without_moving_entries(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    _make_uncommitted_split(contract, stage, final, 2)
+    stage_before = {entry.name for entry in os.scandir(stage)}
+    final_before = {entry.name for entry in os.scandir(final)}
+    if mutation == "overlap":
+        name = sorted(final_before)[0]
+        (stage / name).write_bytes(b"foreign-overlap")
+    elif mutation == "extra":
+        (final / "unexpected").write_bytes(b"foreign-extra")
+    else:
+        name = sorted(stage_before)[0]
+        path = stage / name
+        if path.is_dir():
+            path.rmdir()
+        else:
+            path.unlink()
+
+    state_before = (
+        {entry.name for entry in os.scandir(stage)},
+        {entry.name for entry in os.scandir(final)},
+    )
+    with pytest.raises(publisher.CheckpointPublicationError):
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+    assert state_before == (
+        {entry.name for entry in os.scandir(stage)},
+        {entry.name for entry in os.scandir(final)},
+    )
+    assert not receipt.exists()
+
+
+def test_receipt_commit_followup_failure_never_rolls_checkpoint_back(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    real_stable_file = publisher._stable_file
+
+    def fail_receipt_readback(
+        path: Path,
+        *,
+        label: str,
+        expected: publisher.FileExpectation | None = None,
+        capture: bool = False,
+    ) -> tuple[dict, bytes | None]:
+        if label == "publication receipt":
+            raise publisher.CheckpointPublicationError(
+                "publication receipt content mismatch: injected"
+            )
+        return real_stable_file(
+            path,
+            label=label,
+            expected=expected,
+            capture=capture,
+        )
+
+    monkeypatch.setattr(publisher, "_stable_file", fail_receipt_readback)
+    with pytest.raises(
+        publisher.ReceiptCommitPointCrossedError,
+        match="commit point was crossed",
+    ):
+        publisher.publish_checkpoint(
+            stage_root=stage,
+            final_root=final,
+            receipt_output=receipt,
+            lock_path=lock,
+            publish=True,
+            contract=contract,
+        )
+    assert not stage.exists()
+    assert final.is_dir()
+    assert receipt.is_file()
+    persisted = json.loads(receipt.read_text())
+    assert persisted["status"] == "published"
+    assert persisted["publication"]["receipt_is_commit_point"] is True
+
+
+def test_receipt_readback_failure_retains_commit_point(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -579,7 +890,38 @@ def test_receipt_readback_failure_removes_only_created_receipt(
     monkeypatch.setattr(publisher, "_stable_file", fail_readback)
     with pytest.raises(
         publisher.CheckpointPublicationError,
-        match="content mismatch",
+        match="commit point was crossed",
     ):
         publisher._atomic_write_read_only(receipt, {"status": "published"})
-    assert not receipt.exists()
+    assert receipt.is_file()
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o444
+    assert json.loads(receipt.read_text()) == {"status": "published"}
+
+
+def test_receipt_postlink_inode_fsync_failure_retains_commit_point(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o755)
+    receipt = tmp_path / "receipt.json"
+    real_fsync = publisher.os.fsync
+    call_count = 0
+
+    def fail_second_fsync(descriptor: int) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("injected post-link inode fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(publisher.os, "fsync", fail_second_fsync)
+    with pytest.raises(
+        publisher.ReceiptCommitPointCrossedError,
+        match="commit point was crossed",
+    ):
+        publisher._atomic_write_read_only(receipt, {"status": "published"})
+
+    assert call_count == 2
+    assert receipt.is_file()
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o444
+    assert json.loads(receipt.read_text()) == {"status": "published"}

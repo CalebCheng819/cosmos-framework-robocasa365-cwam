@@ -41,6 +41,9 @@ _SEALED_KIND = "cwam_robocasa365_alibaba_dsw_sealed_evidence_verification"
 _SHUTDOWN_KIND = "cwam_robocasa365_alibaba_dsw_controlled_shutdown_receipt"
 _TERMINAL_KIND = "cwam_robocasa365_alibaba_dsw_server_terminal_receipt"
 _GATE_KIND = "cwam_robocasa365_alibaba_dsw_one_episode_gate"
+_CHECKPOINT_PUBLICATION_GATE_KIND = (
+    "cwam_robocasa365_alibaba_dsw_checkpoint_publication_pre_read_gate"
+)
 _QWEN_MANIFEST_KIND = "cwam_qwen_tokenizer_manifest"
 _QWEN_VERIFICATION_KIND = "cwam_qwen_tokenizer_manifest_verification"
 _QWEN_REQUIRED_FILES = frozenset(
@@ -74,6 +77,7 @@ _REQUIRED_RUNTIME_PROVENANCE = frozenset(
     {
         "asset_env_closure",
         "checkpoint_atomic_publication",
+        "checkpoint_publication_gate",
         "checkpoint_relocation",
         "cosmos_environment_pre",
         "ema_export_receipt",
@@ -630,7 +634,7 @@ def _validate_egl_mapping_receipt(
         raise ValueError("EGL mapping receipt created_at_utc must be a UTC timestamp")
     try:
         parsed_created_at = dt.datetime.fromisoformat(
-            created_at.removesuffix("Z") + "+00:00"
+            created_at[:-1] + "+00:00"
         )
     except ValueError as error:
         raise ValueError("EGL mapping receipt created_at_utc is invalid") from error
@@ -1005,10 +1009,10 @@ def _validate_checkpoint_atomic_publication_receipt(
         "checkpoint atomic publication receipt",
     )
     if (
-        value.get("schema_version") != 1
+        value.get("schema_version") != 2
         or value.get("kind") != "cwam_dsw_ema_checkpoint_publication"
         or value.get("status") != "published"
-        or value.get("mode") != "atomic_publish"
+        or value.get("mode") != "cpfs_transaction_publish"
         or value.get("final_root_absent_before_publication") is not True
         or type(value.get("recovered_uncommitted_final_before_publication"))
         is not bool
@@ -1021,7 +1025,7 @@ def _validate_checkpoint_atomic_publication_receipt(
         raise ValueError("checkpoint atomic publication completed_at must be UTC")
     try:
         completed = dt.datetime.fromisoformat(
-            completed_at.removesuffix("Z") + "+00:00"
+            completed_at[:-1] + "+00:00"
         )
     except ValueError as error:
         raise ValueError(
@@ -1049,16 +1053,28 @@ def _validate_checkpoint_atomic_publication_receipt(
         raise ValueError(
             "checkpoint atomic publication stage/final paths do not bind the serving checkpoint"
         )
+    if os.path.lexists(stage_root):
+        raise ValueError(
+            "checkpoint hidden stage must be absent after receipt commit"
+        )
 
     publication = value.get("publication")
     expected_publication = {
-        "primitive": "renameat2(RENAME_NOREPLACE)",
+        "primitive": (
+            "mkdir(final)+per-entry-rename+exclusive-receipt-hardlink"
+        ),
         "same_parent_same_filesystem": True,
         "parent_fsync_before_and_after": True,
         "stage_absent_after": True,
         "final_present_after": True,
+        "directory_visibility_atomic": False,
+        "committed_visibility_atomic": True,
+        "final_root_exclusive_reservation": True,
+        "final_root_inode_verified_throughout": True,
+        "receipt_is_commit_point": True,
         "receipt_required_for_success": True,
-        "rollback_on_postpublication_failure": True,
+        "rollback_on_precommit_failure": True,
+        "no_rollback_after_receipt_commit": True,
     }
     if publication != expected_publication:
         raise ValueError("checkpoint atomic publication guarantees are incomplete")
@@ -1182,6 +1198,207 @@ def _validate_checkpoint_atomic_publication_receipt(
             raise ValueError(
                 f"checkpoint {phase}publication validation flags did not all pass"
             )
+    return dict(value)
+
+
+def verify_checkpoint_publication(
+    *,
+    publication_receipt_path: Path,
+    expected_publication_receipt_sha256: str,
+    checkpoint_path: Path,
+    expected_tree_sha256: str,
+    output: Path,
+) -> dict[str, Any]:
+    """Admit a committed checkpoint before any consumer hashes its contents."""
+
+    expected_receipt_sha256 = _require_sha256(
+        expected_publication_receipt_sha256,
+        "expected checkpoint publication receipt SHA-256",
+    )
+    expected_tree_sha256 = _require_sha256(
+        expected_tree_sha256,
+        "expected checkpoint tree SHA-256",
+    )
+    publication, publication_descriptor = _read_json(
+        publication_receipt_path,
+        expected_mode=0o444,
+    )
+    if publication_descriptor["sha256"] != expected_receipt_sha256:
+        raise ValueError(
+            "checkpoint publication receipt SHA-256 mismatch: "
+            f"expected={expected_receipt_sha256} "
+            f"actual={publication_descriptor['sha256']}"
+        )
+    validated = _validate_checkpoint_atomic_publication_receipt(
+        publication,
+        checkpoint_path=checkpoint_path,
+        expected_tree_sha256=expected_tree_sha256,
+    )
+    canonical_checkpoint = _canonical_non_symlink_directory(checkpoint_path)
+    receipt = {
+        "schema_version": 1,
+        "kind": _CHECKPOINT_PUBLICATION_GATE_KIND,
+        "status": "passed",
+        "verified_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "checkpoint_path": str(canonical_checkpoint),
+        "expected_tree_sha256": expected_tree_sha256,
+        "publication_receipt": publication_descriptor,
+        "publication_binding": {
+            "schema_version": validated["schema_version"],
+            "mode": validated["mode"],
+            "completed_at": validated["completed_at"],
+            "stage_root": validated["stage_root"],
+            "final_root": validated["final_root"],
+            "postpublication_model_path": validated["postpublication"]["model"][
+                "path"
+            ],
+            "postpublication_tree_sha256": validated["postpublication"]["model"][
+                "tree_sha256"
+            ],
+        },
+        "validation": {
+            "receipt_mode_0444_and_expected_sha256_match": True,
+            "schema2_cpfs_transaction_guarantees_match": True,
+            "final_root_and_model_path_match": True,
+            "hidden_stage_is_absent": True,
+            "receipt_is_commit_point": True,
+            "checkpoint_contents_not_hashed_before_admission": True,
+        },
+    }
+    _atomic_write_exclusive(output, receipt)
+    return receipt
+
+
+def _validate_checkpoint_publication_gate_receipt(
+    value: Mapping[str, Any],
+    *,
+    publication_descriptor: Mapping[str, Any],
+    publication_receipt: Mapping[str, Any],
+    checkpoint_path: Path,
+    expected_tree_sha256: str,
+) -> dict[str, Any]:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "checkpoint_path",
+                "expected_tree_sha256",
+                "kind",
+                "publication_binding",
+                "publication_receipt",
+                "schema_version",
+                "status",
+                "validation",
+                "verified_at_utc",
+            }
+        ),
+        "checkpoint publication pre-read gate",
+    )
+    if (
+        value.get("schema_version") != 1
+        or value.get("kind") != _CHECKPOINT_PUBLICATION_GATE_KIND
+        or value.get("status") != "passed"
+    ):
+        raise ValueError(
+            "checkpoint publication pre-read gate schema/kind/status mismatch"
+        )
+    verified_at = value.get("verified_at_utc")
+    if not isinstance(verified_at, str):
+        raise ValueError(
+            "checkpoint publication pre-read gate verified_at_utc is invalid"
+        )
+    try:
+        parsed_verified_at = dt.datetime.fromisoformat(verified_at)
+    except ValueError as error:
+        raise ValueError(
+            "checkpoint publication pre-read gate verified_at_utc is invalid"
+        ) from error
+    if parsed_verified_at.tzinfo is None:
+        raise ValueError(
+            "checkpoint publication pre-read gate verified_at_utc must be aware"
+        )
+    checkpoint_path = _canonical_non_symlink_directory(checkpoint_path)
+    expected_tree_sha256 = _require_sha256(
+        expected_tree_sha256,
+        "checkpoint publication pre-read gate expected tree SHA-256",
+    )
+    if (
+        value.get("checkpoint_path") != str(checkpoint_path)
+        or value.get("expected_tree_sha256") != expected_tree_sha256
+        or value.get("publication_receipt") != publication_descriptor
+    ):
+        raise ValueError(
+            "checkpoint publication pre-read gate input binding mismatch"
+        )
+    publication_binding = value.get("publication_binding")
+    if not isinstance(publication_binding, dict):
+        raise TypeError(
+            "checkpoint publication pre-read gate publication_binding must be an object"
+        )
+    _require_exact_keys(
+        publication_binding,
+        frozenset(
+            {
+                "completed_at",
+                "final_root",
+                "mode",
+                "postpublication_model_path",
+                "postpublication_tree_sha256",
+                "schema_version",
+                "stage_root",
+            }
+        ),
+        "checkpoint publication pre-read gate publication_binding",
+    )
+    expected_publication_binding = {
+        "schema_version": publication_receipt.get("schema_version"),
+        "mode": publication_receipt.get("mode"),
+        "completed_at": publication_receipt.get("completed_at"),
+        "stage_root": publication_receipt.get("stage_root"),
+        "final_root": publication_receipt.get("final_root"),
+        "postpublication_model_path": publication_receipt.get(
+            "postpublication",
+            {},
+        ).get("model", {}).get("path"),
+        "postpublication_tree_sha256": publication_receipt.get(
+            "postpublication",
+            {},
+        ).get("model", {}).get("tree_sha256"),
+    }
+    if (
+        publication_binding != expected_publication_binding
+        or publication_binding.get("schema_version") != 2
+        or publication_binding.get("mode") != "cpfs_transaction_publish"
+        or publication_binding.get("final_root") != str(checkpoint_path.parent)
+        or publication_binding.get("postpublication_model_path")
+        != str(checkpoint_path)
+        or publication_binding.get("postpublication_tree_sha256")
+        != expected_tree_sha256
+    ):
+        raise ValueError(
+            "checkpoint publication pre-read gate publication semantics mismatch"
+        )
+    stage_root = _require_canonical_absolute_path_string(
+        publication_binding.get("stage_root"),
+        "checkpoint publication pre-read gate stage_root",
+    )
+    if os.path.lexists(stage_root):
+        raise ValueError(
+            "checkpoint hidden stage reappeared after the pre-read gate"
+        )
+    validation = value.get("validation")
+    expected_validation = {
+        "receipt_mode_0444_and_expected_sha256_match": True,
+        "schema2_cpfs_transaction_guarantees_match": True,
+        "final_root_and_model_path_match": True,
+        "hidden_stage_is_absent": True,
+        "receipt_is_commit_point": True,
+        "checkpoint_contents_not_hashed_before_admission": True,
+    }
+    if validation != expected_validation:
+        raise ValueError(
+            "checkpoint publication pre-read gate guarantees are incomplete"
+        )
     return dict(value)
 
 
@@ -2043,6 +2260,17 @@ def capture_runtime(
         checkpoint_path=checkpoint_path,
         expected_tree_sha256=checkpoint_tree_sha256,
     )
+    _validate_checkpoint_publication_gate_receipt(
+        provenance_values["checkpoint_publication_gate"],
+        publication_descriptor=provenance_descriptors[
+            "checkpoint_atomic_publication"
+        ],
+        publication_receipt=provenance_values[
+            "checkpoint_atomic_publication"
+        ],
+        checkpoint_path=checkpoint_path,
+        expected_tree_sha256=checkpoint_tree_sha256,
+    )
     if launcher_pid <= 0:
         raise ValueError("launcher_pid must be positive")
 
@@ -2219,6 +2447,7 @@ def capture_runtime(
             "robocasa_environment_and_ready_marker_match_egl_probe": True,
             "server_selected_serving_only_net_ema_bf16_tree": True,
             "checkpoint_atomic_publication_semantics_match": True,
+            "checkpoint_publication_pre_read_gate_matches": True,
             "all_required_pre_rollout_provenance_bound": True,
             "rank0_server_inherited_exact_nccl_watchdog_environment": True,
             "all_external_waits_have_finite_timeouts": True,
@@ -3119,6 +3348,29 @@ def _parser() -> argparse.ArgumentParser:
     qwen.add_argument("--expected-manifest-sha256", required=True)
     qwen.add_argument("--output", type=Path, required=True)
 
+    checkpoint_publication = subparsers.add_parser(
+        "verify-checkpoint-publication"
+    )
+    checkpoint_publication.add_argument(
+        "--publication-receipt-path",
+        type=Path,
+        required=True,
+    )
+    checkpoint_publication.add_argument(
+        "--expected-publication-receipt-sha256",
+        required=True,
+    )
+    checkpoint_publication.add_argument(
+        "--checkpoint-path",
+        type=Path,
+        required=True,
+    )
+    checkpoint_publication.add_argument(
+        "--expected-tree-sha256",
+        required=True,
+    )
+    checkpoint_publication.add_argument("--output", type=Path, required=True)
+
     gate = subparsers.add_parser("verify-one-episode-gate")
     gate.add_argument("--gate-results-dir", type=Path, required=True)
     gate.add_argument("--checkpoint-path", type=Path, required=True)
@@ -3232,6 +3484,16 @@ def main() -> None:
             tokenizer_path=args.tokenizer_path,
             manifest_path=args.manifest_path,
             expected_manifest_sha256=args.expected_manifest_sha256,
+            output=args.output,
+        )
+    elif args.command == "verify-checkpoint-publication":
+        result = verify_checkpoint_publication(
+            publication_receipt_path=args.publication_receipt_path,
+            expected_publication_receipt_sha256=(
+                args.expected_publication_receipt_sha256
+            ),
+            checkpoint_path=args.checkpoint_path,
+            expected_tree_sha256=args.expected_tree_sha256,
             output=args.output,
         )
     elif args.command == "verify-one-episode-gate":

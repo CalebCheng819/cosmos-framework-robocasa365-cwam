@@ -440,6 +440,96 @@ files = manifest.get("files")
 if not isinstance(files, list) or manifest.get("file_count") != len(files):
     raise SystemExit("source snapshot manifest file inventory is malformed")
 PY
+
+mount_target="$(findmnt -n -T "$DSW_CPFS_MOUNT" -o TARGET)" ||
+    die "could not resolve the CPFS mount target"
+mount_source="$(findmnt -n -T "$DSW_CPFS_MOUNT" -o SOURCE)" ||
+    die "could not resolve the CPFS mount source"
+mount_fstype="$(findmnt -n -T "$DSW_CPFS_MOUNT" -o FSTYPE)" ||
+    die "could not resolve the CPFS filesystem type"
+[[ "$mount_target" == "$DSW_CPFS_MOUNT" ]] ||
+    die "DSW_CPFS_MOUNT must name the exact mount target: observed=$mount_target"
+mount_identity="${mount_source,,}:${mount_fstype,,}"
+[[ "$mount_identity" == *cpfs* ]] ||
+    die "declared CPFS mount does not identify CPFS: source=$mount_source fstype=$mount_fstype"
+case "$DSW_CPFS_OUTPUT_PARENT/" in
+    "$DSW_CPFS_MOUNT"/*/) ;;
+    *) die "DSW_CPFS_OUTPUT_PARENT must be a strict child of DSW_CPFS_MOUNT" ;;
+esac
+
+EVAL_OUTPUT_ROOT="$(realpath -m -- "$EVAL_OUTPUT_ROOT")"
+readonly EXPECTED_OUTPUT_ROOT="$DSW_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+[[ "$EVAL_OUTPUT_ROOT" == "$EXPECTED_OUTPUT_ROOT" ]] ||
+    die "EVAL_OUTPUT_ROOT must be exactly $EXPECTED_OUTPUT_ROOT"
+case "$EVAL_OUTPUT_ROOT/" in
+    "$DSW_CPFS_OUTPUT_PARENT"/*/) ;;
+    *) die "EVAL_OUTPUT_ROOT must be a strict child of the allowed CPFS parent" ;;
+esac
+readonly EXPERIMENT_OUTPUT_ROOT="$DSW_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID"
+[[ ! -e "$EXPERIMENT_OUTPUT_ROOT" && ! -L "$EXPERIMENT_OUTPUT_ROOT" ]] ||
+    die "refusing to reuse experiment output root: $EXPERIMENT_OUTPUT_ROOT"
+mkdir -- "$EXPERIMENT_OUTPUT_ROOT"
+mkdir -- "$EVAL_OUTPUT_ROOT"
+readonly CONTROL_DIR="$EVAL_OUTPUT_ROOT/control"
+readonly RESULTS_ROOT="$EVAL_OUTPUT_ROOT/results"
+readonly RESULTS_DIR="$RESULTS_ROOT/$EVAL_RUN_NAME"
+mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT" "$RESULTS_DIR"
+readonly SUMMARY_CSV="$RESULTS_DIR/summary.csv"
+readonly TASK_SUCCESS_RATES_CSV="$RESULTS_DIR/task_success_rates.csv"
+readonly EVIDENCE_JSON="$RESULTS_DIR/evaluation_evidence.json"
+readonly RUNTIME_RECEIPT="$CONTROL_DIR/dsw-runtime-receipt.json"
+readonly SHUTDOWN_RECEIPT="$CONTROL_DIR/dsw-controlled-shutdown-receipt.json"
+readonly TERMINAL_RECEIPT="$CONTROL_DIR/dsw-server-terminal-receipt.json"
+readonly SEALED_VERIFICATION_RECEIPT="$CONTROL_DIR/sealed-evidence-verification.json"
+readonly QWEN_VERIFICATION_PRE="$CONTROL_DIR/qwen-tokenizer-verification-pre.json"
+readonly QWEN_VERIFICATION_POST="$CONTROL_DIR/qwen-tokenizer-verification-post.json"
+readonly SOURCE_VERIFICATION_PRE="$CONTROL_DIR/source-snapshot-verification-pre.json"
+readonly SOURCE_VERIFICATION_POST="$CONTROL_DIR/source-snapshot-verification-post.json"
+readonly CHECKPOINT_PUBLICATION_GATE_RECEIPT="$CONTROL_DIR/checkpoint-publication-pre-read-gate.json"
+readonly CHECKPOINT_RELOCATION_RECEIPT="$CONTROL_DIR/checkpoint-relocation-receipt.json"
+readonly DESTINATION_CHECKPOINT_MANIFEST="$CONTROL_DIR/dsw-serving-checkpoint-manifest.json"
+readonly STATIC_INPUTS_PRE="$CONTROL_DIR/static-inputs-verification-pre.json"
+readonly STATIC_INPUTS_POST="$CONTROL_DIR/static-inputs-verification-post.json"
+readonly COSMOS_ENV_VERIFICATION_PRE="$CONTROL_DIR/cosmos-environment-verification-pre.json"
+readonly COSMOS_ENV_VERIFICATION_POST="$CONTROL_DIR/cosmos-environment-verification-post.json"
+readonly ROBOCASA_ENV_VERIFICATION_PRE="$CONTROL_DIR/robocasa-environment-verification-pre.json"
+readonly ROBOCASA_ENV_VERIFICATION_POST="$CONTROL_DIR/robocasa-environment-verification-post.json"
+readonly ROBOCASA_ASSET_VERIFICATION_PRE="$CONTROL_DIR/robocasa-asset-verification-pre.json"
+readonly ROBOCASA_ASSET_VERIFICATION_POST="$CONTROL_DIR/robocasa-asset-verification-post.json"
+readonly ASSET_ENV_CLOSURE_RECEIPT="$CONTROL_DIR/asset-env-closure-provenance.json"
+readonly POLICY_SERVER_LOG="$CONTROL_DIR/policy-server-torchrun.log"
+readonly ONE_EPISODE_GATE_RESULTS_ROOT="$CONTROL_DIR/one-episode-gate-results"
+readonly ONE_EPISODE_GATE_RUN_NAME="$EVAL_RUN_NAME-one-episode-gate"
+readonly ONE_EPISODE_GATE_RESULTS_DIR="$ONE_EPISODE_GATE_RESULTS_ROOT/$ONE_EPISODE_GATE_RUN_NAME"
+readonly ONE_EPISODE_GATE_RECEIPT="$CONTROL_DIR/one-episode-gate-receipt.json"
+mkdir -- "$ONE_EPISODE_GATE_RESULTS_ROOT"
+
+readonly PROVENANCE_PYTHONPATH="$COSMOS_SOURCE/examples/h_cluster:$COSMOS_SOURCE/examples/aliyun_4090:$COSMOS_SOURCE"
+
+PYTHONPATH="$PROVENANCE_PYTHONPATH" \
+    "$COSMOS_PY" "$COSMOS_SOURCE/$SOURCE_PROVENANCE_HELPER_REL" \
+    verify-source-snapshot \
+    --phase pre \
+    --snapshot-root "$COSMOS_SOURCE" \
+    --manifest-path "$SOURCE_MANIFEST" \
+    --expected-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256" \
+    --expected-source-commit "$EXPECTED_SOURCE_COMMIT" \
+    --output "$SOURCE_VERIFICATION_PRE" \
+    >"$CONTROL_DIR/verify-source-snapshot-pre.log"
+
+PYTHONPATH="$PROVENANCE_PYTHONPATH" \
+    "$COSMOS_PY" "$COSMOS_SOURCE/$DSW_EVIDENCE_HELPER_REL" \
+    verify-checkpoint-publication \
+    --publication-receipt-path "$CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT" \
+    --expected-publication-receipt-sha256 \
+    "$EXPECTED_CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT_SHA256" \
+    --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
+    --expected-tree-sha256 "$EXPECTED_SERVING_CHECKPOINT_TREE_SHA256" \
+    --output "$CHECKPOINT_PUBLICATION_GATE_RECEIPT" \
+    >"$CONTROL_DIR/verify-checkpoint-publication-pre-read.log"
+[[ "$(stat -c %a -- "$CHECKPOINT_PUBLICATION_GATE_RECEIPT")" == 444 ]] ||
+    die "checkpoint publication pre-read gate receipt must have mode 0444"
+
 verify_sha256 \
     h_serving_checkpoint_manifest \
     "$H_SERVING_CHECKPOINT_MANIFEST" \
@@ -540,68 +630,6 @@ if [[ -e "$ROBOCASA_REPO/.git" && ! -L "$ROBOCASA_REPO/.git" ]]; then
 fi
 verify_git_checkout robosuite "$ROBOSUITE_REPO" "$EXPECTED_ROBOSUITE_COMMIT"
 
-mount_target="$(findmnt -n -T "$DSW_CPFS_MOUNT" -o TARGET)" ||
-    die "could not resolve the CPFS mount target"
-mount_source="$(findmnt -n -T "$DSW_CPFS_MOUNT" -o SOURCE)" ||
-    die "could not resolve the CPFS mount source"
-mount_fstype="$(findmnt -n -T "$DSW_CPFS_MOUNT" -o FSTYPE)" ||
-    die "could not resolve the CPFS filesystem type"
-[[ "$mount_target" == "$DSW_CPFS_MOUNT" ]] ||
-    die "DSW_CPFS_MOUNT must name the exact mount target: observed=$mount_target"
-mount_identity="${mount_source,,}:${mount_fstype,,}"
-[[ "$mount_identity" == *cpfs* ]] ||
-    die "declared CPFS mount does not identify CPFS: source=$mount_source fstype=$mount_fstype"
-case "$DSW_CPFS_OUTPUT_PARENT/" in
-    "$DSW_CPFS_MOUNT"/*/) ;;
-    *) die "DSW_CPFS_OUTPUT_PARENT must be a strict child of DSW_CPFS_MOUNT" ;;
-esac
-
-EVAL_OUTPUT_ROOT="$(realpath -m -- "$EVAL_OUTPUT_ROOT")"
-readonly EXPECTED_OUTPUT_ROOT="$DSW_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
-[[ "$EVAL_OUTPUT_ROOT" == "$EXPECTED_OUTPUT_ROOT" ]] ||
-    die "EVAL_OUTPUT_ROOT must be exactly $EXPECTED_OUTPUT_ROOT"
-case "$EVAL_OUTPUT_ROOT/" in
-    "$DSW_CPFS_OUTPUT_PARENT"/*/) ;;
-    *) die "EVAL_OUTPUT_ROOT must be a strict child of the allowed CPFS parent" ;;
-esac
-readonly EXPERIMENT_OUTPUT_ROOT="$DSW_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID"
-[[ ! -e "$EXPERIMENT_OUTPUT_ROOT" && ! -L "$EXPERIMENT_OUTPUT_ROOT" ]] ||
-    die "refusing to reuse experiment output root: $EXPERIMENT_OUTPUT_ROOT"
-mkdir -- "$EXPERIMENT_OUTPUT_ROOT"
-mkdir -- "$EVAL_OUTPUT_ROOT"
-readonly CONTROL_DIR="$EVAL_OUTPUT_ROOT/control"
-readonly RESULTS_ROOT="$EVAL_OUTPUT_ROOT/results"
-readonly RESULTS_DIR="$RESULTS_ROOT/$EVAL_RUN_NAME"
-mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT" "$RESULTS_DIR"
-readonly SUMMARY_CSV="$RESULTS_DIR/summary.csv"
-readonly TASK_SUCCESS_RATES_CSV="$RESULTS_DIR/task_success_rates.csv"
-readonly EVIDENCE_JSON="$RESULTS_DIR/evaluation_evidence.json"
-readonly RUNTIME_RECEIPT="$CONTROL_DIR/dsw-runtime-receipt.json"
-readonly SHUTDOWN_RECEIPT="$CONTROL_DIR/dsw-controlled-shutdown-receipt.json"
-readonly TERMINAL_RECEIPT="$CONTROL_DIR/dsw-server-terminal-receipt.json"
-readonly SEALED_VERIFICATION_RECEIPT="$CONTROL_DIR/sealed-evidence-verification.json"
-readonly QWEN_VERIFICATION_PRE="$CONTROL_DIR/qwen-tokenizer-verification-pre.json"
-readonly QWEN_VERIFICATION_POST="$CONTROL_DIR/qwen-tokenizer-verification-post.json"
-readonly SOURCE_VERIFICATION_PRE="$CONTROL_DIR/source-snapshot-verification-pre.json"
-readonly SOURCE_VERIFICATION_POST="$CONTROL_DIR/source-snapshot-verification-post.json"
-readonly CHECKPOINT_RELOCATION_RECEIPT="$CONTROL_DIR/checkpoint-relocation-receipt.json"
-readonly DESTINATION_CHECKPOINT_MANIFEST="$CONTROL_DIR/dsw-serving-checkpoint-manifest.json"
-readonly STATIC_INPUTS_PRE="$CONTROL_DIR/static-inputs-verification-pre.json"
-readonly STATIC_INPUTS_POST="$CONTROL_DIR/static-inputs-verification-post.json"
-readonly COSMOS_ENV_VERIFICATION_PRE="$CONTROL_DIR/cosmos-environment-verification-pre.json"
-readonly COSMOS_ENV_VERIFICATION_POST="$CONTROL_DIR/cosmos-environment-verification-post.json"
-readonly ROBOCASA_ENV_VERIFICATION_PRE="$CONTROL_DIR/robocasa-environment-verification-pre.json"
-readonly ROBOCASA_ENV_VERIFICATION_POST="$CONTROL_DIR/robocasa-environment-verification-post.json"
-readonly ROBOCASA_ASSET_VERIFICATION_PRE="$CONTROL_DIR/robocasa-asset-verification-pre.json"
-readonly ROBOCASA_ASSET_VERIFICATION_POST="$CONTROL_DIR/robocasa-asset-verification-post.json"
-readonly ASSET_ENV_CLOSURE_RECEIPT="$CONTROL_DIR/asset-env-closure-provenance.json"
-readonly POLICY_SERVER_LOG="$CONTROL_DIR/policy-server-torchrun.log"
-readonly ONE_EPISODE_GATE_RESULTS_ROOT="$CONTROL_DIR/one-episode-gate-results"
-readonly ONE_EPISODE_GATE_RUN_NAME="$EVAL_RUN_NAME-one-episode-gate"
-readonly ONE_EPISODE_GATE_RESULTS_DIR="$ONE_EPISODE_GATE_RESULTS_ROOT/$ONE_EPISODE_GATE_RUN_NAME"
-readonly ONE_EPISODE_GATE_RECEIPT="$CONTROL_DIR/one-episode-gate-receipt.json"
-mkdir -- "$ONE_EPISODE_GATE_RESULTS_ROOT"
-
 readonly SCRATCH_ROOT="$DSW_LOCAL_SCRATCH_PARENT/.cwam-robocasa365-eval/$EVAL_LOGICAL_RUN_ID"
 case "$SCRATCH_ROOT/" in
     "$DSW_LOCAL_SCRATCH_PARENT"/*/) ;;
@@ -675,7 +703,6 @@ trap 'cleanup $?' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-readonly PROVENANCE_PYTHONPATH="$COSMOS_SOURCE/examples/h_cluster:$COSMOS_SOURCE/examples/aliyun_4090:$COSMOS_SOURCE"
 readonly POLICY_PYTHONPATH="$COSMOS_SOURCE:$DEMIAN_REPO/openpi/src:$DEMIAN_REPO/openpi/packages/openpi-client/src"
 readonly EVAL_PYTHONPATH="$DEMIAN_REPO/demian_wam:$DEMIAN_REPO/openpi/src:$DEMIAN_REPO/openpi/packages/openpi-client/src:$ROBOCASA_REPO:$ROBOSUITE_REPO"
 
@@ -716,17 +743,6 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --expected-wan2pt2-vae-sha256 "$EXPECTED_WAN2PT2_VAE_SHA256" \
     --output "$STATIC_INPUTS_PRE" \
     >"$CONTROL_DIR/verify-static-inputs-pre.log"
-
-PYTHONPATH="$PROVENANCE_PYTHONPATH" \
-    "$COSMOS_PY" "$COSMOS_SOURCE/$SOURCE_PROVENANCE_HELPER_REL" \
-    verify-source-snapshot \
-    --phase pre \
-    --snapshot-root "$COSMOS_SOURCE" \
-    --manifest-path "$SOURCE_MANIFEST" \
-    --expected-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256" \
-    --expected-source-commit "$EXPECTED_SOURCE_COMMIT" \
-    --output "$SOURCE_VERIFICATION_PRE" \
-    >"$CONTROL_DIR/verify-source-snapshot-pre.log"
 
 PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     "$COSMOS_PY" "$COSMOS_SOURCE/$SOURCE_PROVENANCE_HELPER_REL" \
@@ -939,6 +955,7 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --server-exit-timeout-seconds "$SERVER_EXIT_TIMEOUT_SECONDS" \
     --provenance-receipt "asset_env_closure=$ASSET_ENV_CLOSURE_RECEIPT" \
     --provenance-receipt "checkpoint_atomic_publication=$CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT" \
+    --provenance-receipt "checkpoint_publication_gate=$CHECKPOINT_PUBLICATION_GATE_RECEIPT" \
     --provenance-receipt "checkpoint_relocation=$CHECKPOINT_RELOCATION_RECEIPT" \
     --provenance-receipt "cosmos_environment_pre=$COSMOS_ENV_VERIFICATION_PRE" \
     --provenance-receipt "ema_export_receipt=$EMA_EXPORT_RECEIPT" \

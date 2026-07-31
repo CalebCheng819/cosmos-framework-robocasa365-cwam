@@ -55,8 +55,8 @@ Verified live DSW files:
 /mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/config/Qwen3-VL-8B-Instruct-tokenizer-manifest.json
 ```
 
-The checkpoint transfer is still staged at the time of writing. Its only
-admissible final model path, after complete shard verification and atomic
+The checkpoint transfer is first assembled in a sibling hidden stage. Its only
+admissible final model path, after complete shard verification and committed
 publication, is:
 
 ```text
@@ -64,6 +64,58 @@ publication, is:
 ```
 
 Do not point the runner at the `.incomplete-*` transfer directory.
+
+### CPFS checkpoint publication transaction
+
+The live DSW CPFS supports ordinary per-entry `rename` but rejects both
+`RENAME_NOREPLACE` and `RENAME_EXCHANGE`. Therefore
+`publish_cwam_ema_checkpoint_dsw.py --publish` does not claim an atomic
+directory rename. Under one exclusive publication lock it:
+
+1. fully audits the hidden stage;
+2. reserves the absent canonical final root with exclusive `mkdir`;
+3. moves the exact allowlisted top-level entries into that pinned reservation,
+   requiring every destination entry to be absent and rechecking directory and
+   entry inodes around each rename;
+4. fsyncs and fully rehashes the final closure;
+5. removes the now-empty hidden stage; and
+6. creates the mode-`0444` publication receipt with an exclusive hard link.
+
+The final directory can be visible while step 3 is in progress, so directory
+visibility is explicitly **not** atomic. The absent-to-present immutable
+schema-version-2 receipt is the only commit point. Every evaluator must require
+and validate that receipt before reading the final checkpoint; a
+complete-looking final directory without the receipt is still uncommitted.
+
+Before the receipt commit, a failure is rolled back by reconstructing the
+complete hidden stage, fully auditing it, and only then deleting the empty
+final reservation. A restart also recovers a final-without-receipt state or a
+stage/final complementary split. Extra, overlapping, missing, symlinked, or
+otherwise unknown entries fail closed without being overwritten. After the
+receipt hard link becomes visible, the publisher never rolls the checkpoint
+back or removes the receipt.
+
+If the publisher reports that the receipt commit point was crossed but a
+durability or immutable-readback follow-up failed, do not expect a retry to
+roll the namespace back. Preserve the final directory and receipt and run the
+formal evidence validator; the already-visible receipt remains the commit
+decision.
+
+The exclusive final reservation and publication lock protect cooperating
+publishers. The DSW checkpoint parent must not be mutated concurrently by an
+uncooperative root process; ordinary CPFS rename cannot provide adversarial
+no-replace semantics inside an already reserved directory.
+
+The formal runner consumes the receipt through the dedicated
+`verify-checkpoint-publication` command. It binds the expected receipt SHA-256,
+the schema-version-2 transaction guarantees, the canonical final/model paths,
+the expected model-tree SHA-256, and live absence of the hidden stage before
+the runner hashes any file in the final checkpoint closure. The command writes
+the immutable run-specific
+`control/checkpoint-publication-pre-read-gate.json` and its adjacent log; the
+runtime receipt includes that gate as
+`checkpoint_publication_gate` provenance. The gate path is derived from
+`EVAL_OUTPUT_ROOT`, so it is not an additional launch environment variable.
 
 The Qwen manifest must remain outside the tokenizer directory. The tokenizer
 directory must contain exactly the regular files listed by the manifest, with

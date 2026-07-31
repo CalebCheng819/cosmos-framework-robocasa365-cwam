@@ -6,9 +6,12 @@
 
 The downloader writes only to a sibling hidden incomplete directory.  This
 program audits the exact top-level closure and fully rehashes the model tree.
-With ``--publish`` it then performs one Linux ``renameat2(RENAME_NOREPLACE)``
-from that hidden directory to the canonical final directory, rehashes the
-published tree, and writes an immutable receipt outside the checkpoint.
+With ``--publish`` it reserves the canonical final directory with exclusive
+``mkdir``, moves the exact top-level entries into that reservation, rehashes
+the complete destination, removes the empty hidden stage, and finally writes
+an immutable receipt outside the checkpoint.  CPFS exposes the reserved
+directory while entries move, so the receipt--not directory visibility--is
+the atomic commit point.
 
 Without ``--publish`` the command is read-only and never creates the final
 checkpoint directory.
@@ -17,9 +20,7 @@ checkpoint directory.
 from __future__ import annotations
 
 import argparse
-import ctypes
 import datetime as dt
-import errno
 import fcntl
 import hashlib
 import json
@@ -52,8 +53,6 @@ DEFAULT_LOCK = Path(
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SUMS_LINE_RE = re.compile(r"^([0-9a-f]{64})  ([^\x00\r\n]+)$")
-_RENAME_NOREPLACE = 1
-_AT_FDCWD = -100
 
 
 @dataclass(frozen=True)
@@ -195,6 +194,10 @@ FORMAL_CONTRACT = PublicationContract(
 
 class CheckpointPublicationError(RuntimeError):
     """Raised when the checkpoint closure or publication contract fails."""
+
+
+class ReceiptCommitPointCrossedError(CheckpointPublicationError):
+    """Raised after the immutable receipt name became externally visible."""
 
 
 def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -724,40 +727,6 @@ def audit_checkpoint_root(
     }
 
 
-def _rename_noreplace(source: Path, destination: Path) -> None:
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise CheckpointPublicationError(
-            "libc does not expose renameat2; refusing a weaker publication primitive"
-        )
-    renameat2.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
-    renameat2.restype = ctypes.c_int
-    result = renameat2(
-        _AT_FDCWD,
-        os.fsencode(source),
-        _AT_FDCWD,
-        os.fsencode(destination),
-        _RENAME_NOREPLACE,
-    )
-    if result != 0:
-        error_number = ctypes.get_errno()
-        if error_number == errno.EEXIST:
-            raise CheckpointPublicationError(
-                f"refusing to replace existing final checkpoint: {destination}"
-            )
-        raise CheckpointPublicationError(
-            "renameat2(RENAME_NOREPLACE) failed: "
-            f"{os.strerror(error_number)} (errno={error_number})"
-        )
-
-
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -766,26 +735,402 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _rollback_uncommitted_final(
+def _inode_key(metadata: os.stat_result) -> tuple[int, int]:
+    return int(metadata.st_dev), int(metadata.st_ino)
+
+
+def _expected_top_level_names(contract: PublicationContract) -> set[str]:
+    return {*contract.root_files, "model"}
+
+
+def _assert_directory_inode(
+    path: Path,
+    expected_inode: tuple[int, int],
+    *,
+    label: str,
+) -> os.stat_result:
+    try:
+        metadata = path.lstat()
+        canonical = path.resolve(strict=True)
+    except FileNotFoundError:
+        raise CheckpointPublicationError(f"{label} disappeared: {path}") from None
+    if (
+        canonical != path
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o755
+        or _inode_key(metadata) != expected_inode
+    ):
+        raise CheckpointPublicationError(
+            f"{label} inode/type/mode changed: {path}"
+        )
+    return metadata
+
+
+def _directory_names(
+    path: Path,
+    expected_inode: tuple[int, int],
+    *,
+    label: str,
+) -> set[str]:
+    _assert_directory_inode(path, expected_inode, label=label)
+    names = {entry.name for entry in os.scandir(path)}
+    _assert_directory_inode(path, expected_inode, label=label)
+    return names
+
+
+def _mkdir_exclusive_directory(
+    path: Path,
+    *,
+    parent: Path,
+    label: str,
+) -> tuple[Path, tuple[int, int]]:
+    supplied = Path(os.path.abspath(path.expanduser()))
+    if supplied.parent != parent:
+        raise CheckpointPublicationError(f"{label} must be a direct child of {parent}")
+    created_inode: tuple[int, int] | None = None
+    try:
+        previous_umask = os.umask(0)
+        try:
+            try:
+                os.mkdir(supplied, 0o755)
+            except FileExistsError:
+                raise CheckpointPublicationError(
+                    f"{label} already exists; refusing to replace it: {supplied}"
+                ) from None
+        finally:
+            os.umask(previous_umask)
+        if not os.path.lexists(supplied):
+            raise CheckpointPublicationError(
+                f"{label} exclusive mkdir returned without a directory"
+            )
+        metadata = supplied.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise CheckpointPublicationError(
+                f"{label} exclusive mkdir did not create a directory"
+            )
+        created_inode = _inode_key(metadata)
+        if stat.S_IMODE(metadata.st_mode) != 0o755:
+            os.chmod(supplied, 0o755, follow_symlinks=False)
+        _assert_directory_inode(supplied, created_inode, label=label)
+        _fsync_directory(parent)
+        _assert_directory_inode(supplied, created_inode, label=label)
+        return supplied, created_inode
+    except Exception:
+        if created_inode is not None and os.path.lexists(supplied):
+            current = supplied.lstat()
+            if (
+                _inode_key(current) == created_inode
+                and stat.S_ISDIR(current.st_mode)
+                and not stat.S_ISLNK(current.st_mode)
+                and not any(os.scandir(supplied))
+            ):
+                os.rmdir(supplied)
+                _fsync_directory(parent)
+        raise
+
+
+def _validate_expected_entry_metadata(
+    metadata: os.stat_result,
+    *,
+    path: Path,
+    name: str,
+    contract: PublicationContract,
+) -> None:
+    if stat.S_ISLNK(metadata.st_mode):
+        raise CheckpointPublicationError(
+            f"transaction source entry must not be a symlink: {path}"
+        )
+    if name == "model":
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o755
+        ):
+            raise CheckpointPublicationError(
+                f"transaction model entry type/mode mismatch: {path}"
+            )
+        return
+    expected = contract.root_files[name]
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o444
+        or metadata.st_size != expected.size_bytes
+    ):
+        raise CheckpointPublicationError(
+            f"transaction top-level entry type/mode/size mismatch: {path}"
+        )
+
+
+def _move_entry_to_absent_destination(
+    *,
+    source_root: Path,
+    source_inode: tuple[int, int],
+    destination_root: Path,
+    destination_inode: tuple[int, int],
+    name: str,
+    contract: PublicationContract,
+    source_label: str,
+    destination_label: str,
+) -> None:
+    _assert_directory_inode(source_root, source_inode, label=source_label)
+    _assert_directory_inode(
+        destination_root,
+        destination_inode,
+        label=destination_label,
+    )
+    source = source_root / name
+    destination = destination_root / name
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    source_descriptor = os.open(source_root, flags)
+    destination_descriptor = os.open(destination_root, flags)
+    try:
+        if _inode_key(os.fstat(source_descriptor)) != source_inode:
+            raise CheckpointPublicationError(
+                f"{source_label} descriptor inode mismatch"
+            )
+        if _inode_key(os.fstat(destination_descriptor)) != destination_inode:
+            raise CheckpointPublicationError(
+                f"{destination_label} descriptor inode mismatch"
+            )
+        try:
+            source_metadata = os.stat(
+                name,
+                dir_fd=source_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            raise CheckpointPublicationError(
+                f"transaction source entry disappeared: {source}"
+            ) from None
+        _validate_expected_entry_metadata(
+            source_metadata,
+            path=source,
+            name=name,
+            contract=contract,
+        )
+        source_entry_inode = _inode_key(source_metadata)
+        try:
+            os.stat(
+                name,
+                dir_fd=destination_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise CheckpointPublicationError(
+                f"transaction destination entry already exists: {destination}"
+            )
+        os.rename(
+            name,
+            name,
+            src_dir_fd=source_descriptor,
+            dst_dir_fd=destination_descriptor,
+        )
+        try:
+            os.stat(
+                name,
+                dir_fd=source_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise CheckpointPublicationError(
+                f"transaction source entry remained after rename: {source}"
+            )
+        destination_metadata = os.stat(
+            name,
+            dir_fd=destination_descriptor,
+            follow_symlinks=False,
+        )
+        _validate_expected_entry_metadata(
+            destination_metadata,
+            path=destination,
+            name=name,
+            contract=contract,
+        )
+        if _inode_key(destination_metadata) != source_entry_inode:
+            raise CheckpointPublicationError(
+                f"transaction entry inode changed during rename: {name}"
+            )
+        os.fsync(source_descriptor)
+        os.fsync(destination_descriptor)
+    finally:
+        os.close(destination_descriptor)
+        os.close(source_descriptor)
+    _assert_directory_inode(source_root, source_inode, label=source_label)
+    _assert_directory_inode(
+        destination_root,
+        destination_inode,
+        label=destination_label,
+    )
+
+
+def _move_entries(
+    *,
+    source_root: Path,
+    source_inode: tuple[int, int],
+    destination_root: Path,
+    destination_inode: tuple[int, int],
+    names: Sequence[str],
+    contract: PublicationContract,
+    source_label: str,
+    destination_label: str,
+) -> None:
+    for name in sorted(names):
+        _move_entry_to_absent_destination(
+            source_root=source_root,
+            source_inode=source_inode,
+            destination_root=destination_root,
+            destination_inode=destination_inode,
+            name=name,
+            contract=contract,
+            source_label=source_label,
+            destination_label=destination_label,
+        )
+
+
+def _remove_empty_directory(
+    path: Path,
+    expected_inode: tuple[int, int],
+    *,
+    parent: Path,
+    label: str,
+) -> None:
+    if _directory_names(path, expected_inode, label=label):
+        raise CheckpointPublicationError(f"{label} is not empty: {path}")
+    os.rmdir(path)
+    _fsync_directory(parent)
+    if os.path.lexists(path):
+        raise CheckpointPublicationError(f"{label} still exists after rmdir: {path}")
+
+
+def _optional_transaction_directory(
+    path: Path,
+    *,
+    label: str,
+) -> tuple[Path, tuple[int, int], set[str]] | None:
+    if not os.path.lexists(path):
+        return None
+    canonical = _canonical_directory(path, label)
+    inode = _inode_key(canonical.lstat())
+    return canonical, inode, _directory_names(canonical, inode, label=label)
+
+
+def _recover_uncommitted_transaction_to_stage(
     *,
     stage_root: Path,
     final_root: Path,
     parent: Path,
-) -> None:
-    if os.path.lexists(stage_root):
+    contract: PublicationContract,
+) -> tuple[Path, dict[str, Any], bool]:
+    expected_names = _expected_top_level_names(contract)
+    stage_state = _optional_transaction_directory(
+        stage_root,
+        label="hidden checkpoint transaction stage",
+    )
+    final_state = _optional_transaction_directory(
+        final_root,
+        label="uncommitted checkpoint final reservation",
+    )
+    if stage_state is None and final_state is None:
         raise CheckpointPublicationError(
-            "cannot roll back uncommitted final because the hidden stage exists"
+            "hidden stage and uncommitted final reservation are both absent"
         )
-    if not os.path.lexists(final_root):
+    stage_names = set() if stage_state is None else stage_state[2]
+    final_names = set() if final_state is None else final_state[2]
+    extra = (stage_names | final_names) - expected_names
+    overlap = stage_names & final_names
+    missing = expected_names - (stage_names | final_names)
+    if extra:
         raise CheckpointPublicationError(
-            "cannot roll back uncommitted final because the final root is absent"
+            f"uncommitted checkpoint transaction has extra entries: {sorted(extra)}"
         )
-    _rename_noreplace(final_root, stage_root)
-    _fsync_directory(parent)
-    if os.path.lexists(final_root) or not os.path.lexists(stage_root):
+    if overlap:
         raise CheckpointPublicationError(
-            "uncommitted checkpoint rollback did not restore the hidden stage"
+            "uncommitted checkpoint transaction has overlapping entries: "
+            f"{sorted(overlap)}"
         )
+    if missing:
+        raise CheckpointPublicationError(
+            f"uncommitted checkpoint transaction is missing entries: {sorted(missing)}"
+        )
+    if final_state is None:
+        assert stage_state is not None
+        stage = stage_state[0]
+        return stage, audit_checkpoint_root(stage, contract=contract), False
+
+    final, final_inode, _ = final_state
+    if stage_state is None:
+        stage, stage_inode = _mkdir_exclusive_directory(
+            stage_root,
+            parent=parent,
+            label="recovered hidden checkpoint stage",
+        )
+    else:
+        stage, stage_inode, _ = stage_state
+    if (
+        stage.stat().st_dev != final.stat().st_dev
+        or stage.stat().st_dev != parent.stat().st_dev
+    ):
+        raise CheckpointPublicationError(
+            "checkpoint transaction directories must share one filesystem"
+        )
+    _move_entries(
+        source_root=final,
+        source_inode=final_inode,
+        destination_root=stage,
+        destination_inode=stage_inode,
+        names=tuple(final_names),
+        contract=contract,
+        source_label="uncommitted checkpoint final reservation",
+        destination_label="recovered hidden checkpoint stage",
+    )
+    if _directory_names(
+        stage,
+        stage_inode,
+        label="recovered hidden checkpoint stage",
+    ) != expected_names:
+        raise CheckpointPublicationError(
+            "recovered hidden checkpoint stage closure is incomplete"
+        )
+    if _directory_names(
+        final,
+        final_inode,
+        label="uncommitted checkpoint final reservation",
+    ):
+        raise CheckpointPublicationError(
+            "uncommitted checkpoint final reservation is not empty after recovery"
+        )
+    audit = audit_checkpoint_root(stage, contract=contract)
+    _assert_directory_inode(
+        stage,
+        stage_inode,
+        label="recovered hidden checkpoint stage",
+    )
+    _assert_directory_inode(
+        final,
+        final_inode,
+        label="uncommitted checkpoint final reservation",
+    )
+    _remove_empty_directory(
+        final,
+        final_inode,
+        parent=parent,
+        label="uncommitted checkpoint final reservation",
+    )
+    _assert_directory_inode(
+        stage,
+        stage_inode,
+        label="recovered hidden checkpoint stage",
+    )
+    return stage, audit, True
 
 
 def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -802,63 +1147,56 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
         prefix=f".{supplied.name}.", suffix=".tmp", dir=parent
     )
     temporary = Path(temporary_name)
-    published = False
-    created_inode: tuple[int, int] | None = None
-
-    def remove_created_receipt() -> None:
-        if (
-            not published
-            or created_inode is None
-            or not os.path.lexists(supplied)
-        ):
-            return
-        current = supplied.lstat()
-        if (int(current.st_dev), int(current.st_ino)) != created_inode:
-            raise CheckpointPublicationError(
-                "publication receipt was replaced after exclusive creation; "
-                "refusing unsafe cleanup"
-            )
-        supplied.unlink()
-        _fsync_directory(parent)
-
+    committed = False
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(payload)
             stream.flush()
+            os.fchmod(stream.fileno(), 0o444)
             os.fsync(stream.fileno())
-        temporary.chmod(0o444)
-        temporary_metadata = temporary.lstat()
-        created_inode = (
-            int(temporary_metadata.st_dev),
-            int(temporary_metadata.st_ino),
-        )
-        os.link(temporary, supplied, follow_symlinks=False)
-        published = True
-        published_metadata = supplied.lstat()
-        if (
-            published_metadata.st_dev,
-            published_metadata.st_ino,
-        ) != (
-            temporary_metadata.st_dev,
-            temporary_metadata.st_ino,
-        ):
-            raise CheckpointPublicationError(
-                "publication receipt hard link inode mismatch"
-            )
-        # Finish both directory mutations before fsync/readback.  The unlink
-        # changes the shared inode ctime and CPFS may expose that metadata
-        # transition after an earlier barrier.
-        temporary.unlink()
-        parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            opened_metadata = os.fstat(stream.fileno())
+            temporary_metadata = temporary.lstat()
+            if (
+                _identity(opened_metadata) != _identity(temporary_metadata)
+                or not stat.S_ISREG(opened_metadata.st_mode)
+                or stat.S_IMODE(opened_metadata.st_mode) != 0o444
+            ):
+                raise CheckpointPublicationError(
+                    "publication receipt temporary inode/type/mode mismatch"
+                )
+            os.link(temporary, supplied, follow_symlinks=False)
+            committed = True
+            published_metadata = supplied.lstat()
+            if (
+                published_metadata.st_dev,
+                published_metadata.st_ino,
+            ) != (
+                temporary_metadata.st_dev,
+                temporary_metadata.st_ino,
+            ):
+                raise CheckpointPublicationError(
+                    "publication receipt hard link inode mismatch"
+                )
+            # Finish both directory mutations, then persist the shared inode's
+            # post-link metadata while the original descriptor is still pinned.
+            temporary.unlink()
+            os.fsync(stream.fileno())
+        _fsync_directory(parent)
+    except Exception as error:
         try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
-    except Exception:
-        remove_created_receipt()
+            temporary.unlink(missing_ok=True)
+        except Exception as cleanup_error:
+            if not committed:
+                raise CheckpointPublicationError(
+                    "publication receipt preparation failed and temporary "
+                    f"cleanup also failed: {cleanup_error}"
+                ) from error
+        if committed:
+            raise ReceiptCommitPointCrossedError(
+                "publication receipt commit point was crossed but durability "
+                f"follow-up failed: {error}"
+            ) from error
         raise
-    finally:
-        temporary.unlink(missing_ok=True)
     expected = FileExpectation(len(payload), hashlib.sha256(payload).hexdigest())
     deadline = time.monotonic() + 10.0
     delay_seconds = 0.05
@@ -885,9 +1223,11 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
                     ) from error
                 time.sleep(delay_seconds)
                 delay_seconds = min(delay_seconds * 2.0, 0.5)
-    except Exception:
-        remove_created_receipt()
-        raise
+    except Exception as error:
+        raise ReceiptCommitPointCrossedError(
+            "publication receipt commit point was crossed but immutable "
+            f"readback failed: {error}"
+        ) from error
 
 
 def publish_checkpoint(
@@ -899,7 +1239,7 @@ def publish_checkpoint(
     publish: bool,
     contract: PublicationContract = FORMAL_CONTRACT,
 ) -> dict[str, Any]:
-    """Audit the hidden closure and optionally atomically publish it."""
+    """Audit the hidden closure and optionally commit a CPFS transaction."""
 
     stage_supplied = Path(os.path.abspath(stage_root.expanduser()))
     final_supplied = Path(os.path.abspath(final_root.expanduser()))
@@ -926,7 +1266,7 @@ def publish_checkpoint(
             )
         prepublication = audit_checkpoint_root(stage, contract=contract)
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "cwam_dsw_ema_checkpoint_publication",
             "status": "audit_passed",
             "mode": "audit_only",
@@ -958,35 +1298,23 @@ def publish_checkpoint(
             raise CheckpointPublicationError(
                 "publication receipt already exists; refusing to alter checkpoint state"
             )
-        stage_present = os.path.lexists(stage_supplied)
-        final_present = os.path.lexists(final_supplied)
-        if stage_present and final_present:
-            raise CheckpointPublicationError(
-                "hidden stage and final checkpoint both exist; refusing ambiguous recovery"
-            )
-        recovered_uncommitted_final = False
-        if final_present:
-            # A valid final tree without a receipt can only be an interrupted
-            # publication.  Re-audit it before restoring the hidden stage.  An
-            # unknown or damaged final is left untouched for manual recovery.
-            audit_checkpoint_root(final_supplied, contract=contract)
-            _rollback_uncommitted_final(
+        stage, prepublication, recovered_uncommitted_final = (
+            _recover_uncommitted_transaction_to_stage(
                 stage_root=stage_supplied,
                 final_root=final_supplied,
                 parent=parent,
+                contract=contract,
             )
-            recovered_uncommitted_final = True
-        stage = _canonical_directory(stage_supplied, "hidden incomplete checkpoint")
+        )
         if stage.stat().st_dev != parent.stat().st_dev:
             raise CheckpointPublicationError(
                 "stage and final parent are not on one filesystem"
             )
-        prepublication = audit_checkpoint_root(stage, contract=contract)
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "cwam_dsw_ema_checkpoint_publication",
             "status": "publishing",
-            "mode": "atomic_publish",
+            "mode": "cpfs_transaction_publish",
             "stage_root": str(stage),
             "final_root": str(final_supplied),
             "final_root_absent_before_publication": True,
@@ -1002,20 +1330,57 @@ def publish_checkpoint(
             raise CheckpointPublicationError(
                 "publication receipt path must be absent in the canonical lock directory"
             )
-        renamed_to_final = False
+        transaction_started = False
+        commit_point_crossed = False
         try:
             _fsync_directory(parent)
             if os.path.lexists(final_supplied):
-                raise CheckpointPublicationError("final checkpoint appeared before rename")
-            _rename_noreplace(stage, final_supplied)
-            renamed_to_final = True
-            _fsync_directory(parent)
-            if os.path.lexists(stage):
                 raise CheckpointPublicationError(
-                    "hidden stage still exists after atomic rename"
+                    "final checkpoint appeared before exclusive reservation"
                 )
-            postpublication = audit_checkpoint_root(
+            stage_inode = _inode_key(stage.lstat())
+            final, final_inode = _mkdir_exclusive_directory(
                 final_supplied,
+                parent=parent,
+                label="exclusive final checkpoint reservation",
+            )
+            transaction_started = True
+            if (
+                stage.stat().st_dev != final.stat().st_dev
+                or final.stat().st_dev != parent.stat().st_dev
+            ):
+                raise CheckpointPublicationError(
+                    "stage, final reservation, and parent must share one filesystem"
+                )
+            _move_entries(
+                source_root=stage,
+                source_inode=stage_inode,
+                destination_root=final,
+                destination_inode=final_inode,
+                names=tuple(_expected_top_level_names(contract)),
+                contract=contract,
+                source_label="hidden checkpoint transaction stage",
+                destination_label="exclusive final checkpoint reservation",
+            )
+            if _directory_names(
+                stage,
+                stage_inode,
+                label="hidden checkpoint transaction stage",
+            ):
+                raise CheckpointPublicationError(
+                    "hidden checkpoint stage is not empty after entry transaction"
+                )
+            if _directory_names(
+                final,
+                final_inode,
+                label="exclusive final checkpoint reservation",
+            ) != _expected_top_level_names(contract):
+                raise CheckpointPublicationError(
+                    "final checkpoint reservation closure is incomplete"
+                )
+            _fsync_directory(parent)
+            postpublication = audit_checkpoint_root(
+                final,
                 contract=contract,
             )
             if (
@@ -1035,6 +1400,22 @@ def publish_checkpoint(
                 raise CheckpointPublicationError(
                     "post-publication full readback differs"
                 )
+            _assert_directory_inode(
+                final,
+                final_inode,
+                label="exclusive final checkpoint reservation",
+            )
+            _remove_empty_directory(
+                stage,
+                stage_inode,
+                parent=parent,
+                label="empty hidden checkpoint transaction stage",
+            )
+            _assert_directory_inode(
+                final,
+                final_inode,
+                label="exclusive final checkpoint reservation",
+            )
             result.update(
                 {
                     "status": "published",
@@ -1042,27 +1423,47 @@ def publish_checkpoint(
                     .isoformat()
                     .replace("+00:00", "Z"),
                     "publication": {
-                        "primitive": "renameat2(RENAME_NOREPLACE)",
+                        "primitive": (
+                            "mkdir(final)+per-entry-rename+"
+                            "exclusive-receipt-hardlink"
+                        ),
                         "same_parent_same_filesystem": True,
                         "parent_fsync_before_and_after": True,
                         "stage_absent_after": True,
                         "final_present_after": True,
+                        "directory_visibility_atomic": False,
+                        "committed_visibility_atomic": True,
+                        "final_root_exclusive_reservation": True,
+                        "final_root_inode_verified_throughout": True,
+                        "receipt_is_commit_point": True,
                         "receipt_required_for_success": True,
-                        "rollback_on_postpublication_failure": True,
+                        "rollback_on_precommit_failure": True,
+                        "no_rollback_after_receipt_commit": True,
                     },
                     "postpublication": postpublication,
                 }
             )
-            receipt = _atomic_write_read_only(receipt_output, result)
+            try:
+                receipt = _atomic_write_read_only(receipt_output, result)
+            except ReceiptCommitPointCrossedError:
+                commit_point_crossed = True
+                raise
+            commit_point_crossed = True
+            _assert_directory_inode(
+                final,
+                final_inode,
+                label="committed final checkpoint",
+            )
             result["receipt"] = receipt
             return result
         except Exception as publication_error:
-            if renamed_to_final and not os.path.lexists(receipt_output):
+            if transaction_started and not commit_point_crossed:
                 try:
-                    _rollback_uncommitted_final(
+                    _recover_uncommitted_transaction_to_stage(
                         stage_root=stage_supplied,
                         final_root=final_supplied,
                         parent=parent,
+                        contract=contract,
                     )
                 except Exception as rollback_error:
                     raise CheckpointPublicationError(
@@ -1083,7 +1484,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--publish",
         action="store_true",
-        help="perform the no-replace atomic directory rename after every audit passes",
+        help=(
+            "perform the CPFS exclusive-reservation entry transaction and "
+            "receipt commit after every audit passes"
+        ),
     )
     return parser
 

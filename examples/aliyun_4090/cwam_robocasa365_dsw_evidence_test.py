@@ -144,10 +144,10 @@ def _checkpoint_publication_receipt(
         }
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "cwam_dsw_ema_checkpoint_publication",
         "status": "published",
-        "mode": "atomic_publish",
+        "mode": "cpfs_transaction_publish",
         "stage_root": str(stage_root),
         "final_root": str(final_root),
         "final_root_absent_before_publication": True,
@@ -155,16 +155,48 @@ def _checkpoint_publication_receipt(
         "prepublication": audit(stage_root, stage_root / "model"),
         "completed_at": "2026-07-31T09:00:00Z",
         "publication": {
-            "primitive": "renameat2(RENAME_NOREPLACE)",
+            "primitive": (
+                "mkdir(final)+per-entry-rename+exclusive-receipt-hardlink"
+            ),
             "same_parent_same_filesystem": True,
             "parent_fsync_before_and_after": True,
             "stage_absent_after": True,
             "final_present_after": True,
+            "directory_visibility_atomic": False,
+            "committed_visibility_atomic": True,
+            "final_root_exclusive_reservation": True,
+            "final_root_inode_verified_throughout": True,
+            "receipt_is_commit_point": True,
             "receipt_required_for_success": True,
-            "rollback_on_postpublication_failure": True,
+            "rollback_on_precommit_failure": True,
+            "no_rollback_after_receipt_commit": True,
         },
         "postpublication": audit(final_root, checkpoint_path),
     }
+
+
+def _checkpoint_publication_gate_fixture(
+    tmp_path: Path,
+    *,
+    checkpoint_path: Path,
+    tree_sha256: str,
+) -> tuple[Path, Path, dict]:
+    publication_path = tmp_path / "checkpoint_atomic_publication.json"
+    _write_json(
+        publication_path,
+        _checkpoint_publication_receipt(checkpoint_path, tree_sha256),
+        mode=0o444,
+    )
+    publication_sha256 = hashlib.sha256(publication_path.read_bytes()).hexdigest()
+    gate_path = tmp_path / "checkpoint_publication_gate.json"
+    gate = dsw_evidence.verify_checkpoint_publication(
+        publication_receipt_path=publication_path,
+        expected_publication_receipt_sha256=publication_sha256,
+        checkpoint_path=checkpoint_path,
+        expected_tree_sha256=tree_sha256,
+        output=gate_path,
+    )
+    return publication_path, gate_path, gate
 
 
 def _runtime_receipt(
@@ -334,6 +366,8 @@ def _runtime_receipt(
             "egl_mapping_receipt_reverified_against_live_gpu_identity": True,
             "robocasa_environment_and_ready_marker_match_egl_probe": True,
             "server_selected_serving_only_net_ema_bf16_tree": True,
+            "checkpoint_atomic_publication_semantics_match": True,
+            "checkpoint_publication_pre_read_gate_matches": True,
             "all_required_pre_rollout_provenance_bound": True,
             "rank0_server_inherited_exact_nccl_watchdog_environment": True,
             "all_external_waits_have_finite_timeouts": True,
@@ -808,6 +842,7 @@ def test_runner_keeps_eight_logical_shards_on_one_fsdp4_server() -> None:
         "--split atomic",
         "for ((shard = 0; shard < LOGICAL_NUM_SHARDS; shard++)); do",
         "capture-runtime",
+        "verify-checkpoint-publication",
         "relocate-checkpoint",
         "verify-source-snapshot",
         "verify-static-inputs",
@@ -858,8 +893,26 @@ def test_runner_keeps_eight_logical_shards_on_one_fsdp4_server() -> None:
         ': "${EXPECTED_CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT_SHA256:',
         'readonly FORMAL_CHECKPOINT_PUBLICATION_RECEIPT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/ema-checkpoint-atomic-publication.json"',
         'checkpoint_atomic_publication=$CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT',
+        'checkpoint_publication_gate=$CHECKPOINT_PUBLICATION_GATE_RECEIPT',
+        'readonly CHECKPOINT_PUBLICATION_GATE_RECEIPT="$CONTROL_DIR/checkpoint-publication-pre-read-gate.json"',
+        '"$EXPECTED_CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT_SHA256"',
+        '"$EXPECTED_SERVING_CHECKPOINT_TREE_SHA256"',
     ):
         assert token in script
+    checkpoint_gate = script.index(
+        "\n    verify-checkpoint-publication \\\n"
+    )
+    first_checkpoint_content_hash = script.index(
+        "verify_sha256 \\\n"
+        "    h_serving_checkpoint_manifest \\\n"
+    )
+    relocation = script.index(
+        "\n    relocate-checkpoint \\\n"
+    )
+    assert checkpoint_gate < first_checkpoint_content_hash < relocation
+    assert script.index(
+        'checkpoint_publication_gate=$CHECKPOINT_PUBLICATION_GATE_RECEIPT'
+    ) > checkpoint_gate
     formal_loop = script.index(
         "for ((shard = 0; shard < LOGICAL_NUM_SHARDS; shard++)); do"
     )
@@ -1026,18 +1079,22 @@ def test_capture_runtime_binds_asset_hashes_and_exact_server_cli_paths(
         vendor_json=egl_vendor_json_path,
         gpu_identity=gpu_identity,
     )
-    provenance_receipts = {}
-    for name in dsw_evidence._REQUIRED_RUNTIME_PROVENANCE:
-        path = tmp_path / f"{name}.json"
-        value = (
-            _checkpoint_publication_receipt(
-                checkpoint_path,
-                checkpoint_manifest["tree_sha256"],
-            )
-            if name == "checkpoint_atomic_publication"
-            else {}
+    publication_path, publication_gate_path, _ = (
+        _checkpoint_publication_gate_fixture(
+            tmp_path,
+            checkpoint_path=checkpoint_path,
+            tree_sha256=checkpoint_manifest["tree_sha256"],
         )
-        _write_json(path, value, mode=0o444)
+    )
+    provenance_receipts = {
+        "checkpoint_atomic_publication": publication_path,
+        "checkpoint_publication_gate": publication_gate_path,
+    }
+    for name in (
+        dsw_evidence._REQUIRED_RUNTIME_PROVENANCE - set(provenance_receipts)
+    ):
+        path = tmp_path / f"{name}.json"
+        _write_json(path, {}, mode=0o444)
         provenance_receipts[name] = path
     weight = _weight_receipt(metadata_sha)
     weight["checkpoint_path"] = str(checkpoint_path)
@@ -1177,7 +1234,11 @@ def test_capture_runtime_binds_asset_hashes_and_exact_server_cli_paths(
     assert receipt["validation"][
         "checkpoint_atomic_publication_semantics_match"
     ] is True
+    assert receipt["validation"][
+        "checkpoint_publication_pre_read_gate_matches"
+    ] is True
     assert "checkpoint_atomic_publication" in receipt["provenance"]["receipts"]
+    assert "checkpoint_publication_gate" in receipt["provenance"]["receipts"]
 
     metadata["qwen_tokenizer_path"] = str(tmp_path / "wrong-qwen")
     with pytest.raises(ValueError, match="qwen_tokenizer_path"):
@@ -1217,6 +1278,76 @@ def test_capture_runtime_binds_asset_hashes_and_exact_server_cli_paths(
             one_episode_gate_timeout_seconds=3600,
             server_exit_timeout_seconds=180,
         )
+
+
+def test_checkpoint_publication_pre_read_gate_binds_commit_receipt(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "formal" / "model"
+    checkpoint_path.mkdir(parents=True)
+    tree_sha256 = hashlib.sha256(b"tree").hexdigest()
+    publication_path, gate_path, gate = _checkpoint_publication_gate_fixture(
+        tmp_path,
+        checkpoint_path=checkpoint_path,
+        tree_sha256=tree_sha256,
+    )
+
+    publication_descriptor = dsw_evidence._stable_sha256(
+        publication_path,
+        expected_mode=0o444,
+    )
+    assert gate["status"] == "passed"
+    assert gate["publication_receipt"] == publication_descriptor
+    assert gate["checkpoint_path"] == str(checkpoint_path)
+    assert gate["publication_binding"]["schema_version"] == 2
+    assert gate["publication_binding"]["mode"] == "cpfs_transaction_publish"
+    assert stat.S_IMODE(gate_path.stat().st_mode) == 0o444
+    publication_receipt = json.loads(
+        publication_path.read_text(encoding="utf-8")
+    )
+    dsw_evidence._validate_checkpoint_publication_gate_receipt(
+        gate,
+        publication_descriptor=publication_descriptor,
+        publication_receipt=publication_receipt,
+        checkpoint_path=checkpoint_path,
+        expected_tree_sha256=tree_sha256,
+    )
+    mutated = deepcopy(gate)
+    mutated["publication_binding"]["completed_at"] = (
+        "2026-07-31T09:00:01Z"
+    )
+    with pytest.raises(ValueError, match="publication semantics mismatch"):
+        dsw_evidence._validate_checkpoint_publication_gate_receipt(
+            mutated,
+            publication_descriptor=publication_descriptor,
+            publication_receipt=publication_receipt,
+            checkpoint_path=checkpoint_path,
+            expected_tree_sha256=tree_sha256,
+        )
+
+
+def test_checkpoint_publication_pre_read_gate_rejects_wrong_receipt_sha(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "formal" / "model"
+    checkpoint_path.mkdir(parents=True)
+    tree_sha256 = hashlib.sha256(b"tree").hexdigest()
+    publication_path = tmp_path / "checkpoint_atomic_publication.json"
+    _write_json(
+        publication_path,
+        _checkpoint_publication_receipt(checkpoint_path, tree_sha256),
+        mode=0o444,
+    )
+
+    with pytest.raises(ValueError, match="receipt SHA-256 mismatch"):
+        dsw_evidence.verify_checkpoint_publication(
+            publication_receipt_path=publication_path,
+            expected_publication_receipt_sha256=SHA,
+            checkpoint_path=checkpoint_path,
+            expected_tree_sha256=tree_sha256,
+            output=tmp_path / "gate.json",
+        )
+    assert not (tmp_path / "gate.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -1331,6 +1462,11 @@ def test_runtime_egl_closure_reverification_rejects_drift(
         "file_drift",
         "missing_rollback_guarantee",
         "missing_receipt_guarantee",
+        "directory_visibility_claim",
+        "missing_commit_atomicity",
+        "missing_reservation",
+        "missing_commit_point",
+        "rollback_after_commit",
     ],
 )
 def test_checkpoint_atomic_publication_receipt_semantics_fail_closed(
@@ -1360,13 +1496,43 @@ def test_checkpoint_atomic_publication_receipt_semantics_fail_closed(
         )
         mutated["postpublication"]["model"]["files"][0]["sha256"] = SHA
     elif mutation == "missing_rollback_guarantee":
-        mutated["publication"]["rollback_on_postpublication_failure"] = False
-    else:
+        mutated["publication"]["rollback_on_precommit_failure"] = False
+    elif mutation == "missing_receipt_guarantee":
         mutated["publication"]["receipt_required_for_success"] = False
+    elif mutation == "directory_visibility_claim":
+        mutated["publication"]["directory_visibility_atomic"] = True
+    elif mutation == "missing_commit_atomicity":
+        mutated["publication"]["committed_visibility_atomic"] = False
+    elif mutation == "missing_reservation":
+        mutated["publication"]["final_root_exclusive_reservation"] = False
+    elif mutation == "missing_commit_point":
+        mutated["publication"]["receipt_is_commit_point"] = False
+    else:
+        mutated["publication"]["no_rollback_after_receipt_commit"] = False
 
     with pytest.raises(ValueError):
         dsw_evidence._validate_checkpoint_atomic_publication_receipt(
             mutated,
+            checkpoint_path=checkpoint_path,
+            expected_tree_sha256=tree_sha256,
+        )
+
+
+def test_checkpoint_publication_receipt_rejects_reappeared_hidden_stage(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "formal" / "model"
+    checkpoint_path.mkdir(parents=True)
+    tree_sha256 = hashlib.sha256(b"tree").hexdigest()
+    receipt = _checkpoint_publication_receipt(
+        checkpoint_path,
+        tree_sha256,
+    )
+    Path(receipt["stage_root"]).mkdir()
+
+    with pytest.raises(ValueError, match="hidden stage must be absent"):
+        dsw_evidence._validate_checkpoint_atomic_publication_receipt(
+            receipt,
             checkpoint_path=checkpoint_path,
             expected_tree_sha256=tree_sha256,
         )
