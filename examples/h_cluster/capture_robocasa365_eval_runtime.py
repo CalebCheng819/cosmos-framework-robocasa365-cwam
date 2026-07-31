@@ -289,7 +289,11 @@ def library_descriptor(name, soname, symbol, mapped_after_context, evidence_clas
     address = ctypes.cast(function, ctypes.c_void_p)
     if libdl.dladdr(address, ctypes.byref(info)) == 0 or not info.dli_fname:
         raise RuntimeError(f"dladdr could not resolve {soname}:{symbol}")
-    descriptor = file_descriptor(os.fsdecode(info.dli_fname))
+    reported_library = pathlib.Path(os.fsdecode(info.dli_fname))
+    if not reported_library.is_absolute():
+        raise RuntimeError(f"dladdr returned a non-absolute path for {soname}:{symbol}")
+    resolved_library = reported_library.resolve(strict=True)
+    descriptor = file_descriptor(resolved_library)
     descriptor.update(
         {
             "name": name,

@@ -26,6 +26,10 @@ def test_all_subprocess_probe_programs_compile() -> None:
 
 def test_graphics_probe_distinguishes_glvnd_frontends_from_vendor_abis() -> None:
     probe = runtime_receipt._ROBOCASA_EGL_PROBE
+    assert "reported_library = pathlib.Path(os.fsdecode(info.dli_fname))" in probe
+    assert "if not reported_library.is_absolute():" in probe
+    assert "resolved_library = reported_library.resolve(strict=True)" in probe
+    assert "descriptor = file_descriptor(resolved_library)" in probe
     assert '("libEGL", "libEGL.so.1", "eglGetDisplay", "egl_context_mapped")' in probe
     assert '("libEGL_nvidia", "libEGL_nvidia.so.0", "__egl_Main", "egl_context_mapped")' in probe
     assert '("libEGL_nvidia", "libEGL_nvidia.so.0", "eglQueryString", "egl_context_mapped")' not in probe
@@ -1292,6 +1296,65 @@ def test_graphics_file_drift_during_capture_is_rejected(
             executable_resolver=lambda name: str(
                 valid_fixture["git"] if name == "git" else valid_fixture["nvidia_smi_executable"]
             ),
+        )
+
+
+def test_graphics_soname_parent_alias_is_canonicalized_before_validation(tmp_path: Path) -> None:
+    canonical_parent = tmp_path / "usr" / "lib"
+    canonical_parent.mkdir(parents=True)
+    canonical_library = canonical_parent / "libEGL.so.1.1.0"
+    canonical_library.write_bytes(b"egl-fixture")
+    soname = canonical_parent / "libEGL.so.1"
+    soname.symlink_to(canonical_library.name)
+    parent_alias = tmp_path / "lib"
+    parent_alias.symlink_to(canonical_parent, target_is_directory=True)
+    supplied_soname = parent_alias / soname.name
+
+    descriptor = _file_descriptor(
+        supplied_soname.resolve(strict=True),
+        name="libEGL",
+        requested_soname="libEGL.so.1",
+        symbol="eglGetDisplay",
+        evidence_class="egl_context_mapped",
+        was_mapped_after_egl_context=True,
+    )
+    normalized = runtime_receipt._validate_graphics_file_descriptor(
+        descriptor,
+        "graphics_userspace.libraries.libEGL",
+        extra_keys=frozenset(
+            {
+                "name",
+                "requested_soname",
+                "symbol",
+                "evidence_class",
+                "was_mapped_after_egl_context",
+            }
+        ),
+    )
+
+    assert normalized["supplied_path"] == str(canonical_library)
+    assert normalized["canonical_path"] == str(canonical_library)
+    assert normalized["requested_soname"] == "libEGL.so.1"
+
+
+def test_graphics_validator_still_rejects_an_ancestor_symlink(tmp_path: Path) -> None:
+    canonical_parent = tmp_path / "usr" / "lib"
+    canonical_parent.mkdir(parents=True)
+    canonical_library = canonical_parent / "libEGL.so.1.1.0"
+    canonical_library.write_bytes(b"egl-fixture")
+    parent_alias = tmp_path / "lib"
+    parent_alias.symlink_to(canonical_parent, target_is_directory=True)
+    supplied_alias = parent_alias / canonical_library.name
+    descriptor = _file_descriptor(supplied_alias)
+    descriptor["supplied_path"] = str(supplied_alias)
+
+    with pytest.raises(
+        runtime_receipt.RuntimeReceiptValidationError,
+        match="must contain no symlink components",
+    ):
+        runtime_receipt._validate_graphics_file_descriptor(
+            descriptor,
+            "graphics_userspace.libraries.libEGL",
         )
 
 
