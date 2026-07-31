@@ -873,6 +873,13 @@ def test_runner_keeps_eight_logical_shards_on_one_fsdp4_server() -> None:
         "--episodes 1",
         '--post-provenance-receipt "one_episode_gate=$ONE_EPISODE_GATE_RECEIPT"',
         'readonly FORMAL_INPUT_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs"',
+        'readonly FORMAL_NVME_INPUT_ROOT="/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs"',
+        'readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"',
+        'readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814c1"',
+        'require_exact_value \\\n    cosmos_environment_path \\\n    "$COSMOS_ENV" \\\n    "$FORMAL_COSMOS_ENV"',
+        'require_exact_value \\\n    robocasa_repository_path \\\n    "$ROBOCASA_REPO" \\\n    "$FORMAL_ROBOCASA_REPO"',
+        'require_exact_value \\\n    robocasa_asset_root \\\n    "$ROBOCASA_ASSET_ROOT" \\\n    "$FORMAL_ROBOCASA_REPO"',
+        'require_exact_value \\\n    dsw_local_scratch_parent \\\n    "$DSW_LOCAL_SCRATCH_PARENT" \\\n    /tmp/cwam_cosmos3_robocasa365_eval',
         'readonly PINNED_COSMOS_ENV_SOURCE_COMMIT="09f23119ea92c707207bba55565e7a09d16896a2"',
         'readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"',
         'readonly PINNED_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"',
@@ -923,6 +930,47 @@ def test_runner_keeps_eight_logical_shards_on_one_fsdp4_server() -> None:
     assert "readonly EXPECTED_CPU_COUNT=56" not in script
     assert script.count("verify-qwen-tokenizer") >= 2
     assert script.index("verify-qwen-tokenizer") < script.index("capture-runtime")
+
+
+def test_runner_and_launch_contract_pin_only_selected_inputs_to_nvme() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+
+    assert (
+        'readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/'
+        'cosmos-framework-09f23119-cu128-train"'
+    ) in script
+    assert (
+        'readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/'
+        'robocasa-29f7ce8814c1"'
+    ) in script
+    assert (
+        'export COSMOS_ENV="$NVME_INPUTS_ROOT/envs/'
+        'cosmos-framework-09f23119-cu128-train"'
+    ) in readme
+    assert (
+        'export ROBOCASA_REPO="$NVME_INPUTS_ROOT/repos/'
+        'robocasa-29f7ce8814c1"'
+    ) in readme
+    assert 'export ROBOCASA_ASSET_ROOT="$ROBOCASA_REPO"' in readme
+    assert (
+        'require_exact_value \\\n    robocasa_asset_root \\\n'
+        '    "$ROBOCASA_ASSET_ROOT" \\\n    "$FORMAL_ROBOCASA_REPO"'
+    ) in script
+
+    for cpfs_binding in (
+        '"$FORMAL_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"',
+        '"$FORMAL_INPUT_ROOT/repos/robocasa-29f7ce8814c1"',
+    ):
+        assert cpfs_binding not in script
+
+    for cpfs_resident_binding in (
+        '"$FORMAL_INPUT_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"',
+        '"$FORMAL_CHECKPOINT_ARTIFACT_ROOT/model"',
+        '/mnt/workspace/cwam_cosmos3_robocasa365_eval/runs',
+        '/tmp/cwam_cosmos3_robocasa365_eval',
+    ):
+        assert cpfs_resident_binding in script
 
 
 def test_runner_binds_manifest_only_snapshot_to_expected_source_commit() -> None:

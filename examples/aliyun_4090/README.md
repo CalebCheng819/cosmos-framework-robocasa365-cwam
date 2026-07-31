@@ -191,12 +191,20 @@ experiment output root must not already exist. `DSW_CPFS_MOUNT` is checked with
 `findmnt` and must identify the exact CPFS mount. Do not guess these three
 storage paths: record the live mount target selected for the run.
 
+The formal Cosmos environment and RoboCasa checkout/assets are copied to the
+exact node-local NVMe input root below before launch. The RoboCasa environment,
+immutable source snapshot, checkpoint, static inputs, and final outputs remain
+on their exact CPFS paths. Transient evaluator/server scratch remains under
+`/tmp/cwam_cosmos3_robocasa365_eval`; it is separate from the immutable NVMe
+input root and is deleted by the runner's scoped cleanup.
+
 A launch shell should define the following groups of variables. Values in angle
 brackets are intentionally unresolved until the final snapshot, native
 environment rebuild, or CPFS mount selection exists.
 
 ```bash
 export INPUTS_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs
+export NVME_INPUTS_ROOT=/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs
 
 export COSMOS_SOURCE=<immutable-final-source-snapshot>
 export SOURCE_MANIFEST="$COSMOS_SOURCE/SNAPSHOT_MANIFEST.json"
@@ -204,7 +212,7 @@ export EXPECTED_SOURCE_COMMIT=<final-40-hex-source-commit>
 export EXPECTED_SOURCE_MANIFEST_SHA256=<final-snapshot-manifest-sha256>
 export EXPECTED_COSMOS_ENV_SOURCE_COMMIT=09f23119ea92c707207bba55565e7a09d16896a2
 
-export COSMOS_ENV="$INPUTS_ROOT/envs/cosmos-framework-09f23119-cu128-train"
+export COSMOS_ENV="$NVME_INPUTS_ROOT/envs/cosmos-framework-09f23119-cu128-train"
 export ROBOCASA_ENV="$INPUTS_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"
 export COSMOS_ENV_READY_MARKER="$COSMOS_ENV/.cwam_env_ready.json"
 export ROBOCASA_ENV_READY_MARKER="$ROBOCASA_ENV/.cwam_env_ready.json"
@@ -214,7 +222,7 @@ export ROBOCASA_TORCHCODEC_RELAY_RECEIPT="$INPUTS_ROOT/config/robocasa-torchcode
 export EXPECTED_ROBOCASA_TORCHCODEC_RELAY_RECEIPT_SHA256=1b16cc5419b7eb8558d5c0bd6dc4099493df629d50756ad3116b3c1da47f5ce4
 
 export DEMIAN_REPO="$INPUTS_ROOT/demian-2600ece5bf0e"
-export ROBOCASA_REPO="$INPUTS_ROOT/repos/robocasa-29f7ce8814c1"
+export ROBOCASA_REPO="$NVME_INPUTS_ROOT/repos/robocasa-29f7ce8814c1"
 export ROBOCASA_ASSET_ROOT="$ROBOCASA_REPO"
 export ROBOSUITE_REPO="$INPUTS_ROOT/robosuite-232ce7d4a6ed"
 export EXPECTED_DEMIAN_COMMIT=2600ece5bf0eeacf010a95f084dcda2de6d30d59

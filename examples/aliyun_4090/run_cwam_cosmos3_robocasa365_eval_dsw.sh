@@ -107,6 +107,9 @@ readonly CLEANUP_GRACE_SECONDS=30
 readonly SETSID=/usr/bin/setsid
 
 readonly FORMAL_INPUT_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs"
+readonly FORMAL_NVME_INPUT_ROOT="/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs"
+readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"
+readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
 readonly FORMAL_CHECKPOINT_ARTIFACT_ROOT="$FORMAL_INPUT_ROOT/checkpoints/R14-iter_000010000-serving-ema-bf16-v1"
 readonly FORMAL_CHECKPOINT_PUBLICATION_RECEIPT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/ema-checkpoint-atomic-publication.json"
 readonly PINNED_COSMOS_ENV_SOURCE_COMMIT="09f23119ea92c707207bba55565e7a09d16896a2"
@@ -241,7 +244,7 @@ DSW_LOCAL_SCRATCH_PARENT="$(canonical_existing_dir "$DSW_LOCAL_SCRATCH_PARENT")"
 require_exact_value \
     cosmos_environment_path \
     "$COSMOS_ENV" \
-    "$FORMAL_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"
+    "$FORMAL_COSMOS_ENV"
 require_exact_value \
     robocasa_environment_path \
     "$ROBOCASA_ENV" \
@@ -253,7 +256,11 @@ require_exact_value \
 require_exact_value \
     robocasa_repository_path \
     "$ROBOCASA_REPO" \
-    "$FORMAL_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
+    "$FORMAL_ROBOCASA_REPO"
+require_exact_value \
+    robocasa_asset_root \
+    "$ROBOCASA_ASSET_ROOT" \
+    "$FORMAL_ROBOCASA_REPO"
 require_exact_value \
     robosuite_repository_path \
     "$ROBOSUITE_REPO" \
