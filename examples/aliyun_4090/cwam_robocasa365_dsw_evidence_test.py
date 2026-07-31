@@ -343,7 +343,7 @@ def _runtime_receipt(
             "nccl_server_environment": dict(dsw_evidence._NCCL_WATCHDOG_ENV),
             "server_ready_timeout_seconds": 1800,
             "one_episode_gate_timeout_seconds": 3600,
-            "evaluator_timeout_seconds": 43200,
+            "evaluator_timeout_seconds": 129600,
             "server_exit_timeout_seconds": 180,
         },
         "validation": {
@@ -866,6 +866,7 @@ def test_runner_keeps_eight_logical_shards_on_one_fsdp4_server() -> None:
         "export TORCH_NCCL_ASYNC_ERROR_HANDLING=1",
         "export TORCH_NCCL_ENABLE_MONITORING=1",
         "export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=900",
+        'readonly EVALUATOR_TIMEOUT_SECONDS=129600',
         'readonly ONE_EPISODE_GATE_TIMEOUT_SECONDS=3600',
         'CUDA_VISIBLE_DEVICES="$evaluator_gpu"',
         'MUJOCO_EGL_DEVICE_ID="$evaluator_gpu"',
@@ -1265,7 +1266,7 @@ def test_capture_runtime_binds_asset_hashes_and_exact_server_cli_paths(
         egl_mapping_receipt_path=egl_mapping_receipt_path,
         egl_mapping_receipt_sha256=egl_mapping_receipt_sha,
         provenance_receipts=provenance_receipts,
-        evaluator_timeout_seconds=43200,
+        evaluator_timeout_seconds=129600,
         one_episode_gate_timeout_seconds=3600,
         server_exit_timeout_seconds=180,
     )
@@ -1322,7 +1323,7 @@ def test_capture_runtime_binds_asset_hashes_and_exact_server_cli_paths(
             egl_mapping_receipt_path=egl_mapping_receipt_path,
             egl_mapping_receipt_sha256=egl_mapping_receipt_sha,
             provenance_receipts=provenance_receipts,
-            evaluator_timeout_seconds=43200,
+            evaluator_timeout_seconds=129600,
             one_episode_gate_timeout_seconds=3600,
             server_exit_timeout_seconds=180,
         )

@@ -2112,7 +2112,7 @@ def validate_runtime_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     if watchdogs.get("nccl_server_environment") != _NCCL_WATCHDOG_ENV:
         raise ValueError("DSW runtime NCCL watchdog environment mismatch")
     expected_timeouts = {
-        "evaluator_timeout_seconds": 43200,
+        "evaluator_timeout_seconds": 129600,
         "one_episode_gate_timeout_seconds": 3600,
         "server_exit_timeout_seconds": 180,
         "server_ready_timeout_seconds": 1800,

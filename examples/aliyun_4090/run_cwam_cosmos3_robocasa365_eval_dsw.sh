@@ -90,7 +90,11 @@ readonly BASE_PORT=16000
 readonly SERVER_READY_TIMEOUT_SECONDS=1800
 readonly SERVER_SHUTDOWN_TIMEOUT_SECONDS=60
 readonly SERVER_EXIT_TIMEOUT_SECONDS=180
-readonly EVALUATOR_TIMEOUT_SECONDS=43200
+# Shard 0 owns 3 tasks x 20 episodes.  At the 400-step limit with a
+# 12-action open-loop horizon, it can require 60 x ceil(400 / 12) policy
+# requests.  The observed 4x4090 request time is about 41 seconds, so the
+# valid worst case is roughly 23 hours; retain substantial watchdog headroom.
+readonly EVALUATOR_TIMEOUT_SECONDS=129600
 readonly ONE_EPISODE_GATE_TIMEOUT_SECONDS=3600
 readonly ONE_EPISODE_GATE_TASK=CloseBlenderLid
 readonly EXPECTED_CPU_COUNT=128
