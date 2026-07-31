@@ -1505,6 +1505,157 @@ def test_verify_prior_gate_binds_terminal_gate_and_current_formal_inputs(
     assert all(result["validation"].values())
 
 
+def test_verify_prior_gate_replays_container_graphics_descriptors_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _gate_evidence_path, arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    runtime = json.loads(Path(contract["artifacts"]["eval_runtime_receipt"]["path"]).read_text(encoding="utf-8"))
+    graphics = runtime["graphics_userspace"]
+    graphics_paths = {
+        Path(graphics["egl_vendor_json"]["canonical_path"]),
+        *(Path(descriptor["canonical_path"]) for descriptor in graphics["libraries"].values()),
+        Path(runtime["nvidia_smi"]["executable"]),
+    }
+    for path in graphics_paths:
+        path.unlink()
+
+    with pytest.raises(ValueError, match="does not resolve to a live file"):
+        evidence._validate_contract(contract_path)
+
+    result = evidence.verify_prior_gate(**arguments)
+
+    assert result["status"] == "passed"
+    assert result["validation"]["gate_runtime_egl_validation_all_true"] is True
+
+
+def test_prior_gate_offline_replay_does_not_weaken_live_nvidia_smi_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path, _gate_evidence_path, arguments = _gate_evidence_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    runtime = json.loads(Path(contract["artifacts"]["eval_runtime_receipt"]["path"]).read_text(encoding="utf-8"))
+    Path(runtime["nvidia_smi"]["executable"]).unlink()
+
+    with pytest.raises(ValueError, match=r"nvidia_smi\.executable.*existing path"):
+        evidence._validate_contract(contract_path)
+
+    assert evidence.verify_prior_gate(**arguments)["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    ("supplied_path", "canonical_path", "match"),
+    [
+        (
+            "container/usr/lib/libEGL.so.1.1.0",
+            "/container/usr/lib/libEGL.so.1.1.0",
+            "must be absolute",
+        ),
+        (
+            "/container/usr/lib/libEGL.so.1",
+            "/container/usr/lib/libEGL.so.1.1.0",
+            "must equal canonical_path",
+        ),
+        (
+            "/container/usr/lib/../lib/libEGL.so.1.1.0",
+            "/container/usr/lib/../lib/libEGL.so.1.1.0",
+            "canonical-form absolute path",
+        ),
+        (
+            "//container/usr/lib/libEGL.so.1.1.0",
+            "//container/usr/lib/libEGL.so.1.1.0",
+            "canonical-form absolute runtime path",
+        ),
+        (
+            "/container/usr/lib/libEGL.so.1.1.0\x00suffix",
+            "/container/usr/lib/libEGL.so.1.1.0\x00suffix",
+            "canonical-form absolute runtime path",
+        ),
+    ],
+)
+def test_offline_graphics_descriptor_replay_requires_canonical_bound_paths(
+    supplied_path: str,
+    canonical_path: str,
+    match: str,
+) -> None:
+    descriptor = {
+        "supplied_path": supplied_path,
+        "canonical_path": canonical_path,
+        "size_bytes": 1,
+        "sha256": "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match=match):
+        evidence._validate_graphics_file_descriptor(
+            descriptor,
+            label="offline_graphics",
+            expected_keys=evidence._GRAPHICS_FILE_DESCRIPTOR_KEYS,
+            verify_live_file=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("size_bytes", 0, "size_bytes must be >= 1"),
+        ("sha256", "not-a-sha256", "sha256 must be a lowercase SHA256 digest"),
+    ],
+)
+def test_offline_graphics_descriptor_replay_rejects_invalid_file_identity(
+    field: str,
+    value: object,
+    match: str,
+) -> None:
+    descriptor = {
+        "supplied_path": "/container/usr/lib/libEGL.so.1.1.0",
+        "canonical_path": "/container/usr/lib/libEGL.so.1.1.0",
+        "size_bytes": 1,
+        "sha256": "a" * 64,
+    }
+    descriptor[field] = value
+
+    with pytest.raises((TypeError, ValueError), match=match):
+        evidence._validate_graphics_file_descriptor(
+            descriptor,
+            label="offline_graphics",
+            expected_keys=evidence._GRAPHICS_FILE_DESCRIPTOR_KEYS,
+            verify_live_file=False,
+        )
+
+
+def test_offline_graphics_replay_still_rejects_semantic_spoofing(
+    tmp_path: Path,
+) -> None:
+    contract_path, _results_dir = _fixture(tmp_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    runtime = json.loads(Path(contract["artifacts"]["eval_runtime_receipt"]["path"]).read_text(encoding="utf-8"))
+    graphics = runtime["graphics_userspace"]
+    graphics["libraries"]["libEGL"]["requested_soname"] = "libEGL.so.0"
+    with pytest.raises(ValueError, match=r"libEGL\.requested_soname mismatch"):
+        evidence._validate_graphics_userspace(
+            graphics,
+            "offline_graphics",
+            verify_live_files=False,
+        )
+
+    graphics["libraries"]["libEGL"]["requested_soname"] = "libEGL.so.1"
+    graphics["gl_identity"]["renderer"] = "llvmpipe (LLVM 18.1)"
+    with pytest.raises(ValueError, match="software/Mesa"):
+        evidence._validate_graphics_userspace(
+            graphics,
+            "offline_graphics",
+            verify_live_files=False,
+        )
+
+
 def test_verify_prior_gate_validates_the_evidence_bytes_opened_before_inode_swap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

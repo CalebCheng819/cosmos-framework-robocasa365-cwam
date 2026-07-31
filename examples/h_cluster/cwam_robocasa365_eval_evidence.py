@@ -1277,6 +1277,13 @@ def _absolute_lexical_path(value: Any, label: str) -> Path:
     return path
 
 
+def _absolute_offline_runtime_path(value: Any, label: str) -> Path:
+    text = _require_nonempty_str(value, label)
+    if text.startswith("//") or any(ord(character) < 32 or ord(character) == 127 for character in text):
+        raise ValueError(f"{label} must be an exact canonical-form absolute runtime path")
+    return _absolute_lexical_path(text, label)
+
+
 def _absolute_canonical_existing_path(
     value: Any,
     label: str,
@@ -1416,40 +1423,65 @@ def _validate_graphics_file_descriptor(
     *,
     label: str,
     expected_keys: frozenset[str],
+    verify_live_file: bool = True,
 ) -> dict[str, Any]:
     descriptor = _require_dict(value, label)
     _require_exact_keys(descriptor, expected_keys, label)
-    supplied_path = Path(_require_nonempty_str(descriptor.get("supplied_path"), f"{label}.supplied_path"))
+    supplied_text = _require_nonempty_str(
+        descriptor.get("supplied_path"),
+        f"{label}.supplied_path",
+    )
+    supplied_path = Path(supplied_text)
     if not supplied_path.is_absolute():
         raise ValueError(f"{label}.supplied_path must be absolute")
+    recorded_canonical_text = _require_nonempty_str(
+        descriptor.get("canonical_path"),
+        f"{label}.canonical_path",
+    )
+    recorded_canonical = Path(recorded_canonical_text)
+    if not recorded_canonical.is_absolute():
+        raise ValueError(f"{label}.canonical_path must be absolute")
+    size_bytes = _require_int(descriptor.get("size_bytes"), f"{label}.size_bytes", minimum=1)
+    sha256 = _require_sha256(descriptor.get("sha256"), f"{label}.sha256")
+
+    if not verify_live_file:
+        supplied_path = _absolute_offline_runtime_path(
+            supplied_text,
+            f"{label}.supplied_path",
+        )
+        recorded_canonical = _absolute_offline_runtime_path(
+            recorded_canonical_text,
+            f"{label}.canonical_path",
+        )
+        if supplied_path != recorded_canonical:
+            raise ValueError(f"{label}.supplied_path must equal canonical_path for offline receipt replay")
+        return dict(descriptor)
+
     try:
         canonical_path = supplied_path.resolve(strict=True)
     except (FileNotFoundError, OSError, RuntimeError) as error:
         raise ValueError(f"{label}.supplied_path does not resolve to a live file") from error
     if not canonical_path.is_file():
         raise ValueError(f"{label}.supplied_path must resolve to a regular file")
-    recorded_canonical = Path(
-        _require_nonempty_str(
-            descriptor.get("canonical_path"),
-            f"{label}.canonical_path",
-        )
-    )
-    if not recorded_canonical.is_absolute() or recorded_canonical != canonical_path:
+    if recorded_canonical != canonical_path:
         raise ValueError(f"{label}.canonical_path does not match the live resolution")
     payload, stable_descriptor = _read_stable_regular_file(
         canonical_path,
         f"{label}.live_file",
     )
-    size_bytes = _require_int(descriptor.get("size_bytes"), f"{label}.size_bytes", minimum=1)
     if stable_descriptor["size_bytes"] != size_bytes:
         raise ValueError(f"{label}.size_bytes does not match the live graphics file")
-    sha256 = _require_sha256(descriptor.get("sha256"), f"{label}.sha256")
     if hashlib.sha256(payload).hexdigest() != sha256:
         raise ValueError(f"{label}.sha256 does not match the live graphics file")
     return dict(descriptor)
 
 
-def _validate_graphics_userspace(value: Any, label: str) -> dict[str, Any]:
+def _validate_graphics_userspace(
+    value: Any,
+    label: str,
+    *,
+    verify_live_files: bool = True,
+) -> dict[str, Any]:
     graphics = _require_dict(value, label)
     _require_exact_keys(
         graphics,
@@ -1460,6 +1492,7 @@ def _validate_graphics_userspace(value: Any, label: str) -> dict[str, Any]:
         graphics.get("egl_vendor_json"),
         label=f"{label}.egl_vendor_json",
         expected_keys=_GRAPHICS_FILE_DESCRIPTOR_KEYS | frozenset({"file_format_version", "icd_library_path"}),
+        verify_live_file=verify_live_files,
     )
     if (
         vendor_json["supplied_path"] != _EXPECTED_EGL_VENDOR_JSON
@@ -1504,6 +1537,7 @@ def _validate_graphics_userspace(value: Any, label: str) -> dict[str, Any]:
             libraries.get(name),
             label=library_label,
             expected_keys=_GRAPHICS_LIBRARY_DESCRIPTOR_KEYS,
+            verify_live_file=verify_live_files,
         )
         expected = {
             "name": name,
@@ -2694,6 +2728,7 @@ def _validate_eval_runtime_receipt(
     cosmos_environment_manifest: dict[str, Any],
     robocasa_environment_manifest: dict[str, Any],
     source_dcp_selection: dict[str, Any],
+    verify_live_container_runtime_files: bool = True,
 ) -> dict[str, Any]:
     receipt = _require_dict(bound_json["eval_runtime_receipt"], "eval_runtime_receipt")
     _require_exact_keys(receipt, _RUNTIME_RECEIPT_KEYS, "eval_runtime_receipt")
@@ -3141,6 +3176,7 @@ def _validate_eval_runtime_receipt(
     graphics_userspace = _validate_graphics_userspace(
         receipt.get("graphics_userspace"),
         "eval_runtime_receipt.graphics_userspace",
+        verify_live_files=verify_live_container_runtime_files,
     )
     expected_robosuite_module = expected_source_modules["robosuite"]
     for expected_shard, raw_egl in enumerate(robocasa_egl):
@@ -3198,10 +3234,16 @@ def _validate_eval_runtime_receipt(
         frozenset({"executable", "driver_version", "gpus"}),
         "eval_runtime_receipt.nvidia_smi",
     )
-    _absolute_resolved_path(
-        nvidia_smi.get("executable"),
-        "eval_runtime_receipt.nvidia_smi.executable",
-    )
+    if verify_live_container_runtime_files:
+        _absolute_resolved_path(
+            nvidia_smi.get("executable"),
+            "eval_runtime_receipt.nvidia_smi.executable",
+        )
+    else:
+        _absolute_offline_runtime_path(
+            nvidia_smi.get("executable"),
+            "eval_runtime_receipt.nvidia_smi.executable",
+        )
     _require_nonempty_str(
         nvidia_smi.get("driver_version"),
         "eval_runtime_receipt.nvidia_smi.driver_version",
@@ -3465,7 +3507,10 @@ def verify_prior_gate(
         gate_evidence.get("contract_sha256"),
         "prior_gate_evidence.contract_sha256",
     )
-    gate_contract = _validate_contract(gate_contract_path)
+    gate_contract = _validate_contract(
+        gate_contract_path,
+        verify_live_container_runtime_files=False,
+    )
     gate_contract_descriptor = dict(gate_contract["_contract_descriptor"])
     if gate_contract_descriptor["sha256"] != gate_contract_sha256:
         raise ValueError("prior gate eval contract SHA256 does not match the evidence")
@@ -3928,7 +3973,11 @@ def create_contract(
     return {key: value for key, value in validated.items() if not key.startswith("_")}
 
 
-def _validate_contract(contract_path: Path) -> dict[str, Any]:
+def _validate_contract(
+    contract_path: Path,
+    *,
+    verify_live_container_runtime_files: bool = True,
+) -> dict[str, Any]:
     contract_value, contract_descriptor = _load_stable_json(
         contract_path,
         "contract",
@@ -4414,6 +4463,7 @@ def _validate_contract(contract_path: Path) -> dict[str, Any]:
         cosmos_environment_manifest=cosmos_environment_manifest,
         robocasa_environment_manifest=robocasa_environment_manifest,
         source_dcp_selection=source_dcp_selection,
+        verify_live_container_runtime_files=verify_live_container_runtime_files,
     )
     prior_gate_binding = None
     if stage == "formal":
