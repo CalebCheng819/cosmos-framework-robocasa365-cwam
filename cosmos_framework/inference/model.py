@@ -32,6 +32,7 @@ from torch.distributed.checkpoint.planner import MetadataIndex
 from torch.distributed.checkpoint.state_dict import get_model_state_dict
 from typing_extensions import TYPE_CHECKING, assert_never
 
+from cosmos_framework.checkpoint.dcp import CustomLoadPlanner
 from cosmos_framework.configs.base.defaults.compile import CompileConfig
 from cosmos_framework.configs.base.defaults.parallelism import ParallelismConfig
 from cosmos_framework.configs.base.defaults.quantization import QuantizationConfig
@@ -518,7 +519,19 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
         parallelism_config: ParallelismConfig | None = None,
         compile_config: CompileConfig | None = None,
         quantization_config: QuantizationConfig | None = None,
+        load_ema_to_reg: bool = False,
     ):
+        """Load a Cosmos3 checkpoint into the inference model.
+
+        DCP training checkpoints can contain sibling ``net.*`` (regular) and
+        ``net_ema.*`` (EMA) trees. Inference instantiates only ``net.*`` because
+        runtime EMA is disabled, so ``load_ema_to_reg=True`` remaps those
+        regular target tensors to the checkpoint's ``net_ema.*`` sources via
+        :class:`CustomLoadPlanner`.
+
+        Hugging Face checkpoints contain one weight tree; the flag is therefore
+        rejected for that format instead of being silently ignored.
+        """
         if config is None:
             config = Cosmos3OmniConfig.from_pretrained(checkpoint_path)
         if parallelism_config is None:
@@ -543,7 +556,13 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
             case CheckpointType.DCP:
                 state_dict = get_model_state_dict(model.model)
                 storage_reader = FileSystemReader(str(checkpoint_path))
+                load_planner = CustomLoadPlanner(load_ema_to_reg=load_ema_to_reg)
             case CheckpointType.HF:
+                if load_ema_to_reg:
+                    raise ValueError(
+                        "load_ema_to_reg=True is not supported for Hugging Face checkpoints, "
+                        "which contain a single weight tree."
+                    )
                 if _is_diffusers_checkpoint(checkpoint_path):
                     state_dict = get_model_state_dict(model.model.net)
                     # Single-rank load must skip DCP's collective path: it gathers
@@ -562,9 +581,10 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
                 state_dict = get_model_state_dict(model)
                 _raise_on_missing_vision_keys(checkpoint_path, state_dict)
                 storage_reader = HuggingFaceStorageReader(str(checkpoint_path))
+                load_planner = dcp.DefaultLoadPlanner()
             case _:
                 assert_never(checkpoint_type)
-        dcp.load(state_dict=state_dict, storage_reader=storage_reader)
+        dcp.load(state_dict=state_dict, storage_reader=storage_reader, planner=load_planner)
         return model
 
     @classmethod

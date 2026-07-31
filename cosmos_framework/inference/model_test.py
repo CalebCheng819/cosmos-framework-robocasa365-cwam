@@ -6,17 +6,21 @@ from pathlib import Path
 
 import attrs
 import hydra
+import pytest
 import safetensors.torch
 import torch
 import torch.distributed.checkpoint as dcp
 
+from cosmos_framework.checkpoint.dcp import CustomLoadPlanner
 from cosmos_framework.configs.base.defaults.compile import CompileConfig
 from cosmos_framework.configs.base.defaults.parallelism import ParallelismConfig
+from cosmos_framework.inference import model as model_module
 from cosmos_framework.inference.args import _CHECKPOINTS, DEFAULT_CHECKPOINT
 from cosmos_framework.inference.common.args import CheckpointType
 from cosmos_framework.inference.common.config import structure_config
 from cosmos_framework.inference.model import (
     Cosmos3OmniConfig,
+    Cosmos3OmniModel,
     _diffusers_to_net_key,
     _diffusers_weight_map,
     _DiffusersHuggingFaceStorageReader,
@@ -162,3 +166,49 @@ def test_diffusers_weight_map_registered_checkpoint():
         _diffusers_to_net_key("blocks.0.attn.qkv.weight", weight_map["blocks.0.attn.qkv.weight"])
         == "language_model.visual.blocks.0.attn.qkv.weight"
     )
+
+
+@pytest.mark.parametrize("load_ema_to_reg", [False, True])
+def test_from_pretrained_dcp_plumbs_ema_selection_to_dcp_planner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    load_ema_to_reg: bool,
+) -> None:
+    """The frozen-YAML loader must not silently ignore the EMA selection flag."""
+
+    class TinyCosmos3OmniModel(Cosmos3OmniModel):
+        def __init__(self, config: Cosmos3OmniConfig) -> None:
+            torch.nn.Module.__init__(self)
+            self.config = config
+            self.model = torch.nn.Module()
+            self.model.net = torch.nn.Linear(1, 1, bias=False)
+
+    (tmp_path / ".metadata").write_bytes(b"test-only checkpoint marker")
+    (tmp_path / "__0_0.distcp").write_bytes(b"test-only shard marker")
+    target_state = {"net.weight": torch.empty(1, dtype=torch.bfloat16)}
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(model_module, "get_model_state_dict", lambda _model: target_state)
+    monkeypatch.setattr(model_module, "FileSystemReader", lambda path: ("reader", path))
+
+    def capture_load(*, state_dict, storage_reader, planner) -> None:
+        captured.update(
+            state_dict=state_dict,
+            storage_reader=storage_reader,
+            planner=planner,
+        )
+
+    monkeypatch.setattr(model_module.dcp, "load", capture_load)
+
+    loaded = TinyCosmos3OmniModel.from_pretrained_dcp(
+        tmp_path,
+        config=Cosmos3OmniConfig(model={}),
+        load_ema_to_reg=load_ema_to_reg,
+    )
+
+    assert isinstance(loaded, TinyCosmos3OmniModel)
+    assert captured["state_dict"] is target_state
+    assert captured["storage_reader"] == ("reader", str(tmp_path))
+    planner = captured["planner"]
+    assert isinstance(planner, CustomLoadPlanner)
+    assert planner.load_ema_to_reg is load_ema_to_reg
