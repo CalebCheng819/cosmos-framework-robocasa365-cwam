@@ -32,6 +32,11 @@ _PRODUCTION_VIDEO_SHAPE = (3, 17, 192, 320)
 _PRODUCTION_VIDEO_LATENT_SHAPE = (48, 5, 10, 20)
 _PRODUCTION_ACTION_SHAPE = (16, 64)
 _PRODUCTION_RAW_ACTION_SHAPE = (16, 10)
+_STRONG_SAMPLE_COUNT = 32
+_STRONG_VIDEO_SHAPE = (3, 17, 480, 832)
+_STRONG_VIDEO_LATENT_SHAPE = (48, 5, 30, 52)
+_STRONG_PROPRIO_SHAPE = (4, 16)
+_STRONG_ACTION_HISTORY_SHAPE = (16, 10)
 _INTEGER_DTYPES = {
     torch.int8,
     torch.int16,
@@ -48,6 +53,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--wan-vae", type=Path, required=True)
     parser.add_argument("--qwen-tokenizer", type=Path, required=True)
+    parser.add_argument("--control-cache", type=Path)
+    parser.add_argument("--strong-latent-cache", type=Path)
     parser.add_argument(
         "--toml",
         type=Path,
@@ -72,7 +79,7 @@ def _require_path(path: Path, *, kind: str) -> None:
         raise FileNotFoundError(f"Expected a valid {kind}: {path}")
 
 
-def _configure_runtime(args: argparse.Namespace) -> None:
+def _configure_runtime(args: argparse.Namespace, *, strong: bool) -> None:
     """Set every environment interpolation used by the production TOML."""
     _require_path(args.dataset_root, kind="directory")
     _require_path(args.source_root, kind="directory")
@@ -80,6 +87,13 @@ def _configure_runtime(args: argparse.Namespace) -> None:
     _require_path(args.wan_vae, kind="file")
     _require_path(args.qwen_tokenizer, kind="directory")
     _require_path(args.toml, kind="file")
+    if strong:
+        if args.control_cache is None or args.strong_latent_cache is None:
+            raise ValueError("Strong-v1 validation requires --control-cache and --strong-latent-cache")
+        _require_path(args.control_cache / "manifest.json", kind="file")
+        _require_path(args.control_cache / "_SUCCESS.json", kind="file")
+        _require_path(args.strong_latent_cache / "manifest.json", kind="file")
+        _require_path(args.strong_latent_cache / "_SUCCESS.json", kind="file")
 
     # cosmos_framework.utils.flags is fixed when first imported below.
     os.environ["COSMOS_DEVICE"] = "cpu"
@@ -90,6 +104,11 @@ def _configure_runtime(args: argparse.Namespace) -> None:
     os.environ["BASE_CHECKPOINT_PATH"] = str(args.checkpoint)
     os.environ["WAN_VAE_PATH"] = str(args.wan_vae)
     os.environ["QWEN3_VL_TOKENIZER_PATH"] = str(args.qwen_tokenizer)
+    if strong:
+        os.environ["ROBOCASA365_CONTROL_CACHE_ROOT"] = str(args.control_cache)
+        os.environ["ROBOCASA365_STRONG_LATENT_CACHE_ROOT"] = str(args.strong_latent_cache)
+        os.environ["ROBOCASA365_STRONG_LATENT_CACHE_MODE"] = "required"
+        os.environ["CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER"] = "1"
     # This CPU-only gate can run in an SSH workspace without a usable
     # ancillary-FD channel. The production trainer keeps PyTorch's default.
     torch.multiprocessing.set_sharing_strategy("file_system")
@@ -236,6 +255,42 @@ def _validate_sequence_plans(batch: Mapping[str, Any], expected_count: int) -> N
             raise AssertionError(f"sequence_plan[{index}] must supervise every action step.")
 
 
+def _validate_strong_control_context(batch: Mapping[str, Any], expected_count: int) -> dict[str, Any]:
+    proprio = _require_single_tensor_items(batch, "control_proprio_history", expected_count)
+    proprio_masks = _require_single_tensor_items(batch, "control_proprio_history_mask", expected_count)
+    action_history = _require_single_tensor_items(batch, "control_action_history", expected_count)
+    action_masks = _require_single_tensor_items(batch, "control_action_history_mask", expected_count)
+    valid_proprio_rows = 0
+    valid_action_rows = 0
+    for index, (states, state_mask, actions, action_mask) in enumerate(
+        zip(proprio, proprio_masks, action_history, action_masks)
+    ):
+        if tuple(states.shape) != _STRONG_PROPRIO_SHAPE or not states.is_floating_point():
+            raise AssertionError(f"control_proprio_history[{index}] violates {_STRONG_PROPRIO_SHAPE}")
+        if tuple(actions.shape) != _STRONG_ACTION_HISTORY_SHAPE or not actions.is_floating_point():
+            raise AssertionError(f"control_action_history[{index}] violates {_STRONG_ACTION_HISTORY_SHAPE}")
+        if tuple(state_mask.shape) != (_STRONG_PROPRIO_SHAPE[0],) or state_mask.dtype != torch.bool:
+            raise AssertionError(f"control_proprio_history_mask[{index}] must be bool[4]")
+        if tuple(action_mask.shape) != (_STRONG_ACTION_HISTORY_SHAPE[0],) or action_mask.dtype != torch.bool:
+            raise AssertionError(f"control_action_history_mask[{index}] must be bool[16]")
+        if not bool(state_mask[-1]):
+            raise AssertionError(f"control_proprio_history_mask[{index}] omitted the current state")
+        if bool(torch.any(state_mask[:-1] & ~state_mask[1:])):
+            raise AssertionError(f"control_proprio_history_mask[{index}] is not a right-aligned suffix")
+        _require_finite(states[state_mask], label=f"control_proprio_history[{index}]")
+        _require_finite(actions[action_mask], label=f"control_action_history[{index}]")
+        if bool(torch.any(states[~state_mask] != 0)) or bool(torch.any(actions[~action_mask] != 0)):
+            raise AssertionError(f"Strong-v1 control padding is nonzero at sample {index}")
+        valid_proprio_rows += int(state_mask.sum())
+        valid_action_rows += int(action_mask.sum())
+    return {
+        "proprio_shape": list(_STRONG_PROPRIO_SHAPE),
+        "action_history_shape": list(_STRONG_ACTION_HISTORY_SHAPE),
+        "valid_proprio_rows": valid_proprio_rows,
+        "valid_action_history_rows": valid_action_rows,
+    }
+
+
 def _sample_for_token_estimate(batch: Mapping[str, Any], index: int) -> dict[str, Any]:
     media_keys = [key for key in ("images", "video", "video_latent") if key in batch]
     if len(media_keys) != 1:
@@ -267,6 +322,7 @@ def _validate_packed_batch(
     expected_video_latent_shape: tuple[int, ...] | None = None,
     expected_action_shape: tuple[int, ...],
     expected_raw_action_shape: tuple[int, ...],
+    require_strong_control: bool = False,
 ) -> dict[str, Any]:
     """Validate one packed action-policy batch and return JSON-safe metrics."""
     if not isinstance(batch, Mapping):
@@ -334,6 +390,9 @@ def _validate_packed_batch(
     cfg_dropped_count = _validate_prompts(batch, expected_sample_count)
     unique_identity_count = _validate_sample_identities(batch, expected_sample_count)
     _validate_sequence_plans(batch, expected_sample_count)
+    strong_control = (
+        _validate_strong_control_context(batch, expected_sample_count) if require_strong_control else None
+    )
 
     compute_tokens = getattr(loader, "_compute_num_tokens_per_sample", None)
     if not callable(compute_tokens):
@@ -370,16 +429,18 @@ def _validate_packed_batch(
         "video_latent_dtype": str(vision_tensors[0].dtype) if vision_key == "video_latent" else None,
         "action_shape": list(expected_action_shape),
         "raw_action_shape": list(expected_raw_action_shape),
+        "strong_control": strong_control,
     }
 
 
-def _validate_loader_config(config: Any) -> dict[str, Any]:
+def _validate_loader_config(config: Any, *, strong: bool) -> dict[str, Any]:
     train = config.dataloader_train
     max_samples = int(train.max_samples_per_batch)
     max_sequence = train.max_sequence_length
-    if max_samples != _PRODUCTION_SAMPLE_COUNT:
+    expected_samples = _STRONG_SAMPLE_COUNT if strong else _PRODUCTION_SAMPLE_COUNT
+    if max_samples != expected_samples:
         raise AssertionError(
-            f"Production max_samples_per_batch drifted: expected {_PRODUCTION_SAMPLE_COUNT}, got {max_samples}."
+            f"Production max_samples_per_batch drifted: expected {expected_samples}, got {max_samples}."
         )
     if max_sequence is not None:
         raise AssertionError(f"Production max_sequence_length must be None, got {max_sequence!r}.")
@@ -397,12 +458,31 @@ def _validate_loader_config(config: Any) -> dict[str, Any]:
     latent_cache_mode = str(dataset.latent_cache_mode)
     latent_cache_root = dataset.latent_cache_root
     action_relevance_enabled = bool(config.model.config.get("action_relevance_enabled", False))
-    if action_relevance_enabled:
+    strong_action_enabled = bool(config.model.config.get("strong_action_expert_enabled", False))
+    if strong_action_enabled != strong:
+        raise AssertionError(
+            f"Strong-v1 TOML/config mismatch: requested={strong}, model_enabled={strong_action_enabled}."
+        )
+    if action_relevance_enabled or strong_action_enabled:
         if latent_cache_mode != "required" or not latent_cache_root:
-            raise AssertionError("S1 production validation requires the audited latent cache.")
+            raise AssertionError("Specialized policy validation requires its audited latent cache.")
         tokenizer_target = str(config.model.config.tokenizer.get("_target_", ""))
         if not tokenizer_target.endswith(".PrecomputedWan2pt2LatentTokenizer"):
-            raise AssertionError("S1 production validation requires the metadata-only Wan tokenizer.")
+            raise AssertionError("Specialized policy validation requires the metadata-only Wan tokenizer.")
+    if strong_action_enabled:
+        if str(dataset.camera_mode) != "triple_view" or str(dataset.resolution) != "480":
+            raise AssertionError("Strong-v1 requires triple_view and the 480 model-resolution tier.")
+        if not dataset.control_cache_root:
+            raise AssertionError("Strong-v1 requires the immutable control cache.")
+        history_contract = (
+            int(dataset.proprio_history_length),
+            int(dataset.proprio_history_stride),
+            int(dataset.action_history_length),
+        )
+        if history_contract != (4, 12, 16):
+            raise AssertionError(f"Strong-v1 history contract drifted: {history_contract}")
+    elif str(dataset.camera_mode) != "concat_view" or dataset.resolution is not None:
+        raise AssertionError("Historical baseline/S1 loader camera or resolution contract drifted.")
 
     return {
         "max_samples_per_batch": max_samples,
@@ -417,13 +497,18 @@ def _validate_loader_config(config: Any) -> dict[str, Any]:
         "in_order": bool(inner.in_order),
         "latent_cache_mode": latent_cache_mode,
         "latent_cache_root": latent_cache_root,
-        "metadata_only_video_tokenizer": action_relevance_enabled,
+        "metadata_only_video_tokenizer": action_relevance_enabled or strong_action_enabled,
+        "strong_action_expert_enabled": strong_action_enabled,
+        "camera_mode": str(dataset.camera_mode),
+        "resolution": dataset.resolution,
+        "control_cache_root": dataset.control_cache_root,
     }
 
 
 def main() -> None:
     args = _parse_args()
-    _configure_runtime(args)
+    strong = args.toml.name == "action_policy_robocasa365_strong_nano.toml"
+    _configure_runtime(args, strong=strong)
 
     # Import only after the CPU/training flags and all TOML interpolations are fixed.
     from cosmos_framework.configs.toml_config.sft_config import load_experiment_from_toml
@@ -434,7 +519,12 @@ def main() -> None:
     config_started = time.perf_counter()
     config = load_experiment_from_toml(args.toml)
     config_seconds = time.perf_counter() - config_started
-    resolved_loader = _validate_loader_config(config)
+    resolved_loader = _validate_loader_config(config, strong=strong)
+    expected_sample_count = _STRONG_SAMPLE_COUNT if strong else _PRODUCTION_SAMPLE_COUNT
+    expected_video_shape = _STRONG_VIDEO_SHAPE if strong else _PRODUCTION_VIDEO_SHAPE
+    expected_video_latent_shape = (
+        _STRONG_VIDEO_LATENT_SHAPE if strong else _PRODUCTION_VIDEO_LATENT_SHAPE
+    )
 
     with _single_process_gloo():
         instantiate_started = time.perf_counter()
@@ -442,9 +532,9 @@ def main() -> None:
         instantiate_seconds = time.perf_counter() - instantiate_started
         if not isinstance(loader, PackingDataLoader):
             raise AssertionError(f"Resolved train loader is {type(loader).__name__}, expected PackingDataLoader.")
-        if loader.max_samples_per_batch != _PRODUCTION_SAMPLE_COUNT or loader.max_sequence_length is not None:
+        if loader.max_samples_per_batch != expected_sample_count or loader.max_sequence_length is not None:
             raise AssertionError(
-                "Instantiated PackingDataLoader does not match the 128-sample, no-token-cap production contract."
+                "Instantiated PackingDataLoader does not match the selected sample-count/no-token-cap contract."
             )
 
         batch_started = time.perf_counter()
@@ -453,11 +543,12 @@ def main() -> None:
         batch_metrics = _validate_packed_batch(
             loader,
             batch,
-            expected_sample_count=_PRODUCTION_SAMPLE_COUNT,
-            expected_video_shape=_PRODUCTION_VIDEO_SHAPE,
-            expected_video_latent_shape=_PRODUCTION_VIDEO_LATENT_SHAPE,
+            expected_sample_count=expected_sample_count,
+            expected_video_shape=expected_video_shape,
+            expected_video_latent_shape=expected_video_latent_shape,
             expected_action_shape=_PRODUCTION_ACTION_SHAPE,
             expected_raw_action_shape=_PRODUCTION_RAW_ACTION_SHAPE,
+            require_strong_control=strong,
         )
 
     elapsed_seconds = time.perf_counter() - total_started
@@ -475,6 +566,7 @@ def main() -> None:
             "checkpoint_save_resume",
         ],
         "toml": str(args.toml),
+        "strong_v1": strong,
         "gloo_world_size": 1,
         "loader": resolved_loader,
         "sample_count": batch_metrics["sample_count"],

@@ -79,6 +79,15 @@ def test_resolution_none_maps_raw_concat_view_to_production_canvas() -> None:
     assert transformed["image_size"].tolist() == [192.0, 320.0, 160.0, 320.0]
 
 
+def test_resolution_480_preserves_native_triple_view_content_on_larger_canvas() -> None:
+    raw = torch.zeros((3, 17, 256, 768), dtype=torch.uint8)
+
+    transformed = VideoResize()({"video": raw}, resolution="480")
+
+    assert transformed["video"].shape == (3, 17, 480, 832)
+    assert transformed["image_size"].tolist() == [480.0, 832.0, 256.0, 768.0]
+
+
 def test_validate_packed_batch_recomputes_tokens_and_tensor_bytes() -> None:
     batch = _synthetic_batch()
 
@@ -110,6 +119,42 @@ def test_validate_packed_batch_accepts_cached_bfloat16_latents() -> None:
     assert metrics["video_shape"] is None
     assert metrics["video_latent_shape"] == [48, 2, 1, 2]
     assert metrics["video_latent_dtype"] == "torch.bfloat16"
+
+
+def test_validate_packed_batch_checks_strong_control_context() -> None:
+    batch = _synthetic_batch()
+    batch.update(
+        control_proprio_history=[
+            [torch.zeros((4, 16), dtype=torch.float32)]
+            for _ in range(2)
+        ],
+        control_proprio_history_mask=[
+            [torch.tensor([False, False, True, True])]
+            for _ in range(2)
+        ],
+        control_action_history=[
+            [torch.zeros((16, 10), dtype=torch.float32)]
+            for _ in range(2)
+        ],
+        control_action_history_mask=[
+            [torch.tensor([False] * 4 + [True] * 12)]
+            for _ in range(2)
+        ],
+    )
+
+    metrics = _validate_packed_batch(
+        _synthetic_loader(),
+        batch,
+        expected_sample_count=2,
+        expected_video_shape=(3, 5, 16, 32),
+        expected_video_latent_shape=(48, 2, 1, 2),
+        expected_action_shape=(4, 8),
+        expected_raw_action_shape=(4, 2),
+        require_strong_control=True,
+    )
+
+    assert metrics["strong_control"]["valid_proprio_rows"] == 4
+    assert metrics["strong_control"]["valid_action_history_rows"] == 24
 
 
 def test_validate_packed_batch_rejects_ambiguous_vision_inputs() -> None:

@@ -227,6 +227,20 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_num_heads=self.config.action_relevance_num_heads,
                 action_relevance_topk=self.config.action_relevance_topk,
                 action_relevance_initial_gate=self.config.action_relevance_initial_gate,
+                strong_action_expert_enabled=self.config.strong_action_expert_enabled,
+                strong_action_expert_model_dim=self.config.strong_action_expert_model_dim,
+                strong_action_expert_num_heads=self.config.strong_action_expert_num_heads,
+                strong_action_expert_num_layers=self.config.strong_action_expert_num_layers,
+                strong_action_expert_ffn_multiplier=self.config.strong_action_expert_ffn_multiplier,
+                strong_action_state_dim=self.config.strong_action_state_dim,
+                strong_action_history_action_dim=self.config.strong_action_history_action_dim,
+                strong_action_proprio_history_length=self.config.strong_action_proprio_history_length,
+                strong_action_proprio_history_stride=self.config.strong_action_proprio_history_stride,
+                strong_action_history_length=self.config.strong_action_history_length,
+                strong_action_memory_layers=self.config.strong_action_memory_layers,
+                strong_action_memory_tokens=self.config.strong_action_memory_tokens,
+                strong_action_num_views=self.config.strong_action_num_views,
+                strong_action_initial_gate=self.config.strong_action_initial_gate,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -1267,6 +1281,18 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_residual_gate=out_net["action_relevance_residual_gate"],
             )
 
+        if self.config.strong_action_expert_enabled:
+            required_metrics = (
+                "strong_action_residual_gate",
+                "strong_action_attention_entropy",
+                "strong_action_valid_context_tokens",
+                "strong_action_memory_rms",
+            )
+            missing_metrics = [name for name in required_metrics if name not in out_net]
+            if missing_metrics:
+                raise ValueError(f"Strong action expert output is missing metrics: {missing_metrics}")
+            losses_dict.update({name: out_net[name] for name in required_metrics})
+
         if self.config.sound_gen:
             if data_batch_packed.sound is not None:
                 assert isinstance(data_batch_packed.sound.condition_mask, list), (
@@ -2252,6 +2278,10 @@ class OmniMoTModel(ImaginaireModel):
             # sequence. Without this, multi_control_two_way_attention never runs
             # and all controls are blended equally (weights ignored).
             control_weights=gen_data_clean.control_weights,
+            control_proprio_history=gen_data_clean.control_proprio_history,
+            control_proprio_history_mask=gen_data_clean.control_proprio_history_mask,
+            control_action_history=gen_data_clean.control_action_history,
+            control_action_history_mask=gen_data_clean.control_action_history_mask,
         )
 
         if packed_sequence_template is None:
@@ -3206,6 +3236,26 @@ class OmniMoTModel(ImaginaireModel):
             action_domain_id=action_domain_id,
             raw_action_dim=raw_action_dim,
             num_vision_items_per_sample=subset_num_items,
+            control_proprio_history=(
+                gen_data_clean.control_proprio_history[start:limit]
+                if gen_data_clean.control_proprio_history is not None
+                else None
+            ),
+            control_proprio_history_mask=(
+                gen_data_clean.control_proprio_history_mask[start:limit]
+                if gen_data_clean.control_proprio_history_mask is not None
+                else None
+            ),
+            control_action_history=(
+                gen_data_clean.control_action_history[start:limit]
+                if gen_data_clean.control_action_history is not None
+                else None
+            ),
+            control_action_history_mask=(
+                gen_data_clean.control_action_history_mask[start:limit]
+                if gen_data_clean.control_action_history_mask is not None
+                else None
+            ),
         )
 
     @torch.no_grad()
@@ -3621,6 +3671,34 @@ class OmniMoTModel(ImaginaireModel):
         raw_state_action, action_domain_id = self._normalize_action_databatch(data_batch)
         x0_tokens_action = raw_state_action
         raw_action_dim = data_batch.get("raw_action_dim", None)
+        control_proprio_history = unwrap_and_densify(
+            data_batch.get("control_proprio_history"),
+            self.tensor_kwargs_fp32,
+        )
+        control_action_history = unwrap_and_densify(
+            data_batch.get("control_action_history"),
+            self.tensor_kwargs_fp32,
+        )
+        mask_to_kwargs = {"device": self.tensor_kwargs_fp32["device"]}
+        control_proprio_history_mask = unwrap_and_densify(
+            data_batch.get("control_proprio_history_mask"),
+            mask_to_kwargs,
+        )
+        control_action_history_mask = unwrap_and_densify(
+            data_batch.get("control_action_history_mask"),
+            mask_to_kwargs,
+        )
+        control_fields = (
+            control_proprio_history,
+            control_proprio_history_mask,
+            control_action_history,
+            control_action_history_mask,
+        )
+        if any(value is not None for value in control_fields):
+            if any(value is None for value in control_fields):
+                raise ValueError("Strong policy control context is incomplete in the data batch")
+            if any(len(value) != batch_size for value in control_fields if value is not None):
+                raise ValueError("Strong policy control context must provide one tensor per sample")
 
         # Sound/audio - normalize, encode if present and sound_gen is enabled
         self._normalize_sound_databatch_inplace(data_batch)
@@ -3700,6 +3778,10 @@ class OmniMoTModel(ImaginaireModel):
             num_vision_items_per_sample=num_vision_items_per_sample,
             raw_action_dim=raw_action_dim,
             control_weights=control_weights,
+            control_proprio_history=control_proprio_history,
+            control_proprio_history_mask=control_proprio_history_mask,
+            control_action_history=control_action_history,
+            control_action_history_mask=control_action_history_mask,
         )
 
     def _normalize_video_databatch_inplace(
@@ -4406,6 +4488,7 @@ class OmniMoTModel(ImaginaireModel):
                 - "preds_action": Velocity prediction for action modality (if action_gen enabled).
                 - "preds_sound": Velocity prediction for sound modality (if sound_gen enabled).
                 - "action_relevance_*": S1 routing losses and diagnostics (if enabled).
+                - "strong_action_*": strong action expert diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
         """
@@ -4422,7 +4505,7 @@ class OmniMoTModel(ImaginaireModel):
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
-            if key.startswith("action_relevance_") or "lbl_metadata_" in key:
+            if key.startswith(("action_relevance_", "strong_action_")) or "lbl_metadata_" in key:
                 output_dict[key] = value
 
         return output_dict

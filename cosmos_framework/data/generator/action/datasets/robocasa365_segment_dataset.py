@@ -54,6 +54,7 @@ from cosmos_framework.data.generator.action.action_processing import (
     resolve_action_normalization,
 )
 from cosmos_framework.data.generator.action.action_spec import Gripper, Pos, Rot, build_action_spec
+from cosmos_framework.data.generator.action.datasets.robocasa365_control_cache import RoboCasa365ControlCache
 from cosmos_framework.data.generator.action.datasets.robocasa365_latent_cache import (
     OFFICIAL_WAN22_VAE_SHA256,
     RoboCasa365LatentCache,
@@ -67,6 +68,7 @@ from cosmos_framework.utils import log
 CameraMode = Literal[
     "concat_view",
     "agent_wrist",
+    "triple_view",
     "agentview_left",
     "agentview_right",
     "wrist",
@@ -86,6 +88,7 @@ _CAMERA_FIELDS = {
 _CAMERAS_BY_MODE = {
     "concat_view": ("agentview_left", "wrist"),
     "agent_wrist": ("agentview_left", "wrist"),
+    "triple_view": ("agentview_left", "wrist", "agentview_right"),
     "agentview_left": ("agentview_left",),
     "agentview_right": ("agentview_right",),
     "wrist": ("wrist",),
@@ -93,6 +96,7 @@ _CAMERAS_BY_MODE = {
 _VIEWPOINT_BY_MODE = {
     "concat_view": "concat_view",
     "agent_wrist": "concat_view",
+    "triple_view": "concat_view",
     "agentview_left": "third_person_view",
     "agentview_right": "third_person_view",
     "wrist": "wrist_view",
@@ -137,6 +141,12 @@ class RoboCasa365SegmentDataset(Dataset):
         latent_cache_verify_shard_checksums: bool = False,
         latent_cache_expected_vae_sha256: str = OFFICIAL_WAN22_VAE_SHA256,
         load_actions: bool = True,
+        control_cache_root: str | None = None,
+        control_cache_verify_checksums: bool = False,
+        proprio_history_length: int = 0,
+        proprio_history_stride: int = 1,
+        action_history_length: int = 0,
+        transform_resolution: str | int | None = None,
     ) -> None:
         super().__init__()
         split = split.lower().strip()
@@ -170,6 +180,14 @@ class RoboCasa365SegmentDataset(Dataset):
             raise ValueError(f"image_size must be positive, got {image_size}.")
         if int(decode_retries) < 1:
             raise ValueError(f"decode_retries must be at least 1, got {decode_retries}.")
+        history_values = (int(proprio_history_length), int(proprio_history_stride), int(action_history_length))
+        if control_cache_root is None and (history_values[0] > 0 or history_values[2] > 0):
+            raise ValueError("control_cache_root is required when control history is enabled.")
+        if control_cache_root is not None and (history_values[0] < 1 or history_values[1] < 1 or history_values[2] < 1):
+            raise ValueError(
+                "control cache use requires positive proprio_history_length, proprio_history_stride, "
+                "and action_history_length."
+            )
 
         self._root = Path(root)
         self._split = split
@@ -189,7 +207,12 @@ class RoboCasa365SegmentDataset(Dataset):
         self._decode_retries = int(decode_retries)
         self._latent_cache_mode = latent_cache_mode
         self._load_actions = bool(load_actions)
+        self._proprio_history_length = int(proprio_history_length)
+        self._proprio_history_stride = int(proprio_history_stride)
+        self._action_history_length = int(action_history_length)
+        self._transform_resolution = transform_resolution
         self._latent_cache: RoboCasa365LatentCache | None = None
+        self._control_cache: RoboCasa365ControlCache | None = None
         # Fail fast by default. Random replacement would allow the same
         # physical episode to cross rank/worker shards and make data errors
         # invisible. Explicit opt-in remains available for exploratory runs.
@@ -282,7 +305,7 @@ class RoboCasa365SegmentDataset(Dataset):
                 (3, 1, self._image_size, self._image_size * len(self._camera_names)),
                 dtype=torch.uint8,
             )
-            resize_probe = VideoResize()({"video": dummy_video}, None)
+            resize_probe = VideoResize()({"video": dummy_video}, self._transform_resolution)
             expected_image_size = tuple(int(value) for value in resize_probe["image_size"].tolist())
             if len(expected_image_size) != 4:
                 raise RuntimeError(f"Active VideoResize returned invalid image_size={expected_image_size!r}.")
@@ -309,6 +332,7 @@ class RoboCasa365SegmentDataset(Dataset):
                 expected_preprocessing_code_sha256=active_preprocessing_code_sha256(),
                 expected_split_manifest_sha256=split_manifest_sha256,
                 expected_ordered_visual_identity_sha256=expected_identity_sha,
+                expected_video_resize_resolution=self._transform_resolution,
                 verify_shard_checksums=latent_cache_verify_shard_checksums,
             )
             if self._latent_cache.video_num_frames != self._chunk_length + 1:
@@ -356,6 +380,13 @@ class RoboCasa365SegmentDataset(Dataset):
                 raise ValueError("dataset_manifest counts.action_rows must be a positive integer.")
             action_rows = int(expected_action_rows)
         self._validate_segment_offsets(action_rows)
+
+        if control_cache_root is not None:
+            self._control_cache = RoboCasa365ControlCache(
+                control_cache_root,
+                expected_dataset_manifest_sha256=dataset_manifest_sha256,
+                verify_checksums=control_cache_verify_checksums,
+            )
 
         if action_stats_path:
             stats_path = Path(action_stats_path)
@@ -547,15 +578,36 @@ class RoboCasa365SegmentDataset(Dataset):
             "viewpoint": self._viewpoint,
             "idle_frames": torch.tensor(idle_frames, dtype=torch.long),
         }
+        if self._control_cache is not None:
+            if "source_episode_index" not in segment or "source_frame_offset" not in segment:
+                raise KeyError("Control-conditioned RoboCasa365 segments require source episode/frame indexes.")
+            history = self._control_cache.history(
+                episode_index=int(segment["source_episode_index"]),
+                frame_index=int(segment["source_frame_offset"]) + int(window_offset),
+                proprio_history_length=self._proprio_history_length,
+                proprio_history_stride=self._proprio_history_stride,
+                action_history_length=self._action_history_length,
+            )
+            result.update(
+                control_proprio_history=history.proprio_history,
+                control_proprio_history_mask=history.proprio_history_mask,
+                control_action_history=history.action_history,
+                control_action_history_mask=history.action_history_mask,
+            )
         if self._latent_cache is None:
             result["video"] = self._load_video(segment, window_offset)
         else:
             result["video_latent"] = self._latent_cache.read_sample(idx)
             result["video_num_frames"] = torch.tensor(self._latent_cache.video_num_frames, dtype=torch.long)
             result["image_size"] = torch.tensor(self._latent_cache.image_size, dtype=torch.float32)
-        if len(self._camera_names) == 2:
+        if self._camera_mode in {"concat_view", "agent_wrist"}:
             result["additional_view_description"] = (
                 "The left half shows the left third-person agent view; the right half shows the wrist-mounted camera."
+            )
+        elif self._camera_mode == "triple_view":
+            result["additional_view_description"] = (
+                "From left to right, the image shows the left third-person view, the wrist-mounted camera, "
+                "and the right third-person view."
             )
         return result
 
@@ -748,7 +800,9 @@ class RoboCasa365SegmentDataset(Dataset):
         return torch.stack(videos, dim=0)
 
     def _assemble_video(self, frames_by_camera: list[torch.Tensor]) -> torch.Tensor:
-        video_tchw = torch.cat(frames_by_camera, dim=-1) if len(frames_by_camera) == 2 else frames_by_camera[0]
+        if not frames_by_camera:
+            raise ValueError("At least one camera is required to assemble a RoboCasa365 video.")
+        video_tchw = torch.cat(frames_by_camera, dim=-1) if len(frames_by_camera) > 1 else frames_by_camera[0]
         if video_tchw.shape[0] != self._chunk_length + 1 or video_tchw.shape[1] != 3:
             raise ValueError(f"Decoded video must have shape [T,3,H,W], got {tuple(video_tchw.shape)}.")
         if video_tchw.dtype == torch.uint8:

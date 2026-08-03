@@ -4,20 +4,20 @@
 """Fail-closed WebSocket policy adapter for CWAM/Cosmos3 RoboCasa365 evaluation.
 
 The DeMiAn RoboCasa evaluator sends OpenPI msgpack observations with three
-camera images, a 16-D state vector, and a prompt.  The CWAM training recipe,
-however, conditions only on the left agent view concatenated with the wrist
-view and predicts normalized relative 10-D actions:
+camera images, a 16-D state vector, and a prompt. The baseline recipe
+conditions on the left agent view concatenated with the wrist view. Strong-v1
+instead uses left, wrist, and right views plus causal proprioception/action
+histories. Both predict normalized relative 10-D actions:
 
 ``[dpos(3), rot6d-columns(6), gripper(1)]``.
 
-This adapter preserves that exact training contract and returns the evaluator's
-required relative 7-D actions:
+The selected contract is derived from the loaded checkpoint configuration and
+returns the evaluator's required relative 7-D actions:
 
 ``[dpos(3), axis-angle(3), gripper(1)]``.
 
-The right agent view and state are validated because they are part of the
-wire protocol, but they are deliberately not introduced as new model
-conditioning signals.
+Historical checkpoints continue to validate but discard the right view and
+state; Strong-v1 consumes them explicitly.
 """
 
 from cosmos_framework.inference.common.init import init_script
@@ -35,6 +35,7 @@ import socket
 import stat
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -68,10 +69,25 @@ _ONLINE_WAN2PT2_TARGET = "cosmos_framework.model.generator.tokenizers.wan2pt2_va
 _TRAINING_CAMERA_DESCRIPTION = (
     "The left half shows the left third-person agent view; the right half shows the wrist-mounted camera."
 )
+_STRONG_CAMERA_DESCRIPTION = (
+    "From left to right, the image shows the left third-person view, the wrist-mounted camera, "
+    "and the right third-person view."
+)
 _DISTRIBUTED_COMMAND_SCHEMA_VERSION = 1
 _DISTRIBUTED_COMMAND_OPS = frozenset(("infer", "reset", "shutdown"))
 _CANONICAL_REQUEST_KEYS = frozenset(("image", "prompt", "domain_name", "image_size"))
+_STRONG_CANONICAL_REQUEST_KEYS = frozenset(
+    (
+        *_CANONICAL_REQUEST_KEYS,
+        "resolution",
+        "control_proprio_history",
+        "control_proprio_history_mask",
+        "control_action_history",
+        "control_action_history_mask",
+    )
+)
 _CONTROL_REQUEST_KEYS = frozenset(("__cwam_control__", "launch_nonce"))
+_STRONG_ACTION_HISTORY_RESPONSE_KEY = "_cwam_normalized_executed_actions"
 
 
 def _load_openpi_websocket_policy_server() -> type[Any]:
@@ -295,10 +311,12 @@ def _validate_canonical_policy_request(request: Any) -> dict[str, Any]:
     """Validate the compact rank-0 request before any rank enters inference."""
     if not isinstance(request, dict):
         raise TypeError(f"Canonical RoboCasa365 request must be a dict, got {type(request).__name__}")
-    if set(request) != _CANONICAL_REQUEST_KEYS:
+    keys = frozenset(request)
+    if keys not in {_CANONICAL_REQUEST_KEYS, _STRONG_CANONICAL_REQUEST_KEYS}:
         raise ValueError(
             "Canonical RoboCasa365 request keys drifted: "
-            f"expected={sorted(_CANONICAL_REQUEST_KEYS)}, got={sorted(request)}"
+            f"expected one of {[sorted(_CANONICAL_REQUEST_KEYS), sorted(_STRONG_CANONICAL_REQUEST_KEYS)]}, "
+            f"got={sorted(request)}"
         )
     if not isinstance(request["image"], str) or not request["image"]:
         raise ValueError("Canonical RoboCasa365 request 'image' must be a non-empty base64 string")
@@ -310,6 +328,30 @@ def _validate_canonical_policy_request(request: Any) -> dict[str, Any]:
         )
     if request["image_size"] != 256:
         raise ValueError(f"Canonical RoboCasa365 request requires image_size=256, got {request['image_size']!r}")
+    if keys == _STRONG_CANONICAL_REQUEST_KEYS:
+        if request["resolution"] != "480":
+            raise ValueError("Strong-v1 canonical requests require resolution='480'")
+        proprio = np.asarray(request["control_proprio_history"])
+        proprio_mask = np.asarray(request["control_proprio_history_mask"])
+        action_history = np.asarray(request["control_action_history"])
+        action_mask = np.asarray(request["control_action_history_mask"])
+        if proprio.shape != (4, 16) or action_history.shape != (16, 10):
+            raise ValueError(
+                "Strong-v1 control tensors require proprio [4,16] and action history [16,10], "
+                f"got {proprio.shape} and {action_history.shape}"
+            )
+        if proprio_mask.shape != (4,) or action_mask.shape != (16,):
+            raise ValueError("Strong-v1 control masks require shapes [4] and [16]")
+        if proprio_mask.dtype != np.bool_ or action_mask.dtype != np.bool_:
+            raise TypeError("Strong-v1 control masks must contain booleans")
+        if not bool(proprio_mask[-1]):
+            raise ValueError("Strong-v1 requires valid current proprioception")
+        if np.any(proprio_mask[:-1] & ~proprio_mask[1:]) or np.any(action_mask[:-1] & ~action_mask[1:]):
+            raise ValueError("Strong-v1 history masks must be right-aligned contiguous suffixes")
+        if not np.isfinite(proprio[proprio_mask]).all() or not np.isfinite(action_history[action_mask]).all():
+            raise ValueError("Strong-v1 valid control history contains non-finite values")
+        if np.any(proprio[~proprio_mask] != 0.0) or np.any(action_history[~action_mask] != 0.0):
+            raise ValueError("Strong-v1 invalid history rows must be zero padded")
     return request
 
 
@@ -331,7 +373,7 @@ def _require_rgb_uint8_camera(
 
 
 def _validate_state16(value: Any) -> np.ndarray:
-    """Validate the DeMiAn 16-D proprio field, which training did not consume."""
+    """Validate the DeMiAn 16-D proprio field."""
     state = np.asarray(value)
     if state.shape != (16,):
         raise ValueError(f"{_STATE_KEY!r} must have exact shape (16,), got {state.shape}")
@@ -386,6 +428,36 @@ def _extract_training_observation(
 
     concat = np.concatenate((left, wrist), axis=1)
     return np.ascontiguousarray(concat), prompt.strip()
+
+
+def _extract_strong_observation(
+    obs: dict[str, Any],
+    *,
+    camera_height: int,
+    camera_width: int,
+) -> tuple[np.ndarray, str, np.ndarray]:
+    """Return Strong-v1 left+wrist+right pixels, prompt, and current state."""
+    missing = [key for key in (*_CAMERA_KEYS, _STATE_KEY, "prompt") if key not in obs]
+    if missing:
+        raise KeyError(f"RoboCasa365 observation is missing required keys: {missing}")
+    prompt = obs["prompt"]
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("'prompt' must be a non-empty string")
+    reasoning_text = obs.get("reasoning_text")
+    if reasoning_text not in (None, ""):
+        raise ValueError("Strong-v1 is causal and must not receive evaluator reasoning_text")
+    cameras = [
+        _require_rgb_uint8_camera(
+            obs[key],
+            key=key,
+            height=camera_height,
+            width=camera_width,
+        )
+        for key in _CAMERA_KEYS
+    ]
+    state = _validate_state16(obs[_STATE_KEY]).astype(np.float32, copy=False)
+    image = np.concatenate(cameras, axis=1)
+    return np.ascontiguousarray(image), prompt.strip(), state
 
 
 def _encode_png_base64(image: np.ndarray) -> str:
@@ -458,6 +530,8 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     """Height of each DeMiAn camera image after its client-side resize."""
     camera_width: int = 256
     """Width of each DeMiAn camera image after its client-side resize."""
+    open_loop_horizon: int = 12
+    """Actions actually executed before replanning; Strong-v1 history requires 12."""
     domain_name: str = "robocasa365"
     """Action domain ID used by the formal training recipe."""
     launch_nonce: str
@@ -542,6 +616,8 @@ class RoboCasa365PolicyService(ActionModelService):
                 "RoboCasa365 formal serving requires each client camera to be exactly 256x256, "
                 f"got {args.camera_height}x{args.camera_width}"
             )
+        if type(args.open_loop_horizon) is not int or args.open_loop_horizon < 1:
+            raise ValueError("RoboCasa365 open_loop_horizon must be a positive integer")
         if args.domain_name != "robocasa365":
             raise ValueError(f"RoboCasa365 formal serving requires domain_name='robocasa365', got {args.domain_name!r}")
         if args.action_stats_path is None:
@@ -551,8 +627,37 @@ class RoboCasa365PolicyService(ActionModelService):
         self.camera_width = int(args.camera_width)
         self.domain_name = args.domain_name
         self.launch_nonce = args.launch_nonce
+        self.open_loop_horizon = int(args.open_loop_horizon)
         self.wan2pt2_vae_path, self.qwen_tokenizer_path = args.resolve_external_model_paths()
         super().__init__(args)
+
+        self.strong_action_enabled = bool(getattr(self.model.config, "strong_action_expert_enabled", False))
+        if getattr(self, "strong_action_enabled", False):
+            expected_strong_config = {
+                "strong_action_state_dim": 16,
+                "strong_action_history_action_dim": 10,
+                "strong_action_proprio_history_length": 4,
+                "strong_action_proprio_history_stride": 12,
+                "strong_action_history_length": 16,
+                "strong_action_num_views": 3,
+                "strong_action_input_resolution": "480",
+            }
+            actual_strong_config = {
+                key: getattr(self.model.config, key, None) for key in expected_strong_config
+            }
+            if actual_strong_config != expected_strong_config:
+                raise RuntimeError(
+                    "Loaded Strong-v1 model config does not match the serving contract: "
+                    f"expected={expected_strong_config}, actual={actual_strong_config}"
+                )
+            if self.open_loop_horizon != expected_strong_config["strong_action_proprio_history_stride"]:
+                raise RuntimeError(
+                    "Strong-v1 serving requires open_loop_horizon=12 so online state history matches training"
+                )
+        # Three committed replans plus the current observation produce the
+        # training-time [t-36, t-24, t-12, t] state window.
+        self._proprio_history: deque[np.ndarray] = deque(maxlen=3)
+        self._normalized_action_history: deque[np.ndarray] = deque(maxlen=16)
 
         self.distributed_rank, self.distributed_world_size = _distributed_rank_and_world_size()
         _validate_fsdp_topology(
@@ -609,10 +714,15 @@ class RoboCasa365PolicyService(ActionModelService):
         return denormalized
 
     def _build_json_prompt(self, prompt: str, *, video: torch.Tensor, image_size: torch.Tensor) -> str:
+        camera_description = (
+            _STRONG_CAMERA_DESCRIPTION
+            if getattr(self, "strong_action_enabled", False)
+            else _TRAINING_CAMERA_DESCRIPTION
+        )
         data_dict: dict[str, Any] = {
             "ai_caption": prompt,
             "viewpoint": "concat_view",
-            "additional_view_description": _TRAINING_CAMERA_DESCRIPTION,
+            "additional_view_description": camera_description,
             "video": video,
             "image_size": image_size,
             "conditioning_fps": torch.tensor(self.cfg.fps, dtype=torch.long),
@@ -628,9 +738,41 @@ class RoboCasa365PolicyService(ActionModelService):
         return json.dumps(formatted)
 
     def _canonicalize_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
-        """Validate the wire observation on rank 0 and remove unused fields."""
+        """Validate the wire observation and build the checkpoint-specific request."""
         if not isinstance(obs, dict):
             raise TypeError(f"RoboCasa365 observation must be a dict, got {type(obs).__name__}")
+        if getattr(self, "strong_action_enabled", False):
+            image, prompt, current_state = _extract_strong_observation(
+                obs,
+                camera_height=self.camera_height,
+                camera_width=self.camera_width,
+            )
+            proprio_history = np.zeros((4, 16), dtype=np.float32)
+            proprio_mask = np.zeros(4, dtype=np.bool_)
+            observed_states = [*self._proprio_history, current_state]
+            proprio_history[-len(observed_states) :] = np.asarray(observed_states, dtype=np.float32)
+            proprio_mask[-len(observed_states) :] = True
+
+            action_history = np.zeros((16, 10), dtype=np.float32)
+            action_mask = np.zeros(16, dtype=np.bool_)
+            if self._normalized_action_history:
+                observed_actions = np.asarray(self._normalized_action_history, dtype=np.float32)
+                action_history[-len(observed_actions) :] = observed_actions
+                action_mask[-len(observed_actions) :] = True
+            return _validate_canonical_policy_request(
+                {
+                    "image": _encode_png_base64(image),
+                    "prompt": prompt,
+                    "domain_name": self.domain_name,
+                    "image_size": self.camera_height,
+                    "resolution": "480",
+                    "control_proprio_history": proprio_history.tolist(),
+                    "control_proprio_history_mask": proprio_mask.tolist(),
+                    "control_action_history": action_history.tolist(),
+                    "control_action_history_mask": action_mask.tolist(),
+                }
+            )
+
         image, prompt = _extract_training_observation(
             obs,
             camera_height=self.camera_height,
@@ -651,12 +793,44 @@ class RoboCasa365PolicyService(ActionModelService):
         batches = model_response.get("actions")
         if not isinstance(batches, list) or len(batches) != 1:
             raise RuntimeError("Cosmos policy batch response must contain exactly one action chunk")
-        actions = _rot6d10_to_axisangle7(batches[0])
+        raw_actions = np.asarray(batches[0], dtype=np.float32)
+        actions = _rot6d10_to_axisangle7(raw_actions)
         if actions.shape[0] != self.cfg.action_chunk_size:
             raise RuntimeError(
                 f"Cosmos policy returned {actions.shape[0]} actions; expected {self.cfg.action_chunk_size}"
             )
-        return {"actions": actions}
+        response: dict[str, Any] = {"actions": actions}
+        if getattr(self, "strong_action_enabled", False):
+            executed = torch.from_numpy(raw_actions[: self.open_loop_horizon])
+            normalized = self._action_normalizer.normalize_action(executed)
+            if normalized.shape != (self.open_loop_horizon, _RAW_ACTION_DIM):
+                raise RuntimeError(
+                    "Strong-v1 action normalizer returned an invalid executed-history shape: "
+                    f"{tuple(normalized.shape)}"
+                )
+            if not torch.isfinite(normalized).all():
+                raise RuntimeError("Strong-v1 normalized action history contains non-finite values")
+            response[_STRONG_ACTION_HISTORY_RESPONSE_KEY] = normalized.cpu().numpy()
+        return response
+
+    def _commit_strong_history(self, request: dict[str, Any], response: dict[str, Any]) -> None:
+        """Commit memory only after a complete model response succeeds."""
+        normalized_actions = response.pop(_STRONG_ACTION_HISTORY_RESPONSE_KEY, None)
+        if not getattr(self, "strong_action_enabled", False):
+            if normalized_actions is not None:
+                raise RuntimeError("Baseline response unexpectedly contained Strong-v1 history")
+            return
+        if normalized_actions is None:
+            raise RuntimeError("Strong-v1 response omitted normalized executed-action history")
+        proprio = np.asarray(request["control_proprio_history"], dtype=np.float32)
+        proprio_mask = np.asarray(request["control_proprio_history_mask"], dtype=np.bool_)
+        if proprio.shape != (4, 16) or not bool(proprio_mask[-1]):
+            raise RuntimeError("Strong-v1 canonical request lost its current proprioception")
+        normalized_actions = np.asarray(normalized_actions, dtype=np.float32)
+        if normalized_actions.shape != (self.open_loop_horizon, _RAW_ACTION_DIM):
+            raise RuntimeError("Strong-v1 response action history does not match open_loop_horizon")
+        self._proprio_history.append(proprio[-1].copy())
+        self._normalized_action_history.extend(row.copy() for row in normalized_actions)
 
     def _run_synchronized_stage(self, stage: str, operation: Callable[[], Any]) -> Any:
         """Run one stage and make every rank fail when any participant fails."""
@@ -799,12 +973,16 @@ class RoboCasa365PolicyService(ActionModelService):
             return self._handle_shutdown_control(obs)
         request = self._canonicalize_observation(obs)
         if self.distributed_world_size == 1:
-            return self._execute_canonical_request(request)
+            response = self._execute_canonical_request(request)
+            self._commit_strong_history(request, response)
+            return response
         if self.distributed_rank != 0:
             raise RuntimeError("WebSocket inference is only valid on RoboCasa365 rank 0")
         with self._dispatch_lock:
             self._broadcast_distributed_command("infer", request)
-            return self._execute_canonical_request(request)
+            response = self._execute_canonical_request(request)
+            self._commit_strong_history(request, response)
+            return response
 
     def _handle_shutdown_control(self, request: dict[str, Any]) -> dict[str, Any]:
         """Acknowledge a nonce-bound local shutdown and let torchrun exit cleanly."""
@@ -840,10 +1018,11 @@ class RoboCasa365PolicyService(ActionModelService):
         time.sleep(2.0)
         os._exit(0)
 
-    @staticmethod
-    def _reset_local_state() -> None:
-        """The formal service is stateless across DeMiAn episodes."""
-        return None
+    def _reset_local_state(self) -> None:
+        """Clear all episode-scoped Strong-v1 control memory."""
+        if getattr(self, "strong_action_enabled", False):
+            self._proprio_history.clear()
+            self._normalized_action_history.clear()
 
     def reset(self, reset_info: dict[str, Any] | None = None) -> None:
         if reset_info is not None and not isinstance(reset_info, dict):
@@ -890,7 +1069,8 @@ class RoboCasa365PolicyService(ActionModelService):
 
     def metadata(self) -> dict[str, Any]:
         source_module_path = Path(__file__).resolve()
-        return {
+        strong_action_enabled = getattr(self, "strong_action_enabled", False)
+        metadata = {
             "schema_version": 1,
             "service": "cwam_cosmos3_robocasa365",
             "checkpoint": str(self.checkpoint_path),
@@ -906,8 +1086,12 @@ class RoboCasa365PolicyService(ActionModelService):
             "server_pid": os.getpid(),
             "launch_nonce": self.launch_nonce,
             "wire_inputs": [*_CAMERA_KEYS, _STATE_KEY, "prompt"],
-            "conditioning_views": ["observation/agentview_left", "observation/eye_in_hand"],
-            "state_conditioning": False,
+            "conditioning_views": (
+                list(_CAMERA_KEYS)
+                if strong_action_enabled
+                else ["observation/agentview_left", "observation/eye_in_hand"]
+            ),
+            "state_conditioning": strong_action_enabled,
             "model_action": "[dpos3,rot6d_columns6,gripper1]",
             "output_action": "[dpos3,axisangle3,gripper1]",
             "gripper_transform": "identity",
@@ -937,6 +1121,23 @@ class RoboCasa365PolicyService(ActionModelService):
                 "requires_loopback_endpoint": True,
             },
         }
+        if strong_action_enabled:
+            metadata["strong_action_contract"] = {
+                "schema_version": 1,
+                "source_camera_resolution": [256, 256],
+                "model_resolution_tier": "480",
+                "camera_order": list(_CAMERA_KEYS),
+                "proprio": {"dimension": 16, "history_length": 4, "stride_frames": 12},
+                "action_history": {
+                    "dimension": 10,
+                    "history_length": 16,
+                    "normalized": True,
+                    "executed_steps_per_replan": self.open_loop_horizon,
+                },
+                "memory": {"encoder_layers": 2, "learned_tokens": 4, "episode_reset": True},
+                "action_expert": {"layers": 4, "context_relation_bias": True},
+            }
+        return metadata
 
 
 def serve(args: RoboCasa365ServerArgs) -> None:

@@ -567,6 +567,11 @@ def get_action_robocasa365_sft_dataset(
     iterable_shuffle: bool = True,
     episode_shuffle_seed: int = 42,
     fixed_index_trace_path: str | None = None,
+    control_cache_root: str | None = None,
+    control_cache_verify_checksums: bool = False,
+    proprio_history_length: int = 0,
+    proprio_history_stride: int = 1,
+    action_history_length: int = 0,
 ) -> Dataset:
     """Build the CWAM RoboCasa365 segment dataset for Cosmos action SFT.
 
@@ -603,6 +608,12 @@ def get_action_robocasa365_sft_dataset(
         validate_manifest=validate_manifest,
         latent_cache_root=latent_cache_root,
         latent_cache_mode=latent_cache_mode,
+        control_cache_root=control_cache_root,
+        control_cache_verify_checksums=control_cache_verify_checksums,
+        proprio_history_length=proprio_history_length,
+        proprio_history_stride=proprio_history_stride,
+        action_history_length=action_history_length,
+        transform_resolution=resolution,
     )
     transform = ActionTransformPipeline(
         tokenizer_config=tokenizer_config,

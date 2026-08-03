@@ -52,6 +52,8 @@ LOADER_WORKERS="${LOADER_WORKERS:-8}"
 VAE_BATCH_SIZE="${VAE_BATCH_SIZE:-8}"
 EQUIVALENCE_SAMPLES_PER_RANK="${EQUIVALENCE_SAMPLES_PER_RANK:-8}"
 ROBOCASA365_CACHE_SPLITS="${ROBOCASA365_CACHE_SPLITS:-train,val,test}"
+ROBOCASA365_CACHE_CAMERA_MODE="${ROBOCASA365_CACHE_CAMERA_MODE:-concat_view}"
+ROBOCASA365_CACHE_RESOLUTION="${ROBOCASA365_CACHE_RESOLUTION:-auto}"
 
 [[ "$#" -eq 0 ]] || {
   echo "ERROR: unbound command-line arguments are forbidden; use the audited environment contract" >&2
@@ -67,6 +69,17 @@ ROBOCASA365_CACHE_SPLITS="${ROBOCASA365_CACHE_SPLITS:-train,val,test}"
   { echo "ERROR: EQUIVALENCE_SAMPLES_PER_RANK must be a positive integer" >&2; exit 1; }
 [[ "$ROBOCASA365_CACHE_SPLITS" == "train,val,test" ]] ||
   { echo "ERROR: the synchronized full cache requires splits=train,val,test" >&2; exit 1; }
+[[ "$ROBOCASA365_CACHE_CAMERA_MODE" == "concat_view" || "$ROBOCASA365_CACHE_CAMERA_MODE" == "triple_view" ]] ||
+  { echo "ERROR: cache camera mode must be concat_view or triple_view" >&2; exit 1; }
+[[ "$ROBOCASA365_CACHE_RESOLUTION" == "auto" || "$ROBOCASA365_CACHE_RESOLUTION" == "480" ]] ||
+  { echo "ERROR: cache resolution must be auto or 480" >&2; exit 1; }
+if [[ "$ROBOCASA365_CACHE_CAMERA_MODE" == "triple_view" ]]; then
+  [[ "$ROBOCASA365_CACHE_RESOLUTION" == "480" ]] ||
+    { echo "ERROR: triple_view cache construction requires resolution=480" >&2; exit 1; }
+else
+  [[ "$ROBOCASA365_CACHE_RESOLUTION" == "auto" ]] ||
+    { echo "ERROR: historical concat_view cache construction requires resolution=auto" >&2; exit 1; }
+fi
 [[ "$ROBOCASA365_NVME_SOURCE_ROOT" == "$PINNED_NVME_SOURCE_ROOT" ]] ||
   { echo "ERROR: ROBOCASA365_NVME_SOURCE_ROOT differs from the audited /nvme destination" >&2; exit 1; }
 [[ "$EXPECTED_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
@@ -298,16 +311,23 @@ print(
 PY
 
 cd "$COSMOS_SOURCE_REALPATH"
+BUILD_ARGS=(
+  --dataset-root "${ROBOCASA365_ROOT_REALPATH}"
+  --source-root "${ROBOCASA365_SOURCE_ROOT_REALPATH}"
+  --output-root "${ROBOCASA365_OUTPUT_REALPATH}"
+  --wan-vae "${WAN_VAE_REALPATH}"
+  --nvme-source-root "${PINNED_NVME_SOURCE_ROOT}"
+  --splits "${ROBOCASA365_CACHE_SPLITS}"
+  --camera-mode "${ROBOCASA365_CACHE_CAMERA_MODE}"
+  --loader-workers "${LOADER_WORKERS}"
+  --vae-batch-size "${VAE_BATCH_SIZE}"
+  --equivalence-samples-per-rank "${EQUIVALENCE_SAMPLES_PER_RANK}"
+)
+if [[ "$ROBOCASA365_CACHE_RESOLUTION" != "auto" ]]; then
+  BUILD_ARGS+=(--resolution "$ROBOCASA365_CACHE_RESOLUTION")
+fi
 exec "$RUNTIME_PYTHON" -m torch.distributed.run \
   --standalone \
   --nproc-per-node="${NUM_GPUS}" \
   "$BUILD_PYTHON" \
-  --dataset-root "${ROBOCASA365_ROOT_REALPATH}" \
-  --source-root "${ROBOCASA365_SOURCE_ROOT_REALPATH}" \
-  --output-root "${ROBOCASA365_OUTPUT_REALPATH}" \
-  --wan-vae "${WAN_VAE_REALPATH}" \
-  --nvme-source-root "${PINNED_NVME_SOURCE_ROOT}" \
-  --splits "${ROBOCASA365_CACHE_SPLITS}" \
-  --loader-workers "${LOADER_WORKERS}" \
-  --vae-batch-size "${VAE_BATCH_SIZE}" \
-  --equivalence-samples-per-rank "${EQUIVALENCE_SAMPLES_PER_RANK}"
+  "${BUILD_ARGS[@]}"

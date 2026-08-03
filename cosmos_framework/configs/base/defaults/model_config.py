@@ -259,6 +259,22 @@ class OmniMoTModelConfig:
     action_relevance_sparsity_weight: float = 0.01
     action_relevance_sparsity_start_iter: int = 1000
     action_relevance_sparsity_anneal_iters: int = 4000
+    # DeMiAn-inspired decoupled action tower with explicit proprio/action memory.
+    strong_action_expert_enabled: bool = False
+    strong_action_expert_model_dim: int = 1024
+    strong_action_expert_num_heads: int = 16
+    strong_action_expert_num_layers: int = 4
+    strong_action_expert_ffn_multiplier: int = 4
+    strong_action_state_dim: int = 16
+    strong_action_history_action_dim: int = 10
+    strong_action_proprio_history_length: int = 4
+    strong_action_proprio_history_stride: int = 12
+    strong_action_history_length: int = 16
+    strong_action_memory_layers: int = 2
+    strong_action_memory_tokens: int = 4
+    strong_action_num_views: int = 3
+    strong_action_initial_gate: float = 0.01
+    strong_action_input_resolution: str = "480"
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

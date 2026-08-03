@@ -56,6 +56,8 @@ readonly RJOB_BIN="/usr/local/bin/rjob"
 : "${RJOB_EXCLUDED_NODE_TAG:=$PINNED_EXCLUDED_NODE_TAG}"
 : "${ROBOCASA365_NVME_SOURCE_ROOT:=$PINNED_NVME_SOURCE_ROOT}"
 : "${ROBOCASA365_CACHE_SPLITS:=train,val,test}"
+: "${ROBOCASA365_CACHE_CAMERA_MODE:=concat_view}"
+: "${ROBOCASA365_CACHE_RESOLUTION:=auto}"
 : "${NUM_GPUS:=8}"
 : "${LOADER_WORKERS:=8}"
 : "${VAE_BATCH_SIZE:=8}"
@@ -85,6 +87,15 @@ readonly RJOB_BIN="/usr/local/bin/rjob"
   { echo "ERROR: ROBOCASA365_NVME_SOURCE_ROOT must be exactly $PINNED_NVME_SOURCE_ROOT" >&2; exit 1; }
 [[ "$ROBOCASA365_CACHE_SPLITS" == "train,val,test" ]] ||
   { echo "ERROR: the synchronized full cache requires splits=train,val,test" >&2; exit 1; }
+[[ "$ROBOCASA365_CACHE_CAMERA_MODE" == "concat_view" || "$ROBOCASA365_CACHE_CAMERA_MODE" == "triple_view" ]] ||
+  { echo "ERROR: cache camera mode must be concat_view or triple_view" >&2; exit 1; }
+[[ "$ROBOCASA365_CACHE_RESOLUTION" == "auto" || "$ROBOCASA365_CACHE_RESOLUTION" == "480" ]] ||
+  { echo "ERROR: cache resolution must be auto or 480" >&2; exit 1; }
+if [[ "$ROBOCASA365_CACHE_CAMERA_MODE:$ROBOCASA365_CACHE_RESOLUTION" != "concat_view:auto" &&
+      "$ROBOCASA365_CACHE_CAMERA_MODE:$ROBOCASA365_CACHE_RESOLUTION" != "triple_view:480" ]]; then
+  echo "ERROR: supported cache contracts are concat_view:auto and triple_view:480" >&2
+  exit 1
+fi
 [[ "$NUM_GPUS" == "$NPROC_REQUIRED" ]] ||
   { echo "ERROR: NUM_GPUS must be exactly 8" >&2; exit 1; }
 [[ "$LOADER_WORKERS" =~ ^[0-9]+$ ]] ||
@@ -286,6 +297,8 @@ printf -v Q_ROBOCASA365_OUTPUT_ROOT '%q' "$ROBOCASA365_OUTPUT_REALPATH"
 printf -v Q_WAN_VAE_PATH '%q' "$WAN_VAE_REALPATH"
 printf -v Q_NVME_SOURCE_ROOT '%q' "$PINNED_NVME_SOURCE_ROOT"
 printf -v Q_CACHE_SPLITS '%q' "$ROBOCASA365_CACHE_SPLITS"
+printf -v Q_CACHE_CAMERA_MODE '%q' "$ROBOCASA365_CACHE_CAMERA_MODE"
+printf -v Q_CACHE_RESOLUTION '%q' "$ROBOCASA365_CACHE_RESOLUTION"
 printf -v Q_NUM_GPUS '%q' "$NUM_GPUS"
 printf -v Q_LOADER_WORKERS '%q' "$LOADER_WORKERS"
 printf -v Q_VAE_BATCH_SIZE '%q' "$VAE_BATCH_SIZE"
@@ -319,6 +332,8 @@ CACHE_COMMAND="$(
     "export WAN_VAE_PATH=$Q_WAN_VAE_PATH" \
     "export ROBOCASA365_NVME_SOURCE_ROOT=$Q_NVME_SOURCE_ROOT" \
     "export ROBOCASA365_CACHE_SPLITS=$Q_CACHE_SPLITS" \
+    "export ROBOCASA365_CACHE_CAMERA_MODE=$Q_CACHE_CAMERA_MODE" \
+    "export ROBOCASA365_CACHE_RESOLUTION=$Q_CACHE_RESOLUTION" \
     "export NUM_GPUS=$Q_NUM_GPUS" \
     "export LOADER_WORKERS=$Q_LOADER_WORKERS" \
     "export VAE_BATCH_SIZE=$Q_VAE_BATCH_SIZE" \
@@ -385,6 +400,8 @@ echo "RJOB_SCHEDULING=task_type=normal priority=9 restart_policy=never excluded_
 echo "RJOB_STORE_HOST_NVME=true"
 echo "ROBOCASA365_NVME_SOURCE_ROOT=$PINNED_NVME_SOURCE_ROOT"
 echo "ROBOCASA365_CACHE_SPLITS=$ROBOCASA365_CACHE_SPLITS"
+echo "ROBOCASA365_CACHE_CAMERA_MODE=$ROBOCASA365_CACHE_CAMERA_MODE"
+echo "ROBOCASA365_CACHE_RESOLUTION=$ROBOCASA365_CACHE_RESOLUTION"
 echo "LOADER_WORKERS=$LOADER_WORKERS"
 echo "VAE_BATCH_SIZE=$VAE_BATCH_SIZE"
 echo "SOURCE_COMMIT=$EXPECTED_SOURCE_COMMIT"
@@ -450,6 +467,8 @@ SUBMISSION_UNKNOWN="$SUBMISSION_DIR/submission-unknown.json"
   "$LOADER_WORKERS" \
   "$VAE_BATCH_SIZE" \
   "$EQUIVALENCE_SAMPLES_PER_RANK" \
+  "$ROBOCASA365_CACHE_CAMERA_MODE" \
+  "$ROBOCASA365_CACHE_RESOLUTION" \
   "$RJOB_BIN" \
   "$RJOB_BIN_SHA256" <<'PY'
 import datetime
@@ -483,6 +502,8 @@ import sys
     loader_workers,
     vae_batch_size,
     equivalence_samples,
+    camera_mode,
+    resolution,
     rjob_realpath,
     rjob_sha256,
 ) = sys.argv[1:]
@@ -550,6 +571,8 @@ payload = {
         "wan_vae_sha256": wan_vae_sha256,
         "nvme_source_root": "/nvme/cwam-robocasa365-d5eac857",
         "splits": ["train", "val", "test"],
+        "camera_mode": camera_mode,
+        "resolution": None if resolution == "auto" else resolution,
         "loader_workers": int(loader_workers),
         "vae_batch_size": int(vae_batch_size),
         "equivalence_samples_per_rank": int(equivalence_samples),

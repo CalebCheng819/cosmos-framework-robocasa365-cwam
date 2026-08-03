@@ -11,6 +11,7 @@ import torch
 from cosmos_framework.data.generator.action.json_formatter import ActionPromptJsonFormatter
 from cosmos_framework.data.generator.action.transforms import (
     ActionTransformPipeline,
+    preprocess_control_context,
     reflection_pad_to_target,
     remove_reflection_padding,
 )
@@ -80,6 +81,30 @@ def test_video_padding_round_trips_to_unpadded_region() -> None:
 
     assert padded["video"].shape == (3, 2, 6, 8)
     torch.testing.assert_close(round_tripped, video)
+
+
+@pytest.mark.L0
+@pytest.mark.parametrize(
+    ("proprio_mask", "action_mask", "message"),
+    [
+        ([False, True, False, True], [False, False, True], "Proprio history"),
+        ([False, False, True, True], [False, True, False], "Action history"),
+    ],
+)
+def test_control_context_rejects_history_mask_holes(
+    proprio_mask: list[bool],
+    action_mask: list[bool],
+    message: str,
+) -> None:
+    data = {
+        "control_proprio_history": torch.zeros(4, 16),
+        "control_proprio_history_mask": torch.tensor(proprio_mask),
+        "control_action_history": torch.zeros(3, 10),
+        "control_action_history_mask": torch.tensor(action_mask),
+    }
+
+    with pytest.raises(ValueError, match=message):
+        preprocess_control_context(data, action_normalizer=None, raw_action_dim=10)
 
 
 @pytest.mark.L0

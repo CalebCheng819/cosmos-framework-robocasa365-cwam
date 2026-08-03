@@ -22,6 +22,7 @@ from cosmos_framework.model.generator.mot.context_parallel_utils import (
 )
 from cosmos_framework.model.generator.mot.domain_aware_linear import DomainAwareLinear
 from cosmos_framework.model.generator.mot.modeling_utils import TimestepEmbedder, has_noisy_tokens
+from cosmos_framework.model.generator.mot.strong_action_expert import StrongActionContextExpert
 from cosmos_framework.model.generator.utils.memory import MemoryState
 
 
@@ -56,6 +57,20 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         action_relevance_num_heads=8,
         action_relevance_topk=32,
         action_relevance_initial_gate=0.01,
+        strong_action_expert_enabled=False,
+        strong_action_expert_model_dim=1024,
+        strong_action_expert_num_heads=16,
+        strong_action_expert_num_layers=4,
+        strong_action_expert_ffn_multiplier=4,
+        strong_action_state_dim=16,
+        strong_action_history_action_dim=10,
+        strong_action_proprio_history_length=4,
+        strong_action_proprio_history_stride=12,
+        strong_action_history_length=16,
+        strong_action_memory_layers=2,
+        strong_action_memory_tokens=4,
+        strong_action_num_views=3,
+        strong_action_initial_gate=0.01,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -98,12 +113,52 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.action_relevance_num_heads = action_relevance_num_heads
         self.action_relevance_topk = action_relevance_topk
         self.action_relevance_initial_gate = action_relevance_initial_gate
+        self.strong_action_expert_enabled = strong_action_expert_enabled
+        self.strong_action_expert_model_dim = strong_action_expert_model_dim
+        self.strong_action_expert_num_heads = strong_action_expert_num_heads
+        self.strong_action_expert_num_layers = strong_action_expert_num_layers
+        self.strong_action_expert_ffn_multiplier = strong_action_expert_ffn_multiplier
+        self.strong_action_state_dim = strong_action_state_dim
+        self.strong_action_history_action_dim = strong_action_history_action_dim
+        self.strong_action_proprio_history_length = strong_action_proprio_history_length
+        self.strong_action_proprio_history_stride = strong_action_proprio_history_stride
+        self.strong_action_history_length = strong_action_history_length
+        self.strong_action_memory_layers = strong_action_memory_layers
+        self.strong_action_memory_tokens = strong_action_memory_tokens
+        self.strong_action_num_views = strong_action_num_views
+        self.strong_action_initial_gate = strong_action_initial_gate
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
             )
         if self.action_relevance_enabled and not self.action_gen:
             raise ValueError("action_relevance_enabled=True requires action_gen=True")
+        if self.strong_action_expert_enabled and not self.action_gen:
+            raise ValueError("strong_action_expert_enabled=True requires action_gen=True")
+        if self.strong_action_expert_enabled and self.action_relevance_enabled:
+            raise ValueError("The S1 relevance adapter and strong action expert are separate experimental variants")
+        if self.strong_action_expert_enabled:
+            strong_positive_values = {
+                "model_dim": self.strong_action_expert_model_dim,
+                "num_heads": self.strong_action_expert_num_heads,
+                "num_layers": self.strong_action_expert_num_layers,
+                "ffn_multiplier": self.strong_action_expert_ffn_multiplier,
+                "state_dim": self.strong_action_state_dim,
+                "history_action_dim": self.strong_action_history_action_dim,
+                "proprio_history_length": self.strong_action_proprio_history_length,
+                "proprio_history_stride": self.strong_action_proprio_history_stride,
+                "action_history_length": self.strong_action_history_length,
+                "memory_layers": self.strong_action_memory_layers,
+                "memory_tokens": self.strong_action_memory_tokens,
+                "num_views": self.strong_action_num_views,
+            }
+            invalid = {name: value for name, value in strong_positive_values.items() if int(value) < 1}
+            if invalid:
+                raise ValueError(f"Strong action expert dimensions must be positive: {invalid}")
+            if self.strong_action_expert_model_dim % self.strong_action_expert_num_heads:
+                raise ValueError("Strong action expert model_dim must be divisible by num_heads")
+            if not 0.0 < float(self.strong_action_initial_gate) < 1.0:
+                raise ValueError("Strong action expert initial gate must be strictly between zero and one")
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -182,6 +237,23 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     topk=config.action_relevance_topk,
                     initial_residual_gate=config.action_relevance_initial_gate,
                 )
+            if config.strong_action_expert_enabled:
+                self.strong_action_expert = StrongActionContextExpert(
+                    hidden_size=self.hidden_size,
+                    model_dim=config.strong_action_expert_model_dim,
+                    num_heads=config.strong_action_expert_num_heads,
+                    num_layers=config.strong_action_expert_num_layers,
+                    ffn_multiplier=config.strong_action_expert_ffn_multiplier,
+                    state_dim=config.strong_action_state_dim,
+                    action_dim=config.strong_action_history_action_dim,
+                    proprio_history_length=config.strong_action_proprio_history_length,
+                    proprio_history_stride=config.strong_action_proprio_history_stride,
+                    action_history_length=config.strong_action_history_length,
+                    memory_layers=config.strong_action_memory_layers,
+                    memory_tokens=config.strong_action_memory_tokens,
+                    num_views=config.strong_action_num_views,
+                    initial_residual_gate=config.strong_action_initial_gate,
+                )
 
         if config.sound_gen:
             self.sound_dim = config.sound_dim
@@ -222,6 +294,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             torch.nn.init.trunc_normal_(self.action_modality_embed, std=std, a=-3 * std, b=3 * std)
             if self.config.action_relevance_enabled:
                 self.action_relevance.init_weights()
+            if self.config.strong_action_expert_enabled:
+                self.strong_action_expert.init_weights()
 
         if self.config.sound_gen:
             # sound2llm: input_size=sound_dim, output_size=hidden_size
@@ -1138,6 +1212,30 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                 sample_lens=packed_seq.sample_lens,
             )
             output_dict.update({f"action_relevance_{name}": value for name, value in action_relevance.items()})
+
+        if self.config.strong_action_expert_enabled:
+            if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                raise ValueError("Strong action expert requires packed action tokens")
+            if packed_seq.vision is None:
+                raise ValueError("Strong action expert requires packed vision tokens")
+            if not isinstance(packed_seq.text_indexes, torch.Tensor):
+                raise TypeError("Strong action expert requires finalized text indexes")
+            if not isinstance(packed_seq.position_ids, torch.Tensor):
+                raise TypeError("Strong action expert requires finalized position IDs")
+            clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
+            last_hidden_state, strong_action_metrics = self.strong_action_expert(
+                last_hidden_state,
+                action_indexes=packed_seq.action.sequence_indexes,
+                text_indexes=packed_seq.text_indexes,
+                vision_indexes=clean_vision_indexes,
+                position_ids=packed_seq.position_ids,
+                sample_lens=packed_seq.sample_lens,
+                proprio_history=packed_seq.control_proprio_history,
+                proprio_history_mask=packed_seq.control_proprio_history_mask,
+                action_history=packed_seq.control_action_history,
+                action_history_mask=packed_seq.control_action_history_mask,
+            )
+            output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})
 
         # decode vision tokens
         if self.config.vision_gen:

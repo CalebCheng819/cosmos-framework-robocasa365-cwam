@@ -58,6 +58,7 @@ from cosmos_framework.data.generator.action.transforms import VideoResize
 _CAMERA_FIELDS_BY_MODE: dict[str, tuple[str, ...]] = {
     "concat_view": ("robot0_agentview_left", "robot0_eye_in_hand"),
     "agent_wrist": ("robot0_agentview_left", "robot0_eye_in_hand"),
+    "triple_view": ("robot0_agentview_left", "robot0_eye_in_hand", "robot0_agentview_right"),
     "agentview_left": ("robot0_agentview_left",),
     "agentview_right": ("robot0_agentview_right",),
     "wrist": ("robot0_eye_in_hand",),
@@ -288,6 +289,7 @@ def _make_dataset(args: argparse.Namespace, split: str, source_root: Path) -> Ro
         latent_cache_root=None,
         latent_cache_mode="disabled",
         load_actions=False,
+        transform_resolution=args.resolution,
     )
 
 
@@ -299,7 +301,7 @@ def _derive_image_size(args: argparse.Namespace) -> tuple[int, int, int, int]:
             dtype=torch.uint8,
         )
     }
-    transformed = VideoResize()(probe, None)
+    transformed = VideoResize()(probe, args.resolution)
     return tuple(int(value) for value in transformed["image_size"].tolist())  # type: ignore[return-value]
 
 
@@ -369,8 +371,10 @@ def _build_request(
         "fps": args.fps,
         "dataset_image_size": args.dataset_image_size,
         "video_resize": {
-            "resolution": None,
-            "resolution_selection": "auto_get_vision_data_resolution",
+            "resolution": args.resolution,
+            "resolution_selection": (
+                "auto_get_vision_data_resolution" if args.resolution is None else "explicit_resolution_tier"
+            ),
             "keep_aspect_ratio": True,
             "pad_keys": ["video"],
             "resize_interpolation": "bicubic",
@@ -1526,6 +1530,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=20.0)
     parser.add_argument("--chunk-length", type=int, default=16)
     parser.add_argument("--dataset-image-size", type=int, default=256)
+    parser.add_argument("--resolution", choices=("256", "480", "704", "720", "768"))
     parser.add_argument("--video-backend", choices=("lerobot", "opencv"), default="lerobot")
     parser.add_argument("--loader-workers", type=int, default=8)
     parser.add_argument("--loader-prefetch-factor", type=int, default=2)

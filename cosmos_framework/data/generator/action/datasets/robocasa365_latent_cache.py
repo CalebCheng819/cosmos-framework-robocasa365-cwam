@@ -570,6 +570,7 @@ class RoboCasa365LatentCache:
         expected_preprocessing_code_sha256: Mapping[str, str],
         expected_split_manifest_sha256: str,
         expected_ordered_visual_identity_sha256: str | None = None,
+        expected_video_resize_resolution: str | int | None = None,
         verify_shard_checksums: bool = False,
     ) -> None:
         self.root = Path(root)
@@ -632,6 +633,7 @@ class RoboCasa365LatentCache:
             expected_fps=expected_fps,
             expected_dataset_image_size=expected_dataset_image_size,
             expected_image_size=expected_image_size,
+            expected_video_resize_resolution=expected_video_resize_resolution,
             expected_code_sha256=expected_preprocessing_code_sha256,
         )
         self.vae = self._validate_vae(
@@ -664,6 +666,7 @@ class RoboCasa365LatentCache:
         expected_fps: float,
         expected_dataset_image_size: int,
         expected_image_size: tuple[int, int, int, int],
+        expected_video_resize_resolution: str | int | None,
         expected_code_sha256: Mapping[str, str],
     ) -> dict[str, Any]:
         if not isinstance(value, dict):
@@ -698,9 +701,14 @@ class RoboCasa365LatentCache:
         resize = value.get("video_resize")
         if not isinstance(resize, dict):
             raise ValueError("RoboCasa365 latent cache preprocessing.video_resize must be an object.")
+        normalized_resolution = (
+            None if expected_video_resize_resolution is None else str(expected_video_resize_resolution)
+        )
         required_resize = {
-            "resolution": None,
-            "resolution_selection": "auto_get_vision_data_resolution",
+            "resolution": normalized_resolution,
+            "resolution_selection": (
+                "auto_get_vision_data_resolution" if normalized_resolution is None else "explicit_resolution_tier"
+            ),
             "keep_aspect_ratio": True,
             "pad_keys": ["video"],
             "resize_interpolation": "bicubic",

@@ -15,6 +15,11 @@
 #   OUTPUT_ROOT              default: outputs/train
 #   RUN_NAME                 unique run name; defaults to a UTC timestamp
 #   NPROC_PER_NODE           local GPU count; default: 8
+# Strong-v1 only:
+#   ROBOCASA365_CONTROL_CACHE_ROOT        immutable state/action cache
+#   ROBOCASA365_STRONG_LATENT_CACHE_ROOT  triple-view 480 Wan latent cache
+#   ROBOCASA365_STRONG_LATENT_CACHE_MODE  must be required for formal training
+#   CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER must be 1 with that cache
 #   RESUME_EXISTING_RUN      0 for a new run (default), 1 for functional
 #                            model/optim/scheduler/trainer resume
 #   ALLOW_DATA_STREAM_REPLAY must be 1 with RESUME_EXISTING_RUN=1, acknowledging
@@ -24,7 +29,8 @@
 : "${TOML_FILE:=examples/toml/sft_config/action_policy_robocasa365_nano.toml}"
 : "${BASE_CHECKPOINT_PATH:=examples/checkpoints/Cosmos3-Nano}"
 : "${NPROC_PER_NODE:=8}"
-: "${RUN_NAME:=action_policy_robocasa365_nano_$(date -u +%Y%m%dT%H%M%SZ)}"
+EXPERIMENT_SLUG="$(basename "$TOML_FILE" .toml)"
+: "${RUN_NAME:=${EXPERIMENT_SLUG}_$(date -u +%Y%m%dT%H%M%SZ)}"
 : "${RESUME_EXISTING_RUN:=0}"
 : "${ALLOW_DATA_STREAM_REPLAY:=0}"
 if [[ -z "${MASTER_PORT:-}" ]]; then
@@ -37,6 +43,10 @@ fi
 export ROBOCASA365_ROOT="${ROBOCASA365_ROOT:-}"
 export ROBOCASA365_SOURCE_ROOT="${ROBOCASA365_SOURCE_ROOT:-}"
 export QWEN3_VL_TOKENIZER_PATH="${QWEN3_VL_TOKENIZER_PATH:-}"
+export ROBOCASA365_CONTROL_CACHE_ROOT="${ROBOCASA365_CONTROL_CACHE_ROOT:-}"
+export ROBOCASA365_STRONG_LATENT_CACHE_ROOT="${ROBOCASA365_STRONG_LATENT_CACHE_ROOT:-}"
+export ROBOCASA365_STRONG_LATENT_CACHE_MODE="${ROBOCASA365_STRONG_LATENT_CACHE_MODE:-disabled}"
+export CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER="${CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER:-0}"
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
@@ -120,6 +130,18 @@ EXTRA_DATASET_CHECK='
     { echo "ERROR: QWEN3_VL_TOKENIZER_PATH is missing tokenizer.json" >&2; exit 1; }
 [[ -f "$QWEN3_VL_TOKENIZER_PATH/config.json" ]] ||
     { echo "ERROR: QWEN3_VL_TOKENIZER_PATH is missing config.json" >&2; exit 1; }
+if [[ "$(basename "$TOML_FILE")" == "action_policy_robocasa365_strong_nano.toml" ]]; then
+    [[ "$NPROC_PER_NODE" -eq 8 ]] ||
+        { echo "ERROR: Strong-v1 formal training requires exactly 8 ranks" >&2; exit 1; }
+    [[ "$ROBOCASA365_STRONG_LATENT_CACHE_MODE" == required ]] ||
+        { echo "ERROR: Strong-v1 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
+    [[ "$CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER" == 1 ]] ||
+        { echo "ERROR: Strong-v1 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
+    [[ -f "$ROBOCASA365_CONTROL_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_CONTROL_CACHE_ROOT/_SUCCESS.json" ]] ||
+        { echo "ERROR: Strong-v1 control cache is incomplete" >&2; exit 1; }
+    [[ -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/_SUCCESS.json" ]] ||
+        { echo "ERROR: Strong-v1 triple-view 480 latent cache is incomplete" >&2; exit 1; }
+fi
 '
 
 TAIL_OVERRIDES=(
