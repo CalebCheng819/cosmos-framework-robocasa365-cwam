@@ -50,6 +50,7 @@ def _args() -> argparse.Namespace:
         requested_vae_batch_size=_REQUESTED_BATCH_SIZE,
         expected_image_size=(16, 16),
         expected_latent_shape=_LATENT_SHAPE,
+        latent_stage=builder.CACHE_STAGE,
         splits=("train",),
         vae_batch_size=None,
     )
@@ -187,3 +188,36 @@ def test_preflight_treats_nondeterministic_batch_one_fallback_as_fatal(
 
     with pytest.raises(RuntimeError, match="Wan singleton preflight was not bitwise deterministic"):
         _run_preflight(monkeypatch, tokenizer)
+
+
+def test_full_padding_stage_keeps_the_complete_480_canvas() -> None:
+    args = argparse.Namespace(
+        latent_stage=builder.CACHE_STAGE_FULL_PADDING,
+        chunk_length=16,
+    )
+    image_size = (480, 832, 256, 768)
+    latent = torch.arange(48 * 5 * 30 * 52, dtype=torch.float32).reshape(48, 5, 30, 52)
+
+    assert builder._derive_latent_shape(args, image_size) == (48, 5, 30, 52)
+    selected = builder._select_latent_stage(
+        latent,
+        image_size=torch.tensor(image_size),
+        latent_stage=builder.CACHE_STAGE_FULL_PADDING,
+    )
+    assert selected.shape == (48, 5, 30, 52)
+    assert torch.equal(selected, latent)
+
+
+def test_post_padding_crop_stage_remains_backward_compatible() -> None:
+    args = argparse.Namespace(latent_stage=builder.CACHE_STAGE, chunk_length=16)
+    image_size = (480, 832, 256, 768)
+    latent = torch.arange(48 * 5 * 30 * 52, dtype=torch.float32).reshape(48, 5, 30, 52)
+
+    assert builder._derive_latent_shape(args, image_size) == (48, 5, 16, 48)
+    selected = builder._select_latent_stage(
+        latent,
+        image_size=torch.tensor(image_size),
+        latent_stage=builder.CACHE_STAGE,
+    )
+    assert selected.shape == (48, 5, 16, 48)
+    assert torch.equal(selected, latent[:, :, :16, :48])

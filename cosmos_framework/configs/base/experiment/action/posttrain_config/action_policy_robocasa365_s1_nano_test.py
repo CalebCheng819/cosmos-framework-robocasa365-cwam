@@ -66,6 +66,7 @@ def test_strong_recipe_isolated_three_view_control_contract() -> None:
     assert train_loader.max_samples_per_batch == 32
     assert dataset.camera_mode == "triple_view"
     assert dataset.resolution == "480"
+    assert dataset.latent_cache_expected_stage == "full_padding"
     assert dataset_unresolved["control_cache_root"] == "${oc.env:ROBOCASA365_CONTROL_CACHE_ROOT}"
     assert dataset.proprio_history_length == 4
     assert dataset.proprio_history_stride == 12

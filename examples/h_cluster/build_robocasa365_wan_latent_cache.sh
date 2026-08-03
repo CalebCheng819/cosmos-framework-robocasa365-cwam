@@ -16,6 +16,8 @@ readonly OFFICIAL_WAN22_VAE_SHA256="20eb789667fa5e60e7516bf509512f6cb61f01b0aa06
 readonly PINNED_NVME_SOURCE_ROOT="/nvme/cwam-robocasa365-d5eac857"
 readonly SNAPSHOT_ALLOWED_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/run_snapshots"
 readonly CACHE_OUTPUT_ALLOWED_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data"
+readonly FULLPAD_NVME_OUTPUT_ALLOWED_ROOT="/nvme/cwam-robocasa365-wan-fullpad"
+readonly PREFLIGHT_RECEIPT_ALLOWED_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/robocasa365-wan-fullpad-oss"
 readonly REALPATH_BIN="/usr/bin/realpath"
 readonly SHA256SUM_BIN="/usr/bin/sha256sum"
 readonly BASH_BIN="/usr/bin/bash"
@@ -54,6 +56,9 @@ EQUIVALENCE_SAMPLES_PER_RANK="${EQUIVALENCE_SAMPLES_PER_RANK:-8}"
 ROBOCASA365_CACHE_SPLITS="${ROBOCASA365_CACHE_SPLITS:-train,val,test}"
 ROBOCASA365_CACHE_CAMERA_MODE="${ROBOCASA365_CACHE_CAMERA_MODE:-concat_view}"
 ROBOCASA365_CACHE_RESOLUTION="${ROBOCASA365_CACHE_RESOLUTION:-auto}"
+ROBOCASA365_CACHE_STAGE="${ROBOCASA365_CACHE_STAGE:-post_padding_crop}"
+ROBOCASA365_CACHE_PREFLIGHT_ONLY="${ROBOCASA365_CACHE_PREFLIGHT_ONLY:-0}"
+ROBOCASA365_CACHE_PREFLIGHT_RECEIPT="${ROBOCASA365_CACHE_PREFLIGHT_RECEIPT:-}"
 
 [[ "$#" -eq 0 ]] || {
   echo "ERROR: unbound command-line arguments are forbidden; use the audited environment contract" >&2
@@ -73,12 +78,28 @@ ROBOCASA365_CACHE_RESOLUTION="${ROBOCASA365_CACHE_RESOLUTION:-auto}"
   { echo "ERROR: cache camera mode must be concat_view or triple_view" >&2; exit 1; }
 [[ "$ROBOCASA365_CACHE_RESOLUTION" == "auto" || "$ROBOCASA365_CACHE_RESOLUTION" == "480" ]] ||
   { echo "ERROR: cache resolution must be auto or 480" >&2; exit 1; }
+[[ "$ROBOCASA365_CACHE_STAGE" == "post_padding_crop" || "$ROBOCASA365_CACHE_STAGE" == "full_padding" ]] ||
+  { echo "ERROR: cache stage must be post_padding_crop or full_padding" >&2; exit 1; }
+[[ "$ROBOCASA365_CACHE_PREFLIGHT_ONLY" =~ ^[01]$ ]] ||
+  { echo "ERROR: ROBOCASA365_CACHE_PREFLIGHT_ONLY must be 0 or 1" >&2; exit 1; }
 if [[ "$ROBOCASA365_CACHE_CAMERA_MODE" == "triple_view" ]]; then
   [[ "$ROBOCASA365_CACHE_RESOLUTION" == "480" ]] ||
     { echo "ERROR: triple_view cache construction requires resolution=480" >&2; exit 1; }
 else
   [[ "$ROBOCASA365_CACHE_RESOLUTION" == "auto" ]] ||
     { echo "ERROR: historical concat_view cache construction requires resolution=auto" >&2; exit 1; }
+fi
+if [[ "$ROBOCASA365_CACHE_STAGE" == "full_padding" ]]; then
+  [[ "$ROBOCASA365_CACHE_CAMERA_MODE:$ROBOCASA365_CACHE_RESOLUTION" == "triple_view:480" ]] ||
+    { echo "ERROR: full_padding is pinned to triple_view:480" >&2; exit 1; }
+  EXPECTED_IMAGE_SIZE="480,832,256,768"
+  EXPECTED_LATENT_SHAPE="48,5,30,52"
+elif [[ "$ROBOCASA365_CACHE_CAMERA_MODE:$ROBOCASA365_CACHE_RESOLUTION" == "triple_view:480" ]]; then
+  EXPECTED_IMAGE_SIZE="480,832,256,768"
+  EXPECTED_LATENT_SHAPE="48,5,16,48"
+else
+  EXPECTED_IMAGE_SIZE="192,320,160,320"
+  EXPECTED_LATENT_SHAPE="48,5,10,20"
 fi
 [[ "$ROBOCASA365_NVME_SOURCE_ROOT" == "$PINNED_NVME_SOURCE_ROOT" ]] ||
   { echo "ERROR: ROBOCASA365_NVME_SOURCE_ROOT differs from the audited /nvme destination" >&2; exit 1; }
@@ -114,6 +135,20 @@ path_is_within() {
   local parent="$2"
   [[ "$candidate" == "$parent" || "$candidate" == "$parent/"* ]]
 }
+
+if [[ "$ROBOCASA365_CACHE_PREFLIGHT_ONLY" == 1 ]]; then
+  [[ -n "$ROBOCASA365_CACHE_PREFLIGHT_RECEIPT" ]] ||
+    { echo "ERROR: preflight-only mode requires ROBOCASA365_CACHE_PREFLIGHT_RECEIPT" >&2; exit 1; }
+  PREFLIGHT_RECEIPT_REALPATH="$("$REALPATH_BIN" -m -- "$ROBOCASA365_CACHE_PREFLIGHT_RECEIPT")"
+  PREFLIGHT_RECEIPT_ALLOWED_REALPATH="$("$REALPATH_BIN" -e -- "$PREFLIGHT_RECEIPT_ALLOWED_ROOT")"
+  path_is_within "$PREFLIGHT_RECEIPT_REALPATH" "$PREFLIGHT_RECEIPT_ALLOWED_REALPATH" ||
+    { echo "ERROR: preflight receipt must stay below the pinned personal GPFS output root" >&2; exit 1; }
+  [[ ! -e "$PREFLIGHT_RECEIPT_REALPATH" ]] ||
+    { echo "ERROR: refusing to replace an existing preflight receipt" >&2; exit 1; }
+elif [[ -n "$ROBOCASA365_CACHE_PREFLIGHT_RECEIPT" ]]; then
+  echo "ERROR: preflight receipt is forbidden outside preflight-only mode" >&2
+  exit 1
+fi
 
 BASH_REALPATH="$("$REALPATH_BIN" -e -- /proc/"$$"/exe)"
 [[ "$BASH_REALPATH" == "$BASH_BIN" ]] ||
@@ -216,7 +251,6 @@ if manifest.get("source_dirty") is not False:
 ROBOCASA365_ROOT_REALPATH="$("$REALPATH_BIN" -e -- "$ROBOCASA365_ROOT")"
 ROBOCASA365_SOURCE_ROOT_REALPATH="$("$REALPATH_BIN" -e -- "$ROBOCASA365_SOURCE_ROOT")"
 ROBOCASA365_OUTPUT_REALPATH="$("$REALPATH_BIN" -m -- "$ROBOCASA365_LATENT_CACHE_OUTPUT_ROOT")"
-CACHE_OUTPUT_ALLOWED_REALPATH="$("$REALPATH_BIN" -e -- "$CACHE_OUTPUT_ALLOWED_ROOT")"
 WAN_VAE_REALPATH="$("$REALPATH_BIN" -e -- "$WAN_VAE_PATH")"
 [[ "$ROBOCASA365_ROOT" == "$ROBOCASA365_ROOT_REALPATH" && -d "$ROBOCASA365_ROOT_REALPATH" ]] ||
   { echo "ERROR: ROBOCASA365_ROOT must be an exact canonical directory" >&2; exit 1; }
@@ -224,10 +258,20 @@ WAN_VAE_REALPATH="$("$REALPATH_BIN" -e -- "$WAN_VAE_PATH")"
   { echo "ERROR: ROBOCASA365_SOURCE_ROOT must be an exact canonical directory" >&2; exit 1; }
 [[ "$ROBOCASA365_LATENT_CACHE_OUTPUT_ROOT" == "$ROBOCASA365_OUTPUT_REALPATH" ]] ||
   { echo "ERROR: ROBOCASA365_LATENT_CACHE_OUTPUT_ROOT must be an exact canonical path" >&2; exit 1; }
-if ! path_is_within "$ROBOCASA365_OUTPUT_REALPATH" "$CACHE_OUTPUT_ALLOWED_REALPATH" ||
-   [[ "$ROBOCASA365_OUTPUT_REALPATH" == "$CACHE_OUTPUT_ALLOWED_REALPATH" ]]; then
-  echo "ERROR: cache output must be strictly below the shared-data root" >&2
-  exit 1
+if [[ "$ROBOCASA365_CACHE_STAGE" == "full_padding" ]]; then
+  FULLPAD_NVME_OUTPUT_ALLOWED_REALPATH="$("$REALPATH_BIN" -e -- "$FULLPAD_NVME_OUTPUT_ALLOWED_ROOT")"
+  if ! path_is_within "$ROBOCASA365_OUTPUT_REALPATH" "$FULLPAD_NVME_OUTPUT_ALLOWED_REALPATH" ||
+     [[ "$ROBOCASA365_OUTPUT_REALPATH" == "$FULLPAD_NVME_OUTPUT_ALLOWED_REALPATH" ]]; then
+    echo "ERROR: full-padding cache output must be strictly below the pinned host-NVMe root" >&2
+    exit 1
+  fi
+else
+  CACHE_OUTPUT_ALLOWED_REALPATH="$("$REALPATH_BIN" -e -- "$CACHE_OUTPUT_ALLOWED_ROOT")"
+  if ! path_is_within "$ROBOCASA365_OUTPUT_REALPATH" "$CACHE_OUTPUT_ALLOWED_REALPATH" ||
+     [[ "$ROBOCASA365_OUTPUT_REALPATH" == "$CACHE_OUTPUT_ALLOWED_REALPATH" ]]; then
+    echo "ERROR: post-crop cache output must be strictly below the shared-data root" >&2
+    exit 1
+  fi
 fi
 for input_root in "$ROBOCASA365_ROOT_REALPATH" "$ROBOCASA365_SOURCE_ROOT_REALPATH"; do
   if path_is_within "$ROBOCASA365_OUTPUT_REALPATH" "$input_root" ||
@@ -319,6 +363,9 @@ BUILD_ARGS=(
   --nvme-source-root "${PINNED_NVME_SOURCE_ROOT}"
   --splits "${ROBOCASA365_CACHE_SPLITS}"
   --camera-mode "${ROBOCASA365_CACHE_CAMERA_MODE}"
+  --latent-stage "${ROBOCASA365_CACHE_STAGE}"
+  --expected-image-size "${EXPECTED_IMAGE_SIZE}"
+  --expected-latent-shape "${EXPECTED_LATENT_SHAPE}"
   --loader-workers "${LOADER_WORKERS}"
   --vae-batch-size "${VAE_BATCH_SIZE}"
   --equivalence-samples-per-rank "${EQUIVALENCE_SAMPLES_PER_RANK}"
@@ -326,8 +373,12 @@ BUILD_ARGS=(
 if [[ "$ROBOCASA365_CACHE_RESOLUTION" != "auto" ]]; then
   BUILD_ARGS+=(--resolution "$ROBOCASA365_CACHE_RESOLUTION")
 fi
-exec "$RUNTIME_PYTHON" -m torch.distributed.run \
+if [[ "$ROBOCASA365_CACHE_PREFLIGHT_ONLY" == 1 ]]; then
+  BUILD_ARGS+=(--preflight-only --preflight-receipt-path "$PREFLIGHT_RECEIPT_REALPATH")
+fi
+"$RUNTIME_PYTHON" -m torch.distributed.run \
   --standalone \
   --nproc-per-node="${NUM_GPUS}" \
   "$BUILD_PYTHON" \
   "${BUILD_ARGS[@]}"
+echo "LATENT_CACHE_BUILD_COMPLETE output=$ROBOCASA365_OUTPUT_REALPATH stage=$ROBOCASA365_CACHE_STAGE shape=$EXPECTED_LATENT_SHAPE"

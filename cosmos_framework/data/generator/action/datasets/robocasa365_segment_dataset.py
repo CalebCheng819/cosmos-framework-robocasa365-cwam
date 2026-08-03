@@ -56,6 +56,8 @@ from cosmos_framework.data.generator.action.action_processing import (
 from cosmos_framework.data.generator.action.action_spec import Gripper, Pos, Rot, build_action_spec
 from cosmos_framework.data.generator.action.datasets.robocasa365_control_cache import RoboCasa365ControlCache
 from cosmos_framework.data.generator.action.datasets.robocasa365_latent_cache import (
+    CACHE_STAGE,
+    CACHE_STAGES,
     OFFICIAL_WAN22_VAE_SHA256,
     RoboCasa365LatentCache,
     active_preprocessing_code_sha256,
@@ -140,6 +142,7 @@ class RoboCasa365SegmentDataset(Dataset):
         latent_cache_mode: LatentCacheMode = "disabled",
         latent_cache_verify_shard_checksums: bool = False,
         latent_cache_expected_vae_sha256: str = OFFICIAL_WAN22_VAE_SHA256,
+        latent_cache_expected_stage: str = CACHE_STAGE,
         load_actions: bool = True,
         control_cache_root: str | None = None,
         control_cache_verify_checksums: bool = False,
@@ -155,6 +158,7 @@ class RoboCasa365SegmentDataset(Dataset):
         caption_mode = cast(CaptionMode, caption_mode.lower().strip())
         video_backend = cast(VideoBackend, video_backend.lower().strip())
         latent_cache_mode = cast(LatentCacheMode, latent_cache_mode.lower().strip())
+        latent_cache_expected_stage = latent_cache_expected_stage.lower().strip()
 
         if split not in _VALID_SPLITS:
             raise ValueError(f"Unsupported split={split!r}; use one of {sorted(_VALID_SPLITS)}.")
@@ -172,6 +176,11 @@ class RoboCasa365SegmentDataset(Dataset):
             raise ValueError("latent_cache_root is required when latent_cache_mode='required'.")
         if latent_cache_mode == "disabled" and latent_cache_root is not None:
             raise ValueError("latent_cache_root must be omitted when latent_cache_mode='disabled'.")
+        if latent_cache_expected_stage not in CACHE_STAGES:
+            raise ValueError(
+                "latent_cache_expected_stage must be one of "
+                f"{sorted(CACHE_STAGES)}, got {latent_cache_expected_stage!r}."
+            )
         if float(fps) <= 0:
             raise ValueError(f"fps must be positive, got {fps}.")
         if int(chunk_length) <= 0 or int(chunk_length) % 4 != 0:
@@ -333,6 +342,7 @@ class RoboCasa365SegmentDataset(Dataset):
                 expected_split_manifest_sha256=split_manifest_sha256,
                 expected_ordered_visual_identity_sha256=expected_identity_sha,
                 expected_video_resize_resolution=self._transform_resolution,
+                expected_cache_stage=latent_cache_expected_stage,
                 verify_shard_checksums=latent_cache_verify_shard_checksums,
             )
             if self._latent_cache.video_num_frames != self._chunk_length + 1:

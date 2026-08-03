@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-"""Build the strict RoboCasa365 post-crop Wan latent cache.
+"""Build a strict RoboCasa365 Wan latent cache with an explicit spatial stage.
 
 The builder is designed for one ``torchrun`` process per GPU. Rank ranges are
 contiguous in physical-window order. CPU workers merge overlapping windows
@@ -42,6 +42,8 @@ from torch.utils.data import DataLoader, Dataset
 from cosmos_framework.data.generator.action.datasets.robocasa365_latent_cache import (
     CACHE_SCHEMA_VERSION,
     CACHE_STAGE,
+    CACHE_STAGE_FULL_PADDING,
+    CACHE_STAGES,
     IDENTITY_DIGEST_ALGORITHM,
     OFFICIAL_WAN22_VAE_SHA256,
     WAN_CACHE_VAE_BEHAVIOR_CONTRACT,
@@ -305,6 +307,40 @@ def _derive_image_size(args: argparse.Namespace) -> tuple[int, int, int, int]:
     return tuple(int(value) for value in transformed["image_size"].tolist())  # type: ignore[return-value]
 
 
+def _derive_latent_shape(
+    args: argparse.Namespace,
+    image_size: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    spatial_image_size = image_size[:2] if args.latent_stage == CACHE_STAGE_FULL_PADDING else image_size[2:]
+    spatial = int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["spatial_compression_factor"])
+    temporal = int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["temporal_compression_factor"])
+    return (
+        int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["latent_channels"]),
+        (args.chunk_length + 1 - 1) // temporal + 1,
+        max(spatial_image_size[0] // spatial, 1),
+        max(spatial_image_size[1] // spatial, 1),
+    )
+
+
+def _select_latent_stage(
+    latent: torch.Tensor,
+    *,
+    image_size: torch.Tensor,
+    latent_stage: str,
+) -> torch.Tensor:
+    if latent_stage == CACHE_STAGE_FULL_PADDING:
+        return latent.contiguous()
+    spatial = int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["spatial_compression_factor"])
+    content_h = int(image_size[2].item())
+    content_w = int(image_size[3].item())
+    return latent[
+        :,
+        :,
+        : max(content_h // spatial, 1),
+        : max(content_w // spatial, 1),
+    ].contiguous()
+
+
 def _build_request(
     args: argparse.Namespace,
     *,
@@ -321,30 +357,19 @@ def _build_request(
         raise ValueError("RoboCasa365 dataset manifest must bind inputs.robocasa365_revision.")
 
     expected_image_size = _derive_image_size(args)
-    if expected_image_size != args.expected_image_size:
+    if args.expected_image_size is None:
+        args.expected_image_size = expected_image_size
+    elif expected_image_size != args.expected_image_size:
         raise RuntimeError(
             f"Active VideoResize image_size={expected_image_size} does not match "
             f"--expected-image-size={args.expected_image_size}."
         )
-    expected_shape = (
-        int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["latent_channels"]),
-        (args.chunk_length + 1 - 1)
-        // int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["temporal_compression_factor"])
-        + 1,
-        max(
-            expected_image_size[2]
-            // int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["spatial_compression_factor"]),
-            1,
-        ),
-        max(
-            expected_image_size[3]
-            // int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["spatial_compression_factor"]),
-            1,
-        ),
-    )
-    if expected_shape != args.expected_latent_shape:
+    expected_shape = _derive_latent_shape(args, expected_image_size)
+    if args.expected_latent_shape is None:
+        args.expected_latent_shape = expected_shape
+    elif expected_shape != args.expected_latent_shape:
         raise RuntimeError(
-            f"Derived post-crop latent shape={expected_shape} does not match "
+            f"Derived {args.latent_stage} latent shape={expected_shape} does not match "
             f"--expected-latent-shape={args.expected_latent_shape}."
         )
     if args.chunk_length + 1 not in WAN_CACHE_VAE_BEHAVIOR_CONTRACT["encode_exact_durations"]:
@@ -384,7 +409,7 @@ def _build_request(
             "image_size": list(expected_image_size),
         },
         "post_encode_crop": {
-            "stage": CACHE_STAGE,
+            "stage": args.latent_stage,
             "spatial_rounding": "floor",
             "minimum_latent_size": 1,
         },
@@ -601,6 +626,42 @@ def _load_and_validate_plan(
     return plan
 
 
+def _validate_output_capacity(
+    args: argparse.Namespace,
+    *,
+    stage_root: Path,
+    plan: Mapping[str, Any],
+) -> dict[str, int]:
+    shape = tuple(int(value) for value in args.expected_latent_shape)
+    dtype_bytes = 2 if args.storage_dtype == "bfloat16" else 4
+    record_nbytes = int(np.prod(shape, dtype=np.int64)) * dtype_bytes
+    stride = math.ceil(record_nbytes / args.record_alignment_bytes) * args.record_alignment_bytes
+    expected_shard_bytes = int(plan["unique_records"]) * stride
+    completed_shard_bytes = sum(
+        path.stat().st_size
+        for path in stage_root.glob("shards/shape-*/*.bin")
+        if path.is_file() and not path.is_symlink()
+    )
+    remaining_shard_bytes = max(expected_shard_bytes - completed_shard_bytes, 0)
+    headroom_bytes = max(64 * 1024**3, math.ceil(expected_shard_bytes * 0.05))
+    available_bytes = shutil.disk_usage(stage_root).free
+    required_available_bytes = remaining_shard_bytes + headroom_bytes
+    if available_bytes < required_available_bytes:
+        raise RuntimeError(
+            "Latent-cache output filesystem lacks required free space: "
+            f"available={available_bytes}, required={required_available_bytes}, "
+            f"remaining_shards={remaining_shard_bytes}, headroom={headroom_bytes}."
+        )
+    return {
+        "available_bytes": available_bytes,
+        "required_available_bytes": required_available_bytes,
+        "expected_shard_bytes": expected_shard_bytes,
+        "completed_shard_bytes": completed_shard_bytes,
+        "remaining_shard_bytes": remaining_shard_bytes,
+        "headroom_bytes": headroom_bytes,
+    }
+
+
 def _shard_relative_path(shape: tuple[int, ...], shard_id: int) -> str:
     shape_name = "x".join(str(value) for value in shape)
     return f"shards/shape-{shape_name}/shard-{shard_id:06d}.bin"
@@ -662,6 +723,7 @@ class _VideoWindowBatchDataset(Dataset):
             split: _make_dataset(args, split, source_root) for split in sorted({batch.split for batch in work_batches})
         }
         self.resize = VideoResize()
+        self.resolution = args.resolution
         self.expected_image_size = args.expected_image_size
 
     def __len__(self) -> int:
@@ -673,7 +735,7 @@ class _VideoWindowBatchDataset(Dataset):
         transformed_videos: list[torch.Tensor] = []
         image_sizes: list[torch.Tensor] = []
         for video in videos:
-            transformed = self.resize({"video": video}, None)
+            transformed = self.resize({"video": video}, self.resolution)
             if tuple(int(value) for value in transformed["image_size"].tolist()) != self.expected_image_size:
                 raise RuntimeError(
                     f"VideoResize drifted from expected image_size={self.expected_image_size}: "
@@ -922,8 +984,8 @@ def _prepare_real_backend_preflight(
                 "Real backend union decode is not bitwise equal to the ordinary online decode path: "
                 f"split={split}, sample_index={indices[position]}."
             )
-        singleton_resized = resize({"video": singleton_pixels}, None)
-        union_resized = resize({"video": union_videos[position]}, None)
+        singleton_resized = resize({"video": singleton_pixels}, args.resolution)
+        union_resized = resize({"video": union_videos[position]}, args.resolution)
         if (
             not torch.equal(singleton_resized["video"], union_resized["video"])
             or not torch.equal(singleton_resized["image_size"], union_resized["image_size"])
@@ -933,7 +995,7 @@ def _prepare_real_backend_preflight(
                 f"split={split}, sample_index={indices[position]}."
             )
 
-    transformed = [resize({"video": video}, None) for video in union_videos]
+    transformed = [resize({"video": video}, args.resolution) for video in union_videos]
     resized_videos = torch.stack([item["video"] for item in transformed], dim=0)
     image_sizes = torch.stack([item["image_size"] for item in transformed], dim=0)
     if any(
@@ -1143,6 +1205,16 @@ def _distributed_real_backend_preflight(
 
     local_receipt = {
         **base_receipt,
+        "latent_stage": args.latent_stage,
+        "expected_image_size": list(args.expected_image_size),
+        "expected_latent_shape": list(args.expected_latent_shape),
+        "cuda_device": torch.cuda.get_device_name(device) if device.type == "cuda" else str(device),
+        "cuda_max_memory_allocated_bytes": (
+            int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0
+        ),
+        "cuda_max_memory_reserved_bytes": (
+            int(torch.cuda.max_memory_reserved(device)) if device.type == "cuda" else 0
+        ),
         "requested_vae_batch_size": requested,
         "effective_vae_batch_size": effective,
         "requested_batch_gate": requested_result,
@@ -1243,22 +1315,17 @@ def _build_rank_shards(
                 batched = tokenizer.encode(video).contiguous().float()
                 if not torch.isfinite(batched).all():
                     raise RuntimeError(f"Wan encoder produced non-finite values for ordinals={ordinals!r}.")
-                cropped: list[torch.Tensor] = []
+                selected_latents: list[torch.Tensor] = []
                 singleton_equal: list[bool] = []
                 for batch_index, ordinal in enumerate(ordinals):
-                    orig_h = int(image_size[batch_index, 2].item())
-                    orig_w = int(image_size[batch_index, 3].item())
-                    spatial = int(WAN_CACHE_VAE_BEHAVIOR_CONTRACT["spatial_compression_factor"])
-                    latent = batched[
-                        batch_index,
-                        :,
-                        :,
-                        : max(orig_h // spatial, 1),
-                        : max(orig_w // spatial, 1),
-                    ].contiguous()
+                    latent = _select_latent_stage(
+                        batched[batch_index],
+                        image_size=image_size[batch_index],
+                        latent_stage=args.latent_stage,
+                    )
                     if tuple(latent.shape) != shape:
                         raise RuntimeError(
-                            f"Post-crop Wan latent shape mismatch at ordinal={ordinal}: "
+                            f"Wan latent shape mismatch for stage={args.latent_stage!r} at ordinal={ordinal}: "
                             f"got={tuple(latent.shape)}, expected={shape}."
                         )
                     should_check = singleton_checks < args.equivalence_samples_per_rank
@@ -1268,13 +1335,11 @@ def _build_rank_shards(
                             singleton = batched
                         else:
                             singleton = tokenizer.encode(video[batch_index : batch_index + 1]).contiguous().float()
-                        singleton = singleton[
-                            0,
-                            :,
-                            :,
-                            : max(orig_h // spatial, 1),
-                            : max(orig_w // spatial, 1),
-                        ].contiguous()
+                        singleton = _select_latent_stage(
+                            singleton[0],
+                            image_size=image_size[batch_index],
+                            latent_stage=args.latent_stage,
+                        )
                         if not torch.equal(latent, singleton):
                             raise RuntimeError(
                                 "Batched Wan encode is not bitwise equal to the active online singleton path "
@@ -1282,10 +1347,10 @@ def _build_rank_shards(
                             )
                         is_equal = True
                         singleton_checks += 1
-                    cropped.append(latent)
+                    selected_latents.append(latent)
                     singleton_equal.append(is_equal)
 
-                for ordinal, latent, is_equal in zip(ordinals, cropped, singleton_equal, strict=True):
+                for ordinal, latent, is_equal in zip(ordinals, selected_latents, singleton_equal, strict=True):
                     shard_id = ordinal // args.records_per_shard
                     if current_writer is None or current_writer.shard_id != shard_id:
                         if current_writer is not None:
@@ -1470,7 +1535,7 @@ def _finalize_and_publish(
             "shape": list(shape),
             "storage_dtype": args.storage_dtype,
             "logical_dtype": "float32",
-            "stage": CACHE_STAGE,
+            "stage": args.latent_stage,
             "record_nbytes": record_nbytes,
             "record_stride_bytes": stride,
             "byte_order": "little",
@@ -1484,8 +1549,11 @@ def _finalize_and_publish(
             "status": "passed",
             "torch_equal": True,
             "num_samples": singleton_checks,
-            "online_reference": "active_singleton_Wan2pt2VAEInterface_encode_then_post_padding_crop",
-            "candidate": f"batch_encode_size_{args.vae_batch_size}_then_{args.storage_dtype}_roundtrip",
+            "online_reference": f"active_singleton_Wan2pt2VAEInterface_encode_then_{args.latent_stage}",
+            "candidate": (
+                f"batch_encode_size_{args.vae_batch_size}_then_{args.latent_stage}_"
+                f"then_{args.storage_dtype}_roundtrip"
+            ),
             "storage_roundtrip_samples": storage_checks,
         },
         "provenance": {
@@ -1539,10 +1607,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--records-per-shard", type=int, default=4096)
     parser.add_argument("--record-alignment-bytes", type=int, default=4096)
     parser.add_argument("--storage-dtype", choices=("bfloat16", "float32"), default="bfloat16")
-    parser.add_argument("--expected-latent-shape", default="48,5,10,20")
-    parser.add_argument("--expected-image-size", default="192,320,160,320")
+    parser.add_argument("--latent-stage", choices=sorted(CACHE_STAGES), default=CACHE_STAGE)
+    parser.add_argument("--expected-latent-shape")
+    parser.add_argument("--expected-image-size")
     parser.add_argument("--log-every-records", type=int, default=1024)
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--preflight-receipt-path", type=Path)
     args = parser.parse_args()
     args.dataset_root = args.dataset_root.resolve(strict=True)
     args.source_root = args.source_root.resolve(strict=True)
@@ -1550,19 +1621,39 @@ def _parse_args() -> argparse.Namespace:
     args.output_root = args.output_root.resolve(strict=False)
     if args.nvme_source_root is not None:
         args.nvme_source_root = args.nvme_source_root.resolve(strict=False)
+    if args.preflight_receipt_path is not None:
+        args.preflight_receipt_path = args.preflight_receipt_path.resolve(strict=False)
     args.splits = tuple(part.strip() for part in args.splits.split(",") if part.strip())
     if not args.splits or len(set(args.splits)) != len(args.splits):
         parser.error("--splits must contain one or more unique comma-separated split names.")
-    args.expected_latent_shape = _parse_int_tuple(
-        args.expected_latent_shape,
-        length=4,
-        label="--expected-latent-shape",
-    )
-    args.expected_image_size = _parse_int_tuple(
-        args.expected_image_size,
-        length=4,
-        label="--expected-image-size",
-    )
+    if args.expected_latent_shape is not None:
+        args.expected_latent_shape = _parse_int_tuple(
+            args.expected_latent_shape,
+            length=4,
+            label="--expected-latent-shape",
+        )
+    if args.expected_image_size is not None:
+        args.expected_image_size = _parse_int_tuple(
+            args.expected_image_size,
+            length=4,
+            label="--expected-image-size",
+        )
+    derived_image_size = _derive_image_size(args)
+    if args.expected_image_size is None:
+        args.expected_image_size = derived_image_size
+    elif args.expected_image_size != derived_image_size:
+        parser.error(
+            f"--expected-image-size={args.expected_image_size} does not match active "
+            f"VideoResize={derived_image_size}."
+        )
+    derived_latent_shape = _derive_latent_shape(args, derived_image_size)
+    if args.expected_latent_shape is None:
+        args.expected_latent_shape = derived_latent_shape
+    elif args.expected_latent_shape != derived_latent_shape:
+        parser.error(
+            f"--expected-latent-shape={args.expected_latent_shape} does not match "
+            f"stage={args.latent_stage!r} derived shape={derived_latent_shape}."
+        )
     for name in (
         "loader_workers",
         "loader_prefetch_factor",
@@ -1576,6 +1667,8 @@ def _parse_args() -> argparse.Namespace:
             parser.error(f"--{name.replace('_', '-')} has an invalid value.")
     if args.output_root == args.dataset_root or args.output_root == args.source_root:
         parser.error("--output-root must not equal the dataset or raw source root.")
+    if args.preflight_only != (args.preflight_receipt_path is not None):
+        parser.error("--preflight-only and --preflight-receipt-path must be supplied together.")
     return args
 
 
@@ -1607,6 +1700,29 @@ def main() -> None:
         source_root=active_source_root,
     )
     args.real_backend_preflight_receipts = preflight_receipts
+    if args.preflight_only:
+        assert args.preflight_receipt_path is not None
+        if rank == 0:
+            _write_json_atomic(
+                args.preflight_receipt_path,
+                {
+                    "schema_version": 1,
+                    "kind": "robocasa365_wan_full_padding_eight_gpu_preflight",
+                    "status": "passed",
+                    "world_size": world_size,
+                    "latent_stage": args.latent_stage,
+                    "expected_image_size": list(args.expected_image_size),
+                    "expected_latent_shape": list(args.expected_latent_shape),
+                    "requested_vae_batch_size": args.requested_vae_batch_size,
+                    "effective_vae_batch_size": args.vae_batch_size,
+                    "rank_receipts": preflight_receipts,
+                },
+            )
+            print(f"PREFLIGHT_ONLY_COMPLETE receipt={args.preflight_receipt_path}", flush=True)
+        _barrier(world_size)
+        if world_size > 1:
+            dist.destroy_process_group()
+        return
 
     if rank == 0:
         try:
@@ -1665,6 +1781,7 @@ def main() -> None:
                         request_sha256=request_sha256,
                         cache_id=cache_id,
                     )
+                capacity_gate = _validate_output_capacity(args, stage_root=stage_root, plan=plan)
                 coordination = {
                     "error": None,
                     "already_published": False,
@@ -1672,6 +1789,7 @@ def main() -> None:
                     "request_sha256": request_sha256,
                     "cache_id": cache_id,
                     "plan_sha256": sha256_file(stage_root / "build_plan.json"),
+                    "capacity_gate": capacity_gate,
                 }
         except BaseException as error:  # noqa: BLE001 - broadcast rank-zero planning failures
             coordination = {
@@ -1695,6 +1813,8 @@ def main() -> None:
             dist.destroy_process_group()
         return
     stage_root = Path(coordination["stage_root"])
+    if rank == 0:
+        print(f"OUTPUT_CAPACITY_GATE {json.dumps(coordination['capacity_gate'], sort_keys=True)}", flush=True)
     local_error = None
     try:
         plan = json.loads((stage_root / "build_plan.json").read_text())
