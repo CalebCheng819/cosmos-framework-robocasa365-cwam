@@ -5,12 +5,12 @@ from typing import Any
 
 import attrs
 
-from cosmos_framework.utils.lazy_config import LazyDict
 from cosmos_framework.configs.base.defaults.activation_checkpointing import ActivationCheckpointingConfig
 from cosmos_framework.configs.base.defaults.compile import CompileConfig
 from cosmos_framework.configs.base.defaults.ema import EMAConfig
 from cosmos_framework.configs.base.defaults.parallelism import ParallelismConfig
 from cosmos_framework.configs.base.defaults.reasoner import VLMConfig
+from cosmos_framework.utils.lazy_config import LazyDict
 
 
 @attrs.define(slots=False)
@@ -248,6 +248,17 @@ class OmniMoTModelConfig:
     action_gen: bool = False  # whether to use action related parameters and condition/generate action tokens
     max_action_dim: int = 32  # maximum dimension of the action space, we need to pad the data to this dimension.
     num_embodiment_domains: int = 32  # number of domains for the domain-aware linear layer
+    # Optional action-conditioned residual over task and clean visual tokens.
+    # This preserves the official MoT path and adds a soft action-relevance route
+    # immediately before action decoding.
+    action_relevance_enabled: bool = False
+    action_relevance_routing_dim: int = 512
+    action_relevance_num_heads: int = 8
+    action_relevance_topk: int = 32
+    action_relevance_initial_gate: float = 0.01
+    action_relevance_sparsity_weight: float = 0.01
+    action_relevance_sparsity_start_iter: int = 1000
+    action_relevance_sparsity_anneal_iters: int = 4000
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

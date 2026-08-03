@@ -9,6 +9,12 @@ from torch import nn
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 
+from cosmos_framework.data.generator.sequence_packing import ModalityData, PackedSequence
+from cosmos_framework.data.generator.sequence_packing.natten import verify_natten_parameter_list
+from cosmos_framework.model.generator.mot.action_relevance import (
+    ActionRelevanceAdapter,
+    conditioned_vision_token_indexes,
+)
 from cosmos_framework.model.generator.mot.attention import SplitInfo, build_packed_sequence
 from cosmos_framework.model.generator.mot.context_parallel_utils import (
     get_context_parallel_last_hidden_state,
@@ -17,8 +23,6 @@ from cosmos_framework.model.generator.mot.context_parallel_utils import (
 from cosmos_framework.model.generator.mot.domain_aware_linear import DomainAwareLinear
 from cosmos_framework.model.generator.mot.modeling_utils import TimestepEmbedder, has_noisy_tokens
 from cosmos_framework.model.generator.utils.memory import MemoryState
-from cosmos_framework.data.generator.sequence_packing import ModalityData, PackedSequence
-from cosmos_framework.data.generator.sequence_packing.natten import verify_natten_parameter_list
 
 
 class Cosmos3VFMNetworkConfig(PretrainedConfig):
@@ -47,6 +51,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         num_embodiment_domains=32,
         temporal_compression_factor_vision=4,
         temporal_compression_factor_action=1,
+        action_relevance_enabled=False,
+        action_relevance_routing_dim=512,
+        action_relevance_num_heads=8,
+        action_relevance_topk=32,
+        action_relevance_initial_gate=0.01,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -84,10 +93,17 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.action_dim = action_dim
         self.num_embodiment_domains = num_embodiment_domains
         self.temporal_compression_factor_action = temporal_compression_factor_action
+        self.action_relevance_enabled = action_relevance_enabled
+        self.action_relevance_routing_dim = action_relevance_routing_dim
+        self.action_relevance_num_heads = action_relevance_num_heads
+        self.action_relevance_topk = action_relevance_topk
+        self.action_relevance_initial_gate = action_relevance_initial_gate
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
             )
+        if self.action_relevance_enabled and not self.action_gen:
+            raise ValueError("action_relevance_enabled=True requires action_gen=True")
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -158,6 +174,14 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             self.llm2action = DomainAwareLinear(self.hidden_size, self.action_dim, self.num_embodiment_domains)
 
             self.action_modality_embed = nn.Parameter(torch.zeros(self.hidden_size))
+            if config.action_relevance_enabled:
+                self.action_relevance = ActionRelevanceAdapter(
+                    hidden_size=self.hidden_size,
+                    routing_dim=config.action_relevance_routing_dim,
+                    num_heads=config.action_relevance_num_heads,
+                    topk=config.action_relevance_topk,
+                    initial_residual_gate=config.action_relevance_initial_gate,
+                )
 
         if config.sound_gen:
             self.sound_dim = config.sound_dim
@@ -196,6 +220,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
 
             std = 1.0 / math.sqrt(self.hidden_size)
             torch.nn.init.trunc_normal_(self.action_modality_embed, std=std, a=-3 * std, b=3 * std)
+            if self.config.action_relevance_enabled:
+                self.action_relevance.init_weights()
 
         if self.config.sound_gen:
             # sound2llm: input_size=sound_dim, output_size=hidden_size
@@ -1083,6 +1109,35 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             parallel_dims=sequence_shard_parallel_dims,
         )  # [N_total,hidden_size]
         output_dict = dict()
+
+        if self.config.action_relevance_enabled:
+            if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                raise ValueError("action relevance requires packed action tokens")
+            if packed_seq.vision is None:
+                raise ValueError("action relevance requires packed vision tokens")
+            if not isinstance(packed_seq.text_indexes, torch.Tensor):
+                raise TypeError("action relevance requires finalized text indexes")
+            if not isinstance(packed_seq.position_ids, torch.Tensor):
+                raise TypeError("action relevance requires finalized position IDs")
+
+            clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
+            context_indexes = torch.cat((packed_seq.text_indexes, clean_vision_indexes))
+            context_is_vision = torch.cat(
+                (
+                    torch.zeros_like(packed_seq.text_indexes, dtype=torch.bool),
+                    torch.ones_like(clean_vision_indexes, dtype=torch.bool),
+                )
+            )
+            context_order = context_indexes.argsort()
+            last_hidden_state, action_relevance = self.action_relevance(
+                last_hidden_state,
+                action_indexes=packed_seq.action.sequence_indexes,
+                context_indexes=context_indexes[context_order],
+                context_is_vision=context_is_vision[context_order],
+                position_ids=packed_seq.position_ids,
+                sample_lens=packed_seq.sample_lens,
+            )
+            output_dict.update({f"action_relevance_{name}": value for name, value in action_relevance.items()})
 
         # decode vision tokens
         if self.config.vision_gen:

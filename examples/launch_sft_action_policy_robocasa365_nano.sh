@@ -21,7 +21,7 @@
 #                            that the legacy packed loader restarts its data stream
 #   EXTRA_TAIL_OVERRIDES     space-separated Hydra overrides
 
-TOML_FILE="examples/toml/sft_config/action_policy_robocasa365_nano.toml"
+: "${TOML_FILE:=examples/toml/sft_config/action_policy_robocasa365_nano.toml}"
 : "${BASE_CHECKPOINT_PATH:=examples/checkpoints/Cosmos3-Nano}"
 : "${NPROC_PER_NODE:=8}"
 : "${RUN_NAME:=action_policy_robocasa365_nano_$(date -u +%Y%m%dT%H%M%SZ)}"

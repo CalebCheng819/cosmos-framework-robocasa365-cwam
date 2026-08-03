@@ -222,6 +222,11 @@ class OmniMoTModel(ImaginaireModel):
                 action_dim=self.config.max_action_dim,
                 num_embodiment_domains=self.config.num_embodiment_domains,
                 temporal_compression_factor_vision=self.tokenizer_vision_gen.temporal_compression_factor,
+                action_relevance_enabled=self.config.action_relevance_enabled,
+                action_relevance_routing_dim=self.config.action_relevance_routing_dim,
+                action_relevance_num_heads=self.config.action_relevance_num_heads,
+                action_relevance_topk=self.config.action_relevance_topk,
+                action_relevance_initial_gate=self.config.action_relevance_initial_gate,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -1047,6 +1052,7 @@ class OmniMoTModel(ImaginaireModel):
             is_image_batch=gen_data_clean.is_image_batch,
             timesteps_action=timesteps_action,
             timesteps_sound=timesteps_sound,
+            iteration=iteration,
         )
 
         # Pixel-space video shapes for VAE FLOPs estimation in callbacks (e.g. MFU).
@@ -1151,6 +1157,7 @@ class OmniMoTModel(ImaginaireModel):
         is_image_batch: bool,
         timesteps_action: torch.Tensor | None = None,
         timesteps_sound: torch.Tensor | None = None,
+        iteration: int = 0,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute flow matching loss and auxiliary load balancing losses.
 
@@ -1227,6 +1234,38 @@ class OmniMoTModel(ImaginaireModel):
                 losses_dict["flow_matching_loss_action"] = dummy_loss
         else:
             losses_dict["flow_matching_loss_action"] = torch.tensor(0.0, **self.tensor_kwargs_fp32)
+
+        if self.config.action_relevance_enabled:
+            required_metrics = (
+                "action_relevance_sparsity_loss",
+                "action_relevance_entropy",
+                "action_relevance_topk_mass",
+                "action_relevance_effective_support",
+                "action_relevance_residual_gate",
+            )
+            missing_metrics = [name for name in required_metrics if name not in out_net]
+            if missing_metrics:
+                raise ValueError(f"action relevance output is missing metrics: {missing_metrics}")
+
+            start_iter = self.config.action_relevance_sparsity_start_iter
+            anneal_iters = self.config.action_relevance_sparsity_anneal_iters
+            if start_iter < 0 or anneal_iters <= 0:
+                raise ValueError("action relevance sparsity schedule must use start>=0 and anneal_iters>0")
+            anneal_fraction = min(max((iteration - start_iter) / anneal_iters, 0.0), 1.0)
+            sparsity_weight = self.config.action_relevance_sparsity_weight * anneal_fraction
+            sparsity_loss = out_net["action_relevance_sparsity_loss"]
+            total_loss += sparsity_loss * sparsity_weight
+            losses_dict.update(
+                action_relevance_sparsity_loss=sparsity_loss,
+                action_relevance_sparsity_weight=torch.tensor(
+                    sparsity_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+                action_relevance_entropy=out_net["action_relevance_entropy"],
+                action_relevance_topk_mass=out_net["action_relevance_topk_mass"],
+                action_relevance_effective_support=out_net["action_relevance_effective_support"],
+                action_relevance_residual_gate=out_net["action_relevance_residual_gate"],
+            )
 
         if self.config.sound_gen:
             if data_batch_packed.sound is not None:
@@ -4366,6 +4405,7 @@ class OmniMoTModel(ImaginaireModel):
                 - "preds_vision": list[Tensor[C,T,H,W]], one per sample.
                 - "preds_action": Velocity prediction for action modality (if action_gen enabled).
                 - "preds_sound": Velocity prediction for sound modality (if sound_gen enabled).
+                - "action_relevance_*": S1 routing losses and diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
         """
@@ -4382,7 +4422,7 @@ class OmniMoTModel(ImaginaireModel):
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
-            if "lbl_metadata_" in key:
+            if key.startswith("action_relevance_") or "lbl_metadata_" in key:
                 output_dict[key] = value
 
         return output_dict
