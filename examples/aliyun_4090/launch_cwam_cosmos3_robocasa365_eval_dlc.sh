@@ -32,11 +32,21 @@ sha256_file() {
     sha256sum -- "$1" | awk '{print $1}'
 }
 
+require_immutable_source_file() {
+    local path="$1"
+    [[ -f "$path" && ! -L "$path" ]] ||
+        die "immutable source file is missing or unsafe: $path"
+    [[ "$(stat -c %a -- "$path")" == 444 ]] ||
+        die "immutable source file must have mode 0444: $path"
+}
+
 [[ "$(realpath -e -- "$COSMOS_SOURCE")" == "$COSMOS_SOURCE" ]] ||
     die "COSMOS_SOURCE must be canonical"
 [[ -x "$ROBOCASA_ENV/bin/python" ]] || die "RoboCasa Python is not executable"
-[[ -x "$EGL_PROBE" && -x "$EGL_MATRIX" && -x "$EGL_RECEIPT_GENERATOR" && -x "$FORMAL_RUNNER" ]] ||
-    die "immutable DLC evaluation scripts are missing or not executable"
+require_immutable_source_file "$EGL_PROBE"
+require_immutable_source_file "$EGL_MATRIX"
+require_immutable_source_file "$EGL_RECEIPT_GENERATOR"
+require_immutable_source_file "$FORMAL_RUNNER"
 [[ -f "$EGL_VENDOR_JSON" && ! -L "$EGL_VENDOR_JSON" ]] ||
     die "NVIDIA EGL vendor JSON is missing"
 [[ "$(stat -c %a -- "$EGL_VENDOR_JSON")" == 644 ]] ||
@@ -57,7 +67,7 @@ export ROBOCASA_READY_MARKER_SHA256="$EXPECTED_ROBOCASA_ENV_READY_MARKER_SHA256"
 export EXPECTED_EGL_PROBE_SHA256="$(sha256_file "$EGL_PROBE")"
 export EXPECTED_EGL_VENDOR_JSON_SHA256="$(sha256_file "$EGL_VENDOR_JSON")"
 
-"$EGL_MATRIX" | tee "$EGL_CONTROL_ROOT/egl-mapping-matrix.log"
+bash "$EGL_MATRIX" | tee "$EGL_CONTROL_ROOT/egl-mapping-matrix.log"
 python3 "$EGL_RECEIPT_GENERATOR" \
     --evidence-root "$EVIDENCE_ROOT" \
     --output "$EGL_MAPPING_RECEIPT" \
@@ -75,4 +85,4 @@ export EGL_MAPPING_RECEIPT
 export EXPECTED_EGL_MAPPING_RECEIPT_SHA256="$(sha256_file "$EGL_MAPPING_RECEIPT")"
 
 echo "DLC_EGL_PREFLIGHT_PASSED receipt=$EGL_MAPPING_RECEIPT sha256=$EXPECTED_EGL_MAPPING_RECEIPT_SHA256"
-exec "$FORMAL_RUNNER"
+exec bash "$FORMAL_RUNNER"

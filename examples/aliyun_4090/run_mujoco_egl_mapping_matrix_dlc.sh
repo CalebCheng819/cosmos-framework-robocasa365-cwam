@@ -32,7 +32,7 @@ EVIDENCE_ROOT="$(realpath -m -- "$EVIDENCE_ROOT")"
 [[ -x "$ENVIRONMENT/bin/python" ]]
 [[ -f "$MARKER" && "$(stat -c %a "$MARKER")" == 444 ]]
 [[ "$(sha256sum "$MARKER" | awk '{print $1}')" == "$ROBOCASA_READY_MARKER_SHA256" ]]
-[[ -x "$PROBE" && "$(stat -c %a "$PROBE")" == 555 ]]
+[[ -f "$PROBE" && ! -L "$PROBE" && "$(stat -c %a "$PROBE")" == 444 ]]
 [[ "$(sha256sum "$PROBE" | awk '{print $1}')" == "$EXPECTED_EGL_PROBE_SHA256" ]]
 [[ -f "$EGL_VENDOR_JSON" && "$(stat -c %a "$EGL_VENDOR_JSON")" == 644 ]]
 [[ "$(sha256sum "$EGL_VENDOR_JSON" | awk '{print $1}')" == "$EXPECTED_EGL_VENDOR_JSON_SHA256" ]]

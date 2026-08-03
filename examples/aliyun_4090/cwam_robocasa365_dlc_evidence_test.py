@@ -177,13 +177,16 @@ def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     assert "run_mujoco_egl_mapping_matrix_dlc.sh" in script
     assert "generate_cwam_dlc_egl_mapping_receipt.py" in script
     assert 'export EXPECTED_EGL_MAPPING_RECEIPT_SHA256="$(sha256_file' in script
-    assert 'exec "$FORMAL_RUNNER"' in script
+    assert 'require_immutable_source_file "$EGL_PROBE"' in script
+    assert 'bash "$EGL_MATRIX"' in script
+    assert 'exec bash "$FORMAL_RUNNER"' in script
 
     matrix = MATRIX.read_text(encoding="utf-8")
     assert "readonly GPU_COUNT=8" in matrix
     assert "GPU_INDICES" in matrix
     assert "ALL_VISIBLE_DEVICES" in matrix
     assert "nvidia-smi pmon -s um -c 2 -d 1" in matrix
+    assert '[[ -f "$PROBE" && ! -L "$PROBE" && "$(stat -c %a "$PROBE")" == 444 ]]' in matrix
 
 
 def test_egl_generator_requires_exact_eight_gpu_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
