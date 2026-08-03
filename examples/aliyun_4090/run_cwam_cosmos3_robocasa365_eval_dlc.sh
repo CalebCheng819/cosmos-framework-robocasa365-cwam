@@ -14,6 +14,8 @@ export PYTHONNOUSERSITE=1
 
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable Cosmos source snapshot}"
 : "${COSMOS_ENV:?Set COSMOS_ENV to the pinned Cosmos environment}"
+: "${COSMOS_ENV_ARCHIVE:?Set the complete Cosmos environment archive}"
+: "${COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT:?Set the environment archive publication receipt}"
 : "${ROBOCASA_ENV:?Set ROBOCASA_ENV to the pinned RoboCasa environment}"
 : "${DEMIAN_REPO:?Set DEMIAN_REPO to the pinned DeMiAn checkout}"
 : "${ROBOCASA_REPO:?Set ROBOCASA_REPO to the pinned RoboCasa checkout}"
@@ -64,6 +66,8 @@ export PYTHONNOUSERSITE=1
 : "${EXPECTED_WAN2PT2_VAE_SHA256:?Set EXPECTED_WAN2PT2_VAE_SHA256}"
 : "${EXPECTED_QWEN_TOKENIZER_MANIFEST_SHA256:?Set EXPECTED_QWEN_TOKENIZER_MANIFEST_SHA256}"
 : "${EXPECTED_COSMOS_ENV_READY_MARKER_SHA256:?Set the DLC-native Cosmos ready-marker SHA256}"
+: "${EXPECTED_COSMOS_ENV_ARCHIVE_SHA256:?Set the complete Cosmos environment archive SHA256}"
+: "${EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256:?Set the environment archive receipt SHA256}"
 : "${EXPECTED_ROBOCASA_ENV_READY_MARKER_SHA256:?Set the DLC-native RoboCasa ready-marker SHA256}"
 : "${EXPECTED_ROBOCASA_TORCHCODEC_RELAY_RECEIPT_SHA256:?Set the plain torchcodec relay receipt SHA256}"
 : "${EGL_MAPPING_RECEIPT:?Set the verified eight-GPU EGL mapping receipt}"
@@ -114,6 +118,7 @@ readonly CHECKPOINT_HELPER_REL="examples/h_cluster/cwam_serving_checkpoint_manif
 readonly SOURCE_PROVENANCE_HELPER_REL="examples/aliyun_4090/cwam_dsw_input_provenance.py"
 readonly DLC_EVIDENCE_HELPER_REL="examples/aliyun_4090/cwam_robocasa365_dlc_evidence.py"
 readonly RUNTIME_CLOSURE_HELPER_REL="examples/aliyun_4090/cwam_dlc_runtime_closure.py"
+readonly COSMOS_ENV_ARCHIVE_HELPER_REL="examples/aliyun_4090/cwam_cosmos_env_archive.py"
 readonly ASSET_VERIFY_HELPER_REL="examples/h_cluster/cwam_robocasa_asset_manifest.py"
 readonly CLEANUP_GRACE_SECONDS=30
 readonly SETSID=/usr/bin/setsid
@@ -125,7 +130,8 @@ readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814
 readonly FORMAL_CHECKPOINTS_ROOT="$FORMAL_INPUT_ROOT/checkpoints"
 readonly FORMAL_RUNTIME_CLOSURE_ROOT="$FORMAL_INPUT_ROOT/runtime/cosmos-r21-dlc-runtime-v1"
 readonly FORMAL_RUNTIME_CLOSURE_MANIFEST="$FORMAL_INPUT_ROOT/config/cosmos-r21-dlc-runtime-v1-manifest.json"
-readonly FORMAL_COSMOS_ENV_SOURCE="$FORMAL_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"
+readonly FORMAL_COSMOS_ENV_ARCHIVE="$FORMAL_INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT="${FORMAL_INPUT_ROOT%/inputs}/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
 readonly FORMAL_ROBOCASA_REPO_SOURCE="$FORMAL_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
 readonly PINNED_COSMOS_ENV_SOURCE_COMMIT="09f23119ea92c707207bba55565e7a09d16896a2"
 readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
@@ -244,8 +250,37 @@ DLC_LOCAL_SCRATCH_PARENT="$(canonical_existing_dir "$DLC_LOCAL_SCRATCH_PARENT")"
 
 readonly FORMAL_NVME_STAGING_ROOT="${FORMAL_NVME_INPUT_ROOT%/inputs}/staging"
 readonly RUNTIME_CLOSURE_HELPER="$COSMOS_SOURCE/$RUNTIME_CLOSURE_HELPER_REL"
+readonly COSMOS_ENV_ARCHIVE_HELPER="$COSMOS_SOURCE/$COSMOS_ENV_ARCHIVE_HELPER_REL"
 [[ -f "$RUNTIME_CLOSURE_HELPER" && ! -L "$RUNTIME_CLOSURE_HELPER" ]] ||
     die "immutable DLC runtime closure helper is missing"
+[[ -f "$COSMOS_ENV_ARCHIVE_HELPER" && ! -L "$COSMOS_ENV_ARCHIVE_HELPER" ]] ||
+    die "immutable Cosmos environment archive helper is missing"
+[[ "$(stat -c %a -- "$COSMOS_ENV_ARCHIVE_HELPER")" == 444 ]] ||
+    die "immutable Cosmos environment archive helper must have mode 0444"
+COSMOS_ENV_ARCHIVE="$(canonical_existing_file "$COSMOS_ENV_ARCHIVE")"
+COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT="$(
+    canonical_existing_file "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT"
+)"
+require_exact_value \
+    cosmos_environment_archive_path \
+    "$COSMOS_ENV_ARCHIVE" \
+    "$FORMAL_COSMOS_ENV_ARCHIVE"
+require_exact_value \
+    cosmos_environment_archive_publication_receipt_path \
+    "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
+    "$FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT"
+verify_sha256 \
+    cosmos_environment_archive \
+    "$COSMOS_ENV_ARCHIVE" \
+    "$EXPECTED_COSMOS_ENV_ARCHIVE_SHA256"
+verify_sha256 \
+    cosmos_environment_archive_publication_receipt \
+    "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
+    "$EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256"
+[[ "$(stat -c %a -- "$COSMOS_ENV_ARCHIVE")" == 444 ]] ||
+    die "Cosmos environment archive must have mode 0444"
+[[ "$(stat -c %a -- "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT")" == 444 ]] ||
+    die "Cosmos environment archive publication receipt must have mode 0444"
 RUNTIME_CLOSURE_MANIFEST="$(canonical_existing_file "$RUNTIME_CLOSURE_MANIFEST")"
 RUNTIME_CLOSURE_PUBLICATION_RECEIPT="$(
     canonical_existing_file "$RUNTIME_CLOSURE_PUBLICATION_RECEIPT"
@@ -339,7 +374,35 @@ stage_directory() {
     echo "DLC_LOCAL_STAGE_READY label=$label source=$source destination=$destination"
 }
 
-stage_directory cosmos_environment "$FORMAL_COSMOS_ENV_SOURCE" "$FORMAL_COSMOS_ENV"
+stage_cosmos_environment_archive() {
+    local destination="$FORMAL_COSMOS_ENV"
+    local parent
+    local stage
+
+    destination="$(realpath -m -- "$destination")"
+    parent="$(dirname -- "$destination")"
+    stage="${destination}.incomplete-${EVAL_EXPERIMENT_ID}-$$"
+    [[ ! -e "$destination" && ! -L "$destination" ]] ||
+        die "Cosmos environment destination already exists: $destination"
+    [[ ! -e "$stage" && ! -L "$stage" ]] ||
+        die "Cosmos environment stage already exists: $stage"
+    mkdir --parents --mode=0755 -- "$parent"
+    mkdir --mode=0755 -- "$stage"
+    python3 "$COSMOS_ENV_ARCHIVE_HELPER" verify-extract \
+        --archive "$COSMOS_ENV_ARCHIVE" \
+        --receipt "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
+        --expected-archive-sha256 "$EXPECTED_COSMOS_ENV_ARCHIVE_SHA256" \
+        --expected-receipt-sha256 "$EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256" \
+        --expected-ready-marker-sha256 "$EXPECTED_COSMOS_ENV_READY_MARKER_SHA256" \
+        --stage "$stage"
+    sync -f -- "$stage"
+    mv -T -- "$stage" "$destination"
+    [[ -d "$destination" && ! -L "$destination" ]] ||
+        die "Cosmos environment archive publication failed"
+    echo "DLC_LOCAL_STAGE_READY label=cosmos_environment_archive source=$COSMOS_ENV_ARCHIVE destination=$destination"
+}
+
+stage_cosmos_environment_archive
 stage_directory robocasa_checkout "$FORMAL_ROBOCASA_REPO_SOURCE" "$FORMAL_ROBOCASA_REPO"
 stage_directory \
     cosmos_private_glibc \
@@ -1092,6 +1155,7 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --provenance-receipt "checkpoint_atomic_publication=$CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT" \
     --provenance-receipt "checkpoint_publication_gate=$CHECKPOINT_PUBLICATION_GATE_RECEIPT" \
     --provenance-receipt "checkpoint_relocation=$CHECKPOINT_RELOCATION_RECEIPT" \
+    --provenance-receipt "cosmos_environment_archive_publication=$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
     --provenance-receipt "runtime_closure_source_pre=$RUNTIME_CLOSURE_SOURCE_PRE" \
     --provenance-receipt "runtime_closure_local_pre=$RUNTIME_CLOSURE_LOCAL_PRE" \
     --provenance-receipt "runtime_closure_publication=$RUNTIME_CLOSURE_PUBLICATION_RECEIPT" \

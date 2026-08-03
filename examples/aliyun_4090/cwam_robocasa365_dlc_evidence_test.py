@@ -25,6 +25,7 @@ LAUNCHER = HERE / "launch_cwam_cosmos3_robocasa365_eval_dlc.sh"
 MATRIX = HERE / "run_mujoco_egl_mapping_matrix_dlc.sh"
 RUNTIME_HELPER = HERE / "cwam_dlc_runtime_closure.py"
 RUNTIME_PUBLISHER = HERE / "publish_cwam_dlc_runtime_closure.sh"
+ENV_ARCHIVE_HELPER = HERE / "cwam_cosmos_env_archive.py"
 
 pytestmark = [pytest.mark.L0, pytest.mark.CPU]
 
@@ -79,6 +80,9 @@ def _runtime_receipt() -> dict:
         "target_dtype": "torch.bfloat16",
         "custom_load_planner": "CustomLoadPlanner(load_ema_to_reg=True)",
     }
+    value["provenance"]["receipts"]["cosmos_environment_archive_publication"] = dsw_test._descriptor(
+        "/receipts/cosmos_environment_archive_publication.json"
+    )
     validation = value["validation"]
     for key in (
         "four_local_distributed_ranks",
@@ -154,6 +158,12 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "EXPECTED_RUNTIME_CLOSURE_MANIFEST_SHA256",
         "EXPECTED_RUNTIME_CLOSURE_TREE_SHA256",
         "PINNED_RUNTIME_CLOSURE_PUBLICATION_RECEIPT_SHA256",
+        "COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT",
+        "EXPECTED_COSMOS_ENV_ARCHIVE_SHA256",
+        "EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256",
+        "cwam_cosmos_env_archive.py",
+        "stage_cosmos_environment_archive",
+        "cosmos_environment_archive_publication",
         "runtime_closure_source_pre",
         "runtime_closure_local_pre",
         "runtime_closure_local_post",
@@ -167,6 +177,8 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "PINNED_SERVING_TREE_SHA256",
         "PINNED_EMA_EXPORT_SHA256",
         "robocasa-egl-device-mapping-dsw974.json",
+        "FORMAL_COSMOS_ENV_SOURCE",
+        "stage_directory cosmos_environment",
     ):
         assert forbidden not in script
 
@@ -253,4 +265,5 @@ def test_dlc_shell_scripts_parse(script: Path) -> None:
 
 
 def test_dlc_python_helpers_compile() -> None:
-    subprocess.run([sys.executable, "-m", "py_compile", str(RUNTIME_HELPER)], check=True)
+    for helper in (RUNTIME_HELPER, ENV_ARCHIVE_HELPER):
+        subprocess.run([sys.executable, "-m", "py_compile", str(helper)], check=True)

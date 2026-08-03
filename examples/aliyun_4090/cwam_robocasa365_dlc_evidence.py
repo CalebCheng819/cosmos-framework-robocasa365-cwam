@@ -77,6 +77,7 @@ _REQUIRED_RUNTIME_PROVENANCE = frozenset(
         "checkpoint_atomic_publication",
         "checkpoint_publication_gate",
         "checkpoint_relocation",
+        "cosmos_environment_archive_publication",
         "cosmos_environment_pre",
         "ema_export_receipt",
         "ema_key_manifest",

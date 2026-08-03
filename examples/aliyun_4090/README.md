@@ -212,10 +212,14 @@ experiment output root must not already exist. `DSW_CPFS_MOUNT` is checked with
 `findmnt` and must identify the exact CPFS mount. Do not guess these three
 storage paths: record the live mount target selected for the run.
 
-The formal Cosmos environment and RoboCasa checkout/assets are copied to the
-exact node-local NVMe input root below before launch. The RoboCasa environment,
-immutable source snapshot, checkpoint, static inputs, and final outputs remain
-on their exact CPFS paths. Transient evaluator/server scratch remains under
+The complete formal Cosmos environment is published as one immutable,
+SHA-256-bound tar archive. The DLC runner verifies its publication receipt,
+extracts it to the exact node-local NVMe input root, and recomputes the same
+deterministic tar SHA-256 before importing it. This avoids depending on the
+historical CPFS environment tree, which is only the pre-materialization base.
+The RoboCasa checkout is copied to NVMe. The RoboCasa environment, immutable
+source snapshot, checkpoint, static inputs, and final outputs remain on their
+exact CPFS paths. Transient evaluator/server scratch remains under
 `/tmp/cwam_cosmos3_robocasa365_eval`; it is separate from the immutable NVMe
 input root and is deleted by the runner's scoped cleanup.
 
@@ -234,10 +238,14 @@ export EXPECTED_SOURCE_MANIFEST_SHA256=<final-snapshot-manifest-sha256>
 export EXPECTED_COSMOS_ENV_SOURCE_COMMIT=09f23119ea92c707207bba55565e7a09d16896a2
 
 export COSMOS_ENV="$NVME_INPUTS_ROOT/envs/cosmos-framework-09f23119-cu128-train"
+export COSMOS_ENV_ARCHIVE="$INPUTS_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+export COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json
 export ROBOCASA_ENV="$INPUTS_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"
 export COSMOS_ENV_READY_MARKER="$COSMOS_ENV/.cwam_env_ready.json"
 export ROBOCASA_ENV_READY_MARKER="$ROBOCASA_ENV/.cwam_env_ready.json"
 export EXPECTED_COSMOS_ENV_READY_MARKER_SHA256=<new-dsw-native-marker-sha256>
+export EXPECTED_COSMOS_ENV_ARCHIVE_SHA256=<complete-environment-archive-sha256>
+export EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256=<archive-publication-receipt-sha256>
 export EXPECTED_ROBOCASA_ENV_READY_MARKER_SHA256=<new-dsw-native-marker-sha256>
 export ROBOCASA_TORCHCODEC_RELAY_RECEIPT="$INPUTS_ROOT/config/robocasa-torchcodec-plain-wheel-relay-receipt.json"
 export EXPECTED_ROBOCASA_TORCHCODEC_RELAY_RECEIPT_SHA256=1b16cc5419b7eb8558d5c0bd6dc4099493df629d50756ad3116b3c1da47f5ce4
