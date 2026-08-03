@@ -273,6 +273,7 @@ class OmniMoTModelConfig:
     strong_action_memory_layers: int = 2
     strong_action_memory_tokens: int = 4
     strong_action_num_views: int = 3
+    strong_action_view_token_width: int = 16
     strong_action_initial_gate: float = 0.01
     strong_action_input_resolution: str = "480"
 

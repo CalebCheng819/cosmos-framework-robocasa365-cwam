@@ -24,6 +24,7 @@ def _expert() -> StrongActionContextExpert:
         memory_layers=1,
         memory_tokens=2,
         num_views=3,
+        view_token_width=2,
         initial_residual_gate=0.1,
     )
     module.init_weights()
@@ -114,3 +115,11 @@ def test_vision_view_ids_partition_horizontal_tokens_in_camera_order() -> None:
     )
 
     assert expert._vision_view_ids(positions).tolist() == [0, 0, 1, 1, 2, 2]
+
+
+def test_vision_view_ids_assign_symmetric_canvas_padding_to_outer_views() -> None:
+    expert = _expert()
+    positions = torch.zeros(10, 3, dtype=torch.long)
+    positions[:, 2] = torch.arange(10)
+
+    assert expert._vision_view_ids(positions).tolist() == [0, 0, 0, 0, 1, 1, 2, 2, 2, 2]

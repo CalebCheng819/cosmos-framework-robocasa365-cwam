@@ -240,6 +240,7 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_memory_layers=self.config.strong_action_memory_layers,
                 strong_action_memory_tokens=self.config.strong_action_memory_tokens,
                 strong_action_num_views=self.config.strong_action_num_views,
+                strong_action_view_token_width=self.config.strong_action_view_token_width,
                 strong_action_initial_gate=self.config.strong_action_initial_gate,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,

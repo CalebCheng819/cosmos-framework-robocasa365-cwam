@@ -329,12 +329,20 @@ class StrongActionContextExpert(nn.Module):
         memory_layers: int,
         memory_tokens: int,
         num_views: int,
+        view_token_width: int,
         initial_residual_gate: float,
     ) -> None:
         super().__init__()
         if not 0.0 < initial_residual_gate < 1.0:
             raise ValueError("initial_residual_gate must be strictly between zero and one")
-        if min(num_layers, ffn_multiplier, proprio_history_length, action_history_length, num_views) < 1:
+        if min(
+            num_layers,
+            ffn_multiplier,
+            proprio_history_length,
+            action_history_length,
+            num_views,
+            view_token_width,
+        ) < 1:
             raise ValueError("Strong action expert layer, history, and view counts must be positive")
         if model_dim % num_heads:
             raise ValueError("Strong action expert model_dim must be divisible by num_heads")
@@ -346,6 +354,7 @@ class StrongActionContextExpert(nn.Module):
         self.action_history_length = action_history_length
         self.memory_tokens = memory_tokens
         self.num_views = num_views
+        self.view_token_width = view_token_width
         self.initial_residual_gate = initial_residual_gate
 
         self.action_norm = nn.LayerNorm(hidden_size)
@@ -410,10 +419,20 @@ class StrongActionContextExpert(nn.Module):
     def _vision_view_ids(self, positions: torch.Tensor) -> torch.Tensor:
         if positions.numel() == 0:
             return torch.empty(0, device=positions.device, dtype=torch.long)
-        horizontal = positions[:, 2].float()
+        horizontal = positions[:, 2].long()
         lo = horizontal.amin()
-        span = (horizontal.amax() - lo + 1.0).clamp_min(1.0)
-        view = torch.floor((horizontal - lo) / span * self.num_views).long()
+        total_width = horizontal.amax() - lo + 1
+        content_width = self.num_views * self.view_token_width
+        torch._assert(
+            total_width >= content_width,
+            "Configured camera-token width exceeds the visual canvas",
+        )
+        left_padding = torch.div(total_width - content_width, 2, rounding_mode="floor")
+        view = torch.div(
+            horizontal - lo - left_padding,
+            self.view_token_width,
+            rounding_mode="floor",
+        )
         return view.clamp_(0, self.num_views - 1)
 
     def forward(

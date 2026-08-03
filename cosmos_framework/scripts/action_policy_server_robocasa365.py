@@ -640,6 +640,7 @@ class RoboCasa365PolicyService(ActionModelService):
                 "strong_action_proprio_history_stride": 12,
                 "strong_action_history_length": 16,
                 "strong_action_num_views": 3,
+                "strong_action_view_token_width": 16,
                 "strong_action_input_resolution": "480",
             }
             actual_strong_config = {
@@ -1135,7 +1136,11 @@ class RoboCasa365PolicyService(ActionModelService):
                     "executed_steps_per_replan": self.open_loop_horizon,
                 },
                 "memory": {"encoder_layers": 2, "learned_tokens": 4, "episode_reset": True},
-                "action_expert": {"layers": 4, "context_relation_bias": True},
+                "action_expert": {
+                    "layers": 4,
+                    "context_relation_bias": True,
+                    "per_view_latent_width": 16,
+                },
             }
         return metadata
 
