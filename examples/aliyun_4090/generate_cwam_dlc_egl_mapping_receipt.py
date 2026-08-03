@@ -250,7 +250,7 @@ def build_receipt(
             "egl_vendor_json": descriptor(vendor, 0o644),
         },
         "probe": {
-            "script": descriptor(probe, 0o555),
+            "script": descriptor(probe, 0o444),
             "hold_seconds": 12.0,
             "evidence_root": str(evidence_root),
         },
