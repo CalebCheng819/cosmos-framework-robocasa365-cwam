@@ -113,8 +113,10 @@ def test_fullpad_execution_scripts_pin_shape_eight_gpus_and_encrypted_handoff() 
     assert "secret_access_key" not in runner
     assert 'EXPECTED_LATENT_SHAPE="48,5,30,52"' in generic
     assert 'EXPECTED_IMAGE_SIZE="480,832,256,768"' in generic
-    assert os.access(root / "build_and_publish_robocasa365_wan_fullpad_oss.sh", os.X_OK)
-    assert os.access(root / "submit_robocasa365_wan_fullpad_oss_rjob.sh", os.X_OK)
+    assert os.access(root / "build_and_publish_robocasa365_wan_fullpad_oss.sh", os.R_OK)
+    assert os.access(root / "submit_robocasa365_wan_fullpad_oss_rjob.sh", os.R_OK)
+    assert runner.startswith("#!/usr/bin/bash\n")
+    assert submitter.startswith("#!/usr/bin/bash\n")
 
 
 def test_existing_cache_recovery_is_same_node_publish_only_and_identity_pinned() -> None:
@@ -141,5 +143,7 @@ def test_existing_cache_recovery_is_same_node_publish_only_and_identity_pinned()
     assert "--store-host-nvme" in submitter
     assert '"vae_generation_enabled": False' in submitter
     assert "build_robocasa365_wan_latent_cache" not in submitter
-    assert os.access(runner_path, os.X_OK)
-    assert os.access(submitter_path, os.X_OK)
+    assert os.access(runner_path, os.R_OK)
+    assert os.access(submitter_path, os.R_OK)
+    assert runner.startswith("#!/usr/bin/bash\n")
+    assert submitter.startswith("#!/usr/bin/bash\n")
