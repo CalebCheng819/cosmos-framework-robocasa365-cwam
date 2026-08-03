@@ -157,6 +157,8 @@ printf -v Q_CAPACITY_PROBE_CODE %q "$CAPACITY_PROBE_CODE"
 COMMAND_LINES=(
   "set -Eeuo pipefail"
   "unset BASH_ENV ENV PYTHONHOME PYTHONOPTIMIZE"
+  "export PYTHONDONTWRITEBYTECODE=1"
+  "export PYTHONNOUSERSITE=1"
   "export COSMOS_SOURCE=$Q_SOURCE"
   "export COSMOS_ENV=$Q_ENV"
   "export ROBOCASA365_ROOT=$Q_DATASET"
@@ -189,7 +191,7 @@ COMMAND_LINES=(
   "[[ \$(/usr/bin/sha256sum $Q_RCLONE | /usr/bin/cut -d' ' -f1) == $EXPECTED_RCLONE_SHA256 ]]"
   "$Q_RCLONE version"
   "$Q_RCLONE help flags | /usr/bin/grep -q -- --s3-upload-concurrency"
-  "$Q_RUNTIME_PYTHON -c $Q_CAPACITY_PROBE_CODE $Q_SOURCE"
+  "$Q_RUNTIME_PYTHON -B -c $Q_CAPACITY_PROBE_CODE $Q_SOURCE"
 )
 if [[ "$CACHE_JOB_MODE" == preflight ]]; then
   COMMAND_LINES+=(

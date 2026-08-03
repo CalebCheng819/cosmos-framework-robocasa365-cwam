@@ -98,6 +98,13 @@ def test_fullpad_execution_scripts_pin_shape_eight_gpus_and_encrypted_handoff() 
     assert "/usr/bin/openssl cms -help" in submitter
     assert "OSS_CAPACITY_PREFLIGHT" in submitter
     assert "--s3-upload-concurrency" in submitter
+    assert '"export PYTHONDONTWRITEBYTECODE=1"' in submitter
+    assert '"export PYTHONNOUSERSITE=1"' in submitter
+    assert "$Q_RUNTIME_PYTHON -B -c" in submitter
+    worker_command = submitter[submitter.index("COMMAND_LINES=(") :]
+    assert worker_command.index('"export PYTHONDONTWRITEBYTECODE=1"') < worker_command.index(
+        '"$Q_RUNTIME_PYTHON -B -c'
+    )
     assert "openssl-cms-enveloped-data-aes-256-cbc-der" in runner
     assert 'BUILD_LOG_FINAL="$WORK_ROOT_REAL/build.log"' in runner
     assert 'PUBLISH_LOG_FINAL="$WORK_ROOT_REAL/publish.log"' in runner
