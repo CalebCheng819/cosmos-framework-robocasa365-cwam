@@ -143,7 +143,7 @@ def _tar_command(root: Path, output: str) -> list[str]:
         "--owner=0",
         "--group=0",
         "--mtime=@0",
-        "--pax-option=delete=atime,delete=ctime",
+        "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
         "-cf",
         output,
         "-C",

@@ -76,6 +76,22 @@ def test_publish_and_verify_extract_round_trip(tmp_path: Path) -> None:
     assert (stage / "bin/tool-link").readlink() == Path("tool")
 
 
+def test_tar_stream_is_deterministic_for_pax_paths(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    long_name = "environment-entry-" + "x" * 120
+    (source / long_name).write_bytes(b"pax payload\n")
+
+    first = env_archive._tar_stream_sha256(source)
+    second = env_archive._tar_stream_sha256(source)
+
+    assert first == second
+    assert (
+        "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime"
+        in env_archive._tar_command(source, "-")
+    )
+
+
 def test_verify_rejects_tampered_archive(tmp_path: Path) -> None:
     source, archive, receipt, materialization, publisher = _fixture(tmp_path)
     published = env_archive.publish(
