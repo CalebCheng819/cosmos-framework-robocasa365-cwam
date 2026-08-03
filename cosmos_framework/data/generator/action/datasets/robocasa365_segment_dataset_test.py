@@ -44,7 +44,10 @@ def _segment(
         "valid_window_count": action_length - 16,
         "split_group": group,
         "source_prefix": "fixture-source",
-        "source_episode_index": 0 if group == "g1" else 1,
+        # Local source IDs are only unique within source_prefix. Control state
+        # arrays use the dataset-global episode index instead.
+        "source_episode_index": 100 if group == "g1" else 101,
+        "source_dataset_episode_index": 0 if group == "g1" else 1,
         "source_frame_offset": source_frame_offset,
         "action_offset": action_offset,
         "action_length": action_length,

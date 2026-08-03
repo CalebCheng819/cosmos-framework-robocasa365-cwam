@@ -579,10 +579,10 @@ class RoboCasa365SegmentDataset(Dataset):
             "idle_frames": torch.tensor(idle_frames, dtype=torch.long),
         }
         if self._control_cache is not None:
-            if "source_episode_index" not in segment or "source_frame_offset" not in segment:
+            if "source_dataset_episode_index" not in segment or "source_frame_offset" not in segment:
                 raise KeyError("Control-conditioned RoboCasa365 segments require source episode/frame indexes.")
             history = self._control_cache.history(
-                episode_index=int(segment["source_episode_index"]),
+                episode_index=int(segment["source_dataset_episode_index"]),
                 frame_index=int(segment["source_frame_offset"]) + int(window_offset),
                 proprio_history_length=self._proprio_history_length,
                 proprio_history_stride=self._proprio_history_stride,

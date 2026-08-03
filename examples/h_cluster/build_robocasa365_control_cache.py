@@ -179,19 +179,40 @@ def _project_dense_actions(
         split_path = dataset_root / "splits" / f"{split}.parquet"
         if not split_path.is_file():
             raise FileNotFoundError(f"Converted split manifest is missing: {split_path}")
-        columns = ("source_episode_index", "source_frame_offset", "action_offset", "action_length")
+        columns = (
+            "source_dataset_episode_index",
+            "source_episode_index",
+            "source_episode_length",
+            "source_frame_offset",
+            "source_global_frame_start",
+            "action_offset",
+            "action_length",
+        )
         table = pq.read_table(split_path, columns=list(columns))
         for row in table.to_pylist():
-            episode_index = int(row["source_episode_index"])
+            episode_index = int(row["source_dataset_episode_index"])
+            local_episode_index = int(row["source_episode_index"])
             source_frame = int(row["source_frame_offset"])
             action_offset = int(row["action_offset"])
             action_length = int(row["action_length"])
             if not 0 <= episode_index < episode_offsets.shape[0]:
-                raise ValueError(f"Invalid source_episode_index={episode_index} in {split_path}")
+                raise ValueError(f"Invalid source_dataset_episode_index={episode_index} in {split_path}")
             episode_start, episode_length = (int(value) for value in episode_offsets[episode_index])
+            if int(row["source_episode_length"]) != episode_length:
+                raise ValueError(
+                    "Converted/source episode length mismatch: "
+                    f"global_episode={episode_index}, local_episode={local_episode_index}, "
+                    f"converted={row['source_episode_length']}, source={episode_length}."
+                )
+            if int(row["source_global_frame_start"]) != episode_start + source_frame:
+                raise ValueError(
+                    "Converted/source global frame mismatch: "
+                    f"global_episode={episode_index}, local_episode={local_episode_index}."
+                )
             if source_frame < 0 or source_frame + action_length > episode_length:
                 raise ValueError(
-                    f"Segment action interval exceeds source episode: episode={episode_index}, "
+                    "Segment action interval exceeds source episode: "
+                    f"global_episode={episode_index}, local_episode={local_episode_index}, "
                     f"frame={source_frame}, length={action_length}, episode_length={episode_length}."
                 )
             source_slice = dense_actions[action_offset : action_offset + action_length]
@@ -205,7 +226,7 @@ def _project_dense_actions(
                 if not np.allclose(previous, candidate, rtol=1e-5, atol=1e-6):
                     raise ValueError(
                         f"Overlapping DeMiAn segments disagree on rot6d10 actions in split={split}, "
-                        f"episode={episode_index}."
+                        f"global_episode={episode_index}, local_episode={local_episode_index}."
                     )
                 overlap_rows += int(overlap.sum())
             actions[global_indexes[~overlap]] = source_slice[~overlap]
