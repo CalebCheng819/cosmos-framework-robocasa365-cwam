@@ -106,6 +106,7 @@ def test_fullpad_execution_scripts_pin_shape_eight_gpus_and_encrypted_handoff() 
         '"$Q_RUNTIME_PYTHON -B -c'
     )
     assert "openssl-cms-enveloped-data-aes-256-cbc-der" in runner
+    assert 'PYTHONPATH="$COSMOS_SOURCE_REAL" "$COSMOS_ENV_REAL/bin/python" "$OSS_PUBLISHER"' in runner
     assert 'BUILD_LOG_FINAL="$WORK_ROOT_REAL/build.log"' in runner
     assert 'PUBLISH_LOG_FINAL="$WORK_ROOT_REAL/publish.log"' in runner
     assert "openssl-cms-enveloped-data-aes-256-cbc-der" in provision
@@ -114,3 +115,31 @@ def test_fullpad_execution_scripts_pin_shape_eight_gpus_and_encrypted_handoff() 
     assert 'EXPECTED_IMAGE_SIZE="480,832,256,768"' in generic
     assert os.access(root / "build_and_publish_robocasa365_wan_fullpad_oss.sh", os.X_OK)
     assert os.access(root / "submit_robocasa365_wan_fullpad_oss_rjob.sh", os.X_OK)
+
+
+def test_existing_cache_recovery_is_same_node_publish_only_and_identity_pinned() -> None:
+    root = Path(__file__).parent
+    runner_path = root / "publish_existing_robocasa365_wan_fullpad_oss.sh"
+    submitter_path = root / "submit_robocasa365_wan_existing_cache_publish_rjob.sh"
+    runner = runner_path.read_text()
+    submitter = submitter_path.read_text()
+
+    assert 'CACHE_ROOT="$NVME_ROOT/$SOURCE_LATENT_CACHE_RUN_ID/cache"' in runner
+    assert "EXPECTED_CACHE_ID" in runner
+    assert "EXPECTED_CACHE_MANIFEST_SHA256" in runner
+    assert "validate_published_cache_files(cache_root, verify_shard_checksums=False)" in runner
+    assert 'PYTHONPATH="$COSMOS_SOURCE_REAL" "$COSMOS_ENV_REAL/bin/python" "$OSS_PUBLISHER"' in runner
+    assert 'SECRET_ROOT="/dev/shm/cwam-rclone-$PUBLISH_RUN_ID-$$"' in runner
+    assert "build_robocasa365_wan_latent_cache" not in runner
+    assert "secret_access_key" not in runner
+
+    assert "--gpu 0" in submitter
+    assert "--cpu 16" in submitter
+    assert "--memory 64000" in submitter
+    assert '--positive-tags "$RECOVERY_NODE"' in submitter
+    assert "gpu-l-lg-cmc-h-h200-0298.host.h.pjlab.org.cn" in submitter
+    assert "--store-host-nvme" in submitter
+    assert '"vae_generation_enabled": False' in submitter
+    assert "build_robocasa365_wan_latent_cache" not in submitter
+    assert os.access(runner_path, os.X_OK)
+    assert os.access(submitter_path, os.X_OK)

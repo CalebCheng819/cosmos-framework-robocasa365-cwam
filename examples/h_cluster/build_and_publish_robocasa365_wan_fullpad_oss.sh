@@ -227,7 +227,7 @@ PUBLISH_LOG_FINAL="$WORK_ROOT_REAL/publish.log"
 [[ ! -e "$PUBLISH_LOG_PARTIAL" && ! -e "$PUBLISH_LOG_FINAL" ]] ||
   { echo "ERROR: refusing to replace an existing publisher log" >&2; exit 1; }
 set +e
-"$COSMOS_ENV_REAL/bin/python" "$OSS_PUBLISHER" \
+PYTHONPATH="$COSMOS_SOURCE_REAL" "$COSMOS_ENV_REAL/bin/python" "$OSS_PUBLISHER" \
   --cache-root "$CACHE_ROOT" \
   --work-root "$WORK_ROOT_REAL" \
   --remote "$ROBOCASA365_OSS_REMOTE" \
