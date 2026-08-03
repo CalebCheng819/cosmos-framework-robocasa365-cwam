@@ -8,6 +8,7 @@ import json
 import sys
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,6 +91,38 @@ def test_tar_stream_is_deterministic_for_pax_paths(tmp_path: Path) -> None:
         "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime"
         in env_archive._tar_command(source, "-")
     )
+
+
+def test_sha256_tolerates_ctime_only_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "cpfs-publication.tar"
+    target.write_bytes(b"immutable archive\n")
+    metadata = target.lstat()
+    original_lstat = Path.lstat
+    calls = 0
+
+    def changing_lstat(path: Path) -> object:
+        nonlocal calls
+        value = original_lstat(path)
+        if path != target:
+            return value
+        calls += 1
+        return SimpleNamespace(
+            st_dev=value.st_dev,
+            st_ino=value.st_ino,
+            st_mode=value.st_mode,
+            st_size=value.st_size,
+            st_mtime_ns=value.st_mtime_ns,
+            st_ctime_ns=metadata.st_ctime_ns + calls,
+        )
+
+    monkeypatch.setattr(Path, "lstat", changing_lstat)
+
+    size, digest = env_archive._sha256(target)
+
+    assert size == len(b"immutable archive\n")
+    assert digest == hashlib.sha256(b"immutable archive\n").hexdigest()
 
 
 def test_verify_rejects_tampered_archive(tmp_path: Path) -> None:

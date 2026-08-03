@@ -51,14 +51,14 @@ def _sha256(path: Path) -> tuple[int, str]:
         while chunk := stream.read(16 * 1024 * 1024):
             digest.update(chunk)
     after = path.lstat()
-    def identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        # CPFS may settle ctime after a hard-link commit while content stays fixed.
         return (
             value.st_dev,
             value.st_ino,
             value.st_mode,
             value.st_size,
             value.st_mtime_ns,
-            value.st_ctime_ns,
         )
     if identity(before) != identity(after):
         raise EnvironmentArchiveError(f"file changed while hashing: {path}")
