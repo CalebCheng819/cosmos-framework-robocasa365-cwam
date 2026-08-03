@@ -107,6 +107,7 @@ def test_server_args_disable_generative_media_guardrails() -> None:
         {
             "checkpoint": {"checkpoint_path": "/checkpoint/model"},
             "launch_nonce": "a" * 64,
+            "expected_ema_key_count": 809,
         }
     )
 
@@ -136,6 +137,7 @@ def test_server_args_apply_canonical_portable_model_asset_overrides(tmp_path: Pa
         {
             "checkpoint": {"checkpoint_path": "/checkpoint/model"},
             "launch_nonce": "a" * 64,
+            "expected_ema_key_count": 809,
             "wan2pt2_vae_path": vae_path,
             "qwen_tokenizer_path": qwen_path,
         }
@@ -167,6 +169,7 @@ def test_server_args_reject_symlinked_portable_model_assets(
     values: dict[str, object] = {
         "checkpoint": {"checkpoint_path": "/checkpoint/model"},
         "launch_nonce": "a" * 64,
+        "expected_ema_key_count": 809,
     }
     values["wan2pt2_vae_path" if asset == "vae" else "qwen_tokenizer_path"] = (
         linked_vae if asset == "vae" else linked_qwen
@@ -187,6 +190,7 @@ def test_server_args_reject_relative_portable_model_asset_path(
         {
             "checkpoint": {"checkpoint_path": "/checkpoint/model"},
             "launch_nonce": "a" * 64,
+            "expected_ema_key_count": 809,
             "wan2pt2_vae_path": Path("vae.pth"),
         }
     )
@@ -250,25 +254,44 @@ def test_policy_metadata_records_actual_portable_model_asset_paths(tmp_path: Pat
     assert metadata["action_stats_sha256"] == server._sha256_regular_file(stats_path)
 
 
-def test_dcp_weight_receipt_requires_exact_serving_only_ema_bf16_tree(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key_count", [809, 822])
+def test_dcp_weight_receipt_requires_exact_serving_only_ema_bf16_tree(
+    tmp_path: Path,
+    key_count: int,
+) -> None:
     checkpoint = tmp_path / "model"
-    state = {f"net_ema.layer_{index}.weight": torch.tensor([index], dtype=torch.bfloat16) for index in range(809)}
+    state = {f"net_ema.layer_{index}.weight": torch.tensor([index], dtype=torch.bfloat16) for index in range(key_count)}
     dcp.save(state, checkpoint_id=checkpoint)
 
     receipt = server._dcp_selected_weight_receipt(
         checkpoint,
         use_ema_weights=True,
         require_serving_only_ema_bf16=True,
+        expected_ema_key_count=key_count,
     )
 
     assert receipt["selected_weight_tree"] == "net_ema"
-    assert receipt["selected_key_count"] == 809
-    assert receipt["selected_source_dtype_census"] == {"torch.bfloat16": 809}
+    assert receipt["selected_key_count"] == key_count
+    assert receipt["selected_source_dtype_census"] == {"torch.bfloat16": key_count}
     assert receipt["regular_key_count"] == 0
-    assert receipt["ema_key_count"] == 809
+    assert receipt["ema_key_count"] == key_count
     assert receipt["other_key_count"] == 0
     assert receipt["serving_only_selected_tree"] is True
     assert receipt["load_planner"] == "CustomLoadPlanner(load_ema_to_reg=True)"
+
+
+def test_dcp_weight_receipt_rejects_manifest_key_count_mismatch(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model"
+    state = {f"net_ema.layer_{index}.weight": torch.tensor([index], dtype=torch.bfloat16) for index in range(3)}
+    dcp.save(state, checkpoint_id=checkpoint)
+
+    with pytest.raises(RuntimeError, match="manifest-bound number"):
+        server._dcp_selected_weight_receipt(
+            checkpoint,
+            use_ema_weights=True,
+            require_serving_only_ema_bf16=True,
+            expected_ema_key_count=4,
+        )
 
 
 def test_frozen_cached_config_resolves_to_online_wan_for_serving(
@@ -278,6 +301,7 @@ def test_frozen_cached_config_resolves_to_online_wan_for_serving(
         {
             "checkpoint": {"checkpoint_path": "/checkpoint/model"},
             "launch_nonce": "a" * 64,
+            "expected_ema_key_count": 809,
         }
     )
     frozen = OmegaConf.create(
@@ -323,6 +347,7 @@ def test_server_args_pin_pure_fsdp_to_torchrun_world_size(
         {
             "checkpoint": {"checkpoint_path": "/checkpoint/model"},
             "launch_nonce": "a" * 64,
+            "expected_ema_key_count": 809,
         }
     )
 

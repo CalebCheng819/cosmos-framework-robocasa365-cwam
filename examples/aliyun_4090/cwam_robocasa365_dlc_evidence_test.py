@@ -69,6 +69,16 @@ def _runtime_receipt() -> dict:
         "cp_size": 1,
         "cfgp_size": 1,
     }
+    value["bindings"]["ema_selection"] = {
+        "selected_tree": "net_ema",
+        "included_prefix": "net_ema.",
+        "excluded_prefix": "net.",
+        "key_count": 809,
+        "chunk_count": 6472,
+        "source_dtype": "torch.float32",
+        "target_dtype": "torch.bfloat16",
+        "custom_load_planner": "CustomLoadPlanner(load_ema_to_reg=True)",
+    }
     validation = value["validation"]
     for key in (
         "four_local_distributed_ranks",
@@ -101,6 +111,19 @@ def test_dlc_runtime_receipt_requires_exact_fsdp8_topology() -> None:
     stale["topology"]["physical_gpu_count"] = 4
     with pytest.raises(ValueError, match="physical_gpu_count mismatch"):
         dlc_evidence.validate_runtime_receipt(stale)
+
+
+def test_dlc_runtime_receipt_uses_checkpoint_bound_ema_key_count() -> None:
+    receipt = _runtime_receipt()
+    receipt["bindings"]["ema_selection"]["key_count"] = 822
+    weight = receipt["policy_server"]["checkpoint_weight_receipt"]
+    weight["selected_key_count"] = 822
+    weight["selected_source_dtype_census"] = {"torch.bfloat16": 822}
+    weight["ema_key_count"] = 822
+
+    validated = dlc_evidence.validate_runtime_receipt(receipt)
+
+    assert validated["bindings"]["ema_selection"]["key_count"] == 822
 
 
 def test_dlc_runtime_receipt_rejects_wrong_allocation() -> None:

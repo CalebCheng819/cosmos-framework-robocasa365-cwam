@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -23,15 +24,9 @@ pytestmark = [pytest.mark.L0, pytest.mark.CPU]
 
 
 def test_formal_receipt_and_lock_are_pinned_to_persistent_cpfs() -> None:
-    expected_parent = Path(
-        "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts"
-    )
-    assert publisher.DEFAULT_RECEIPT == (
-        expected_parent / "ema-checkpoint-atomic-publication.json"
-    )
-    assert publisher.DEFAULT_LOCK == (
-        expected_parent / ".ema-checkpoint-atomic-publication.lock"
-    )
+    expected_parent = Path("/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts")
+    assert publisher.DEFAULT_RECEIPT == (expected_parent / "ema-checkpoint-atomic-publication.json")
+    assert publisher.DEFAULT_LOCK == (expected_parent / ".ema-checkpoint-atomic-publication.lock")
 
 
 def _write_bytes(path: Path, payload: bytes) -> publisher.FileExpectation:
@@ -179,12 +174,8 @@ def _fake_closure(
             "shard_count": 8,
             "checkpoint_tree_sha256": tree_sha,
             "metadata_sha256": str(model_records[0]["sha256"]),
-            "serving_manifest_sha256": root_files[
-                "h-serving-checkpoint-manifest.json"
-            ].sha256,
-            "key_manifest_sha256": root_files[
-                "ema-bf16-key-manifest.json"
-            ].sha256,
+            "serving_manifest_sha256": root_files["h-serving-checkpoint-manifest.json"].sha256,
+            "key_manifest_sha256": root_files["ema-bf16-key-manifest.json"].sha256,
             "validation_sha256": root_files["ema-bf16-validation.json"].sha256,
         },
         "source": {"config_sha256": root_files["config.yaml"].sha256},
@@ -200,16 +191,14 @@ def _fake_closure(
         "status": "passed",
         "source": {
             "file_count": 9,
-            "total_bytes": 91_061_947_649,
+            "total_bytes": sum(int(record["size_bytes"]) for record in model_records),
+            "files": model_records,
             "full_file_sha256_readback": True,
+            "origin_tree_sha256": tree_sha,
         },
         "derived_target_binding": {
-            "export_receipt_sha256": root_files[
-                "ema-bf16-export-receipt.json"
-            ].sha256,
-            "target_manifest_sha256": root_files[
-                "h-serving-checkpoint-manifest.json"
-            ].sha256,
+            "export_receipt_sha256": root_files["ema-bf16-export-receipt.json"].sha256,
+            "target_manifest_sha256": root_files["h-serving-checkpoint-manifest.json"].sha256,
             "target_tree_sha256": tree_sha,
         },
     }
@@ -221,25 +210,14 @@ def _fake_closure(
     exporter_sha = hashlib.sha256(b"exporter").hexdigest()
     h_sums = {
         "config.yaml": root_files["config.yaml"].sha256,
-        "ema-bf16-export-receipt.json": root_files[
-            "ema-bf16-export-receipt.json"
-        ].sha256,
-        "ema-bf16-key-manifest.json": root_files[
-            "ema-bf16-key-manifest.json"
-        ].sha256,
+        "ema-bf16-export-receipt.json": root_files["ema-bf16-export-receipt.json"].sha256,
+        "ema-bf16-key-manifest.json": root_files["ema-bf16-key-manifest.json"].sha256,
         "ema-bf16-validation.json": root_files["ema-bf16-validation.json"].sha256,
         "exporter-source.py": exporter_sha,
-        **{
-            f"model/{record['relative_path']}": str(record["sha256"])
-            for record in model_records
-        },
-        "serving-checkpoint-manifest.json": root_files[
-            "h-serving-checkpoint-manifest.json"
-        ].sha256,
+        **{f"model/{record['relative_path']}": str(record["sha256"]) for record in model_records},
+        "serving-checkpoint-manifest.json": root_files["h-serving-checkpoint-manifest.json"].sha256,
     }
-    sums_payload = "".join(
-        f"{digest}  {relative}\n" for relative, digest in sorted(h_sums.items())
-    ).encode()
+    sums_payload = "".join(f"{digest}  {relative}\n" for relative, digest in sorted(h_sums.items())).encode()
     root_files["H-SHA256SUMS"] = _write_bytes(
         stage / "H-SHA256SUMS",
         sums_payload,
@@ -248,29 +226,18 @@ def _fake_closure(
     identity_expectations = {
         "SHA256SUMS": root_files["H-SHA256SUMS"],
         "config.yaml": root_files["config.yaml"],
-        "ema-bf16-export-receipt.json": root_files[
-            "ema-bf16-export-receipt.json"
-        ],
-        "ema-bf16-key-manifest.json": root_files[
-            "ema-bf16-key-manifest.json"
-        ],
+        "ema-bf16-export-receipt.json": root_files["ema-bf16-export-receipt.json"],
+        "ema-bf16-key-manifest.json": root_files["ema-bf16-key-manifest.json"],
         "ema-bf16-validation.json": root_files["ema-bf16-validation.json"],
         "exporter-source.py": publisher.FileExpectation(55_882, exporter_sha),
-        "serving-checkpoint-manifest.json": root_files[
-            "h-serving-checkpoint-manifest.json"
-        ],
+        "serving-checkpoint-manifest.json": root_files["h-serving-checkpoint-manifest.json"],
         "model/.metadata": publisher.FileExpectation(
             int(model_records[0]["size_bytes"]),
             str(model_records[0]["sha256"]),
         ),
-        "source-dcp-full-verification.json": root_files[
-            "source-dcp-full-verification.json"
-        ],
+        "source-dcp-full-verification.json": root_files["source-dcp-full-verification.json"],
     }
-    transfer_items = [
-        _identity_item(path, expected)
-        for path, expected in identity_expectations.items()
-    ]
+    transfer_items = [_identity_item(path, expected) for path, expected in identity_expectations.items()]
     by_name = {str(record["relative_path"]): record for record in model_records}
     for index in range(8):
         name = f"__{index}_0.distcp"
@@ -298,12 +265,8 @@ def _fake_closure(
         "item_count": 17,
         "items": transfer_items,
         "bindings": {
-            "export_receipt_sha256": root_files[
-                "ema-bf16-export-receipt.json"
-            ].sha256,
-            "source_dcp_full_verification_sha256": root_files[
-                "source-dcp-full-verification.json"
-            ].sha256,
+            "export_receipt_sha256": root_files["ema-bf16-export-receipt.json"].sha256,
+            "source_dcp_full_verification_sha256": root_files["source-dcp-full-verification.json"].sha256,
             "target_tree_sha256": tree_sha,
         },
         "verification_boundary": {
@@ -360,6 +323,79 @@ def _make_uncommitted_split(
         stage.rmdir()
 
 
+def _dynamic_contract_payload(
+    contract: publisher.PublicationContract,
+) -> dict[str, object]:
+    stage_parent = "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints"
+    return {
+        "schema_version": 1,
+        "kind": "cwam_ema_checkpoint_publication_contract",
+        "stage_root": f"{stage_parent}/.S1-test.incomplete-transfer-20260803",
+        "final_root": f"{stage_parent}/S1-test",
+        "source_model_path": (
+            "/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/artifacts/cwam_e35/S1-test/model"
+        ),
+        "tree_sha256": contract.tree_sha256,
+        "root_files": {
+            name: {
+                "size_bytes": expectation.size_bytes,
+                "sha256": expectation.sha256,
+            }
+            for name, expectation in contract.root_files.items()
+        },
+        "model_files": list(contract.model_files),
+        "h_sums": dict(contract.h_sums),
+        "transfer_only_files": {
+            "exporter-source.py": {
+                "size_bytes": 55_882,
+                "sha256": contract.h_sums["exporter-source.py"],
+            }
+        },
+        "ema_key_count": contract.ema_key_count,
+        "ema_chunk_count": contract.ema_chunk_count,
+        "ema_source_logical_bytes": 100,
+        "ema_target_logical_bytes": 50,
+    }
+
+
+def test_sha_bound_dynamic_publication_contract_loads(tmp_path: Path) -> None:
+    contract, *_ = _fake_closure(tmp_path)
+    contract_path = tmp_path / "publication-contract.json"
+    expectation = _write_json(contract_path, _dynamic_contract_payload(contract))
+
+    loaded = publisher.load_publication_contract(
+        contract_path,
+        expected_sha256=expectation.sha256,
+    )
+
+    assert loaded.source_contract_sha256 == expectation.sha256
+    assert loaded.stage_root.name == ".S1-test.incomplete-transfer-20260803"
+    assert loaded.tree_sha256 == contract.tree_sha256
+    assert loaded.transfer_only_files == {
+        "exporter-source.py": publisher.FileExpectation(
+            55_882,
+            contract.h_sums["exporter-source.py"],
+        )
+    }
+
+
+def test_dynamic_publication_contract_hash_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    contract, *_ = _fake_closure(tmp_path)
+    contract_path = tmp_path / "publication-contract.json"
+    _write_json(contract_path, _dynamic_contract_payload(contract))
+
+    with pytest.raises(
+        publisher.CheckpointPublicationError,
+        match="contract SHA-256 mismatch",
+    ):
+        publisher.load_publication_contract(
+            contract_path,
+            expected_sha256="0" * 64,
+        )
+
+
 def test_audit_only_is_read_only(tmp_path: Path) -> None:
     contract, stage, final, receipt, lock = _fake_closure(tmp_path)
 
@@ -373,11 +409,28 @@ def test_audit_only_is_read_only(tmp_path: Path) -> None:
     )
 
     assert result["status"] == "audit_passed"
+    assert "publication_contract_sha256" not in result
     assert result["prepublication"]["model"]["tree_sha256"] == contract.tree_sha256
     assert stage.is_dir()
     assert not final.exists()
     assert not receipt.exists()
     assert not lock.exists()
+
+
+def test_dynamic_audit_binds_publication_contract_hash(tmp_path: Path) -> None:
+    contract, stage, final, receipt, lock = _fake_closure(tmp_path)
+    dynamic_contract = replace(contract, source_contract_sha256="a" * 64)
+
+    result = publisher.publish_checkpoint(
+        stage_root=stage,
+        final_root=final,
+        receipt_output=receipt,
+        lock_path=lock,
+        publish=False,
+        contract=dynamic_contract,
+    )
+
+    assert result["publication_contract_sha256"] == "a" * 64
 
 
 def test_publish_uses_cpfs_transaction_and_writes_commit_receipt(
@@ -398,9 +451,7 @@ def test_publish_uses_cpfs_transaction_and_writes_commit_receipt(
     assert result["schema_version"] == 2
     assert result["mode"] == "cpfs_transaction_publish"
     assert result["publication"] == {
-        "primitive": (
-            "mkdir(final)+per-entry-rename+exclusive-receipt-hardlink"
-        ),
+        "primitive": ("mkdir(final)+per-entry-rename+exclusive-receipt-hardlink"),
         "same_parent_same_filesystem": True,
         "parent_fsync_before_and_after": True,
         "stage_absent_after": True,
@@ -420,10 +471,7 @@ def test_publish_uses_cpfs_transaction_and_writes_commit_receipt(
     assert stat.S_IMODE(receipt.stat().st_mode) == 0o444
     persisted = json.loads(receipt.read_text(encoding="utf-8"))
     assert persisted["status"] == "published"
-    assert (
-        persisted["postpublication"]["model"]["tree_sha256"]
-        == contract.tree_sha256
-    )
+    assert persisted["postpublication"]["model"]["tree_sha256"] == contract.tree_sha256
     assert persisted["publication"]["receipt_required_for_success"] is True
     assert persisted["publication"]["rollback_on_precommit_failure"] is True
     assert persisted["publication"]["receipt_is_commit_point"] is True
@@ -642,12 +690,7 @@ def test_move_failure_rolls_complement_back_to_hidden_stage(
     assert stage.is_dir()
     assert not final.exists()
     assert not receipt.exists()
-    assert (
-        publisher.audit_checkpoint_root(stage, contract=contract)["model"][
-            "tree_sha256"
-        ]
-        == contract.tree_sha256
-    )
+    assert publisher.audit_checkpoint_root(stage, contract=contract)["model"]["tree_sha256"] == contract.tree_sha256
 
 
 def test_tamper_before_receipt_never_claims_success(
@@ -717,12 +760,7 @@ def test_receipt_failure_rolls_final_back_to_hidden_stage(
     assert stage.is_dir()
     assert not final.exists()
     assert not receipt.exists()
-    assert (
-        publisher.audit_checkpoint_root(stage, contract=contract)["model"][
-            "tree_sha256"
-        ]
-        == contract.tree_sha256
-    )
+    assert publisher.audit_checkpoint_root(stage, contract=contract)["model"]["tree_sha256"] == contract.tree_sha256
 
 
 def test_receipt_mode_persistence_failure_rolls_back_before_commit(
@@ -748,12 +786,7 @@ def test_receipt_mode_persistence_failure_rolls_back_before_commit(
     assert stage.is_dir()
     assert not final.exists()
     assert not receipt.exists()
-    assert (
-        publisher.audit_checkpoint_root(stage, contract=contract)["model"][
-            "tree_sha256"
-        ]
-        == contract.tree_sha256
-    )
+    assert publisher.audit_checkpoint_root(stage, contract=contract)["model"]["tree_sha256"] == contract.tree_sha256
 
 
 @pytest.mark.parametrize("moved_count", range(10))
@@ -837,9 +870,7 @@ def test_receipt_commit_followup_failure_never_rolls_checkpoint_back(
         capture: bool = False,
     ) -> tuple[dict, bytes | None]:
         if label == "publication receipt":
-            raise publisher.CheckpointPublicationError(
-                "publication receipt content mismatch: injected"
-            )
+            raise publisher.CheckpointPublicationError("publication receipt content mismatch: injected")
         return real_stable_file(
             path,
             label=label,
@@ -883,9 +914,7 @@ def test_receipt_readback_failure_retains_commit_point(
         capture: bool = False,
     ) -> tuple[dict, bytes | None]:
         del expected, capture
-        raise publisher.CheckpointPublicationError(
-            f"{label} content mismatch: {path}"
-        )
+        raise publisher.CheckpointPublicationError(f"{label} content mismatch: {path}")
 
     monkeypatch.setattr(publisher, "_stable_file", fail_readback)
     with pytest.raises(

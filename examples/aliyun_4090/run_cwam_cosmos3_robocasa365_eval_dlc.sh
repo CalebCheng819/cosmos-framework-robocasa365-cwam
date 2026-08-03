@@ -54,6 +54,8 @@ export PYTHONNOUSERSITE=1
 : "${EXPECTED_EMA_EXPORT_RECEIPT_SHA256:?Set the EMA export receipt SHA256}"
 : "${EXPECTED_EMA_KEY_MANIFEST_SHA256:?Set the EMA key manifest SHA256}"
 : "${EXPECTED_EMA_VALIDATION_SHA256:?Set the EMA validation SHA256}"
+: "${EXPECTED_EMA_KEY_COUNT:?Set the exported EMA key count}"
+: "${EXPECTED_EMA_CHUNK_COUNT:?Set the exported EMA chunk count}"
 : "${EXPECTED_EMA_SOURCE_DCP_FULL_RECEIPT_SHA256:?Set the source-DCP full verification receipt SHA256}"
 : "${EXPECTED_EMA_TRANSFER_MANIFEST_SHA256:?Set the Ceph EMA transfer manifest SHA256}"
 : "${EXPECTED_CHECKPOINT_ATOMIC_PUBLICATION_RECEIPT_SHA256:?Set the DLC atomic checkpoint publication receipt SHA256}"
@@ -496,6 +498,8 @@ readonly ROBOCASA_PY="$ROBOCASA_ENV/bin/python"
 [[ -f "$DEMIAN_REPO/$TASK_REGISTRY_REL" ]] || die "missing DeMiAn task registry"
 
 [[ "$EXPECTED_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "EXPECTED_SOURCE_COMMIT is malformed"
+[[ "$EXPECTED_EMA_KEY_COUNT" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_EMA_KEY_COUNT must be positive"
+[[ "$EXPECTED_EMA_CHUNK_COUNT" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_EMA_CHUNK_COUNT must be positive"
 require_exact_value \
     cosmos_environment_source_commit \
     "$EXPECTED_COSMOS_ENV_SOURCE_COMMIT" \
@@ -851,6 +855,8 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --expected-source-dcp-receipt-sha256 "$EXPECTED_EMA_SOURCE_DCP_FULL_RECEIPT_SHA256" \
     --training-config-path "$TRAINING_CONFIG" \
     --expected-training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256" \
+    --expected-ema-key-count "$EXPECTED_EMA_KEY_COUNT" \
+    --expected-ema-chunk-count "$EXPECTED_EMA_CHUNK_COUNT" \
     --destination-manifest-output "$DESTINATION_CHECKPOINT_MANIFEST" \
     --relocation-receipt-output "$CHECKPOINT_RELOCATION_RECEIPT" \
     >"$CONTROL_DIR/relocate-checkpoint.log"
@@ -1016,6 +1022,7 @@ trap 'PENDING_LAUNCH_SIGNAL_STATUS=143' TERM
         --seed "$POLICY_SEED" \
         --guidance "$POLICY_GUIDANCE" \
         --num-steps "$POLICY_NUM_STEPS" \
+        --expected-ema-key-count "$EXPECTED_EMA_KEY_COUNT" \
         --launch-nonce "$launch_nonce"
 ) >"$POLICY_SERVER_LOG" 2>&1 &
 SERVER_LAUNCHER_PID="$!"

@@ -46,11 +46,8 @@ _STATIC_INPUT_KIND = "cwam_dsw_static_runtime_inputs_verification"
 _ENVIRONMENT_KIND = "cwam_dsw_environment_verification"
 _CLOSURE_KIND = "cwam_dsw_asset_env_closure_provenance"
 
-_EXPECTED_EMA_KEY_COUNT = 809
-_EXPECTED_EMA_CHUNK_COUNT = 6472
 _EXPECTED_TARGET_SHARD_COUNT = 8
 _EXPECTED_SOURCE_DCP_FILE_COUNT = 9
-_EXPECTED_SOURCE_DCP_TOTAL_BYTES = 91_061_947_649
 _EXPECTED_ROBOCASA_PACKAGE_SOURCE_NOTE = (
     "exact versions rebuilt with Alibaba PyPI mirror and PyTorch cu128 index; "
     "torchcodec==0.5 overridden by verified official PyPI cp311 wheel; "
@@ -101,9 +98,7 @@ def _canonical_directory(path: Path, label: str) -> Path:
     except FileNotFoundError:
         raise DswInputProvenanceError(f"{label} does not exist: {supplied}") from None
     if supplied != canonical or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise DswInputProvenanceError(
-            f"{label} must be a canonical non-symlink directory: {supplied}"
-        )
+        raise DswInputProvenanceError(f"{label} must be a canonical non-symlink directory: {supplied}")
     return canonical
 
 
@@ -115,13 +110,10 @@ def _canonical_file(path: Path, label: str, *, expected_mode: int | None = None)
     except FileNotFoundError:
         raise DswInputProvenanceError(f"{label} does not exist: {supplied}") from None
     if supplied != canonical or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise DswInputProvenanceError(
-            f"{label} must be a canonical regular non-symlink file: {supplied}"
-        )
+        raise DswInputProvenanceError(f"{label} must be a canonical regular non-symlink file: {supplied}")
     if expected_mode is not None and stat.S_IMODE(metadata.st_mode) != expected_mode:
         raise DswInputProvenanceError(
-            f"{label} mode mismatch: expected={oct(expected_mode)}, "
-            f"actual={oct(stat.S_IMODE(metadata.st_mode))}"
+            f"{label} mode mismatch: expected={oct(expected_mode)}, actual={oct(stat.S_IMODE(metadata.st_mode))}"
         )
     return canonical
 
@@ -162,12 +154,7 @@ def stable_file_descriptor(
     finally:
         os.close(descriptor)
     final = canonical.lstat()
-    if not (
-        _identity(before)
-        == _identity(opened)
-        == _identity(after)
-        == _identity(final)
-    ):
+    if not (_identity(before) == _identity(opened) == _identity(after) == _identity(final)):
         raise DswInputProvenanceError(f"{label} changed while hashing: {canonical}")
     if size_bytes != before.st_size:
         raise DswInputProvenanceError(f"{label} size changed while hashing: {canonical}")
@@ -190,14 +177,10 @@ def _read_json(
         expected_sha256 = _require_sha256(expected_sha256, f"expected {label} SHA-256")
         if descriptor["sha256"] != expected_sha256:
             raise DswInputProvenanceError(
-                f"{label} SHA-256 mismatch: expected={expected_sha256}, "
-                f"actual={descriptor['sha256']}"
+                f"{label} SHA-256 mismatch: expected={expected_sha256}, actual={descriptor['sha256']}"
             )
     payload = Path(descriptor["path"]).read_bytes()
-    if (
-        len(payload) != descriptor["size_bytes"]
-        or hashlib.sha256(payload).hexdigest() != descriptor["sha256"]
-    ):
+    if len(payload) != descriptor["size_bytes"] or hashlib.sha256(payload).hexdigest() != descriptor["sha256"]:
         raise DswInputProvenanceError(f"{label} changed between hashing and reading")
     try:
         value = json.loads(payload, object_pairs_hook=_reject_duplicate_json_keys)
@@ -217,12 +200,8 @@ def _atomic_write_immutable(path: Path, payload: Mapping[str, Any]) -> dict[str,
         raise DswInputProvenanceError(f"output parent must be canonical: {supplied.parent}")
     if supplied.exists() or supplied.is_symlink():
         raise DswInputProvenanceError(f"refusing to overwrite output: {supplied}")
-    encoded = (
-        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{supplied.name}.", suffix=".tmp", dir=parent
-    )
+    encoded = (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{supplied.name}.", suffix=".tmp", dir=parent)
     temporary = Path(temporary_name)
     published = False
     try:
@@ -238,9 +217,7 @@ def _atomic_write_immutable(path: Path, payload: Mapping[str, Any]) -> dict[str,
         # inode ctime; hashing before that unlink has propagated can produce a
         # false replacement signal on CPFS.
         temporary.unlink()
-        parent_descriptor = os.open(
-            parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        )
+        parent_descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(parent_descriptor)
         finally:
@@ -304,9 +281,7 @@ def _validate_file_records(
             or any(component in ("", ".", "..") for component in relative.split("/"))
             or relative in seen
         ):
-            raise DswInputProvenanceError(
-                f"{label}[{index}].relative_path is unsafe or duplicated"
-            )
+            raise DswInputProvenanceError(f"{label}[{index}].relative_path is unsafe or duplicated")
         seen.add(relative)
         size_bytes = raw["size_bytes"]
         if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
@@ -315,9 +290,7 @@ def _validate_file_records(
             {
                 "relative_path": relative,
                 "size_bytes": size_bytes,
-                "sha256": _require_sha256(
-                    raw["sha256"], f"{label}[{index}].sha256"
-                ),
+                "sha256": _require_sha256(raw["sha256"], f"{label}[{index}].sha256"),
             }
         )
     if [record["relative_path"] for record in records] != sorted(seen):
@@ -348,16 +321,13 @@ def _live_distribution_summary() -> tuple[int, str]:
             or not isinstance(raw_version, str)
             or not raw_version.strip()
         ):
-            raise DswInputProvenanceError(
-                f"installed distribution {index} lacks a valid name/version"
-            )
+            raise DswInputProvenanceError(f"installed distribution {index} lacks a valid name/version")
         name = raw_name.strip()
         version = raw_version.strip()
         canonical_name = re.sub(r"[-_.]+", "-", name).lower()
         if canonical_name in records:
             raise DswInputProvenanceError(
-                f"installed distributions contain duplicate canonical name "
-                f"{canonical_name!r}"
+                f"installed distributions contain duplicate canonical name {canonical_name!r}"
             )
         records[canonical_name] = {"name": name, "version": version}
     ordered = {name: records[name] for name in sorted(records)}
@@ -437,9 +407,9 @@ def _validate_source_dcp_receipt(
     if (
         source["file_count"] != _EXPECTED_SOURCE_DCP_FILE_COUNT
         or len(records) != _EXPECTED_SOURCE_DCP_FILE_COUNT
-        or source["total_bytes"] != _EXPECTED_SOURCE_DCP_TOTAL_BYTES
-        or sum(record["size_bytes"] for record in records)
-        != _EXPECTED_SOURCE_DCP_TOTAL_BYTES
+        or type(source["total_bytes"]) is not int
+        or source["total_bytes"] <= 0
+        or sum(record["size_bytes"] for record in records) != source["total_bytes"]
         or source["full_file_sha256_readback"] is not True
     ):
         raise DswInputProvenanceError("source DCP receipt does not prove the complete 9-file source")
@@ -451,9 +421,7 @@ def _validate_source_dcp_receipt(
         ("target_tree_sha256", target_tree_sha256),
     ):
         if binding.get(key) != expected:
-            raise DswInputProvenanceError(
-                f"source DCP receipt derived target binding mismatch for {key}"
-            )
+            raise DswInputProvenanceError(f"source DCP receipt derived target binding mismatch for {key}")
     _require_sha256(source["origin_manifest_sha256"], "source origin manifest SHA-256")
     _require_sha256(source["origin_tree_sha256"], "source origin tree SHA-256")
     _require_sha256(verifier["sha256"], "source DCP verifier SHA-256")
@@ -475,15 +443,19 @@ def relocate_checkpoint(
     expected_source_dcp_receipt_sha256: str,
     training_config_path: Path,
     expected_training_config_sha256: str,
+    expected_ema_key_count: int,
+    expected_ema_chunk_count: int,
     destination_manifest_output: Path,
     relocation_receipt_output: Path,
 ) -> dict[str, Any]:
     """Verify H provenance and publish a DSW-path-bound checkpoint manifest."""
 
     checkpoint_path = _canonical_directory(checkpoint_path, "DSW checkpoint")
-    expected_target_tree_sha256 = _require_sha256(
-        expected_target_tree_sha256, "expected target tree SHA-256"
-    )
+    expected_target_tree_sha256 = _require_sha256(expected_target_tree_sha256, "expected target tree SHA-256")
+    if type(expected_ema_key_count) is not int or expected_ema_key_count <= 0:
+        raise DswInputProvenanceError("expected EMA key count must be positive")
+    if type(expected_ema_chunk_count) is not int or expected_ema_chunk_count <= 0:
+        raise DswInputProvenanceError("expected EMA chunk count must be positive")
     h_manifest, h_manifest_descriptor = _read_json(
         h_manifest_path,
         label="H serving checkpoint manifest",
@@ -503,16 +475,9 @@ def relocate_checkpoint(
     if h_tree != expected_target_tree_sha256:
         raise DswInputProvenanceError("H manifest target tree differs from the pinned target tree")
 
-    live_manifest = cwam_serving_checkpoint_manifest.create_serving_checkpoint_manifest(
-        checkpoint_path
-    )
-    if (
-        live_manifest["files"] != h_files
-        or live_manifest["tree_sha256"] != h_tree
-    ):
-        raise DswInputProvenanceError(
-            "DSW destination model tree is not byte-identical to the H serving model tree"
-        )
+    live_manifest = cwam_serving_checkpoint_manifest.create_serving_checkpoint_manifest(checkpoint_path)
+    if live_manifest["files"] != h_files or live_manifest["tree_sha256"] != h_tree:
+        raise DswInputProvenanceError("DSW destination model tree is not byte-identical to the H serving model tree")
 
     export_receipt, export_descriptor = _read_json(
         export_receipt_path,
@@ -565,8 +530,8 @@ def relocate_checkpoint(
         "key_names_preserved": True,
         "source_dtype": "torch.float32",
         "target_dtype": "torch.bfloat16",
-        "key_count": _EXPECTED_EMA_KEY_COUNT,
-        "chunk_count": _EXPECTED_EMA_CHUNK_COUNT,
+        "key_count": expected_ema_key_count,
+        "chunk_count": expected_ema_chunk_count,
     }
     for key, expected in expected_selection.items():
         if selection.get(key) != expected:
@@ -574,8 +539,7 @@ def relocate_checkpoint(
     if (
         target.get("shard_count") != _EXPECTED_TARGET_SHARD_COUNT
         or target.get("checkpoint_tree_sha256") != h_tree
-        or target.get("serving_manifest_sha256")
-        != h_manifest_descriptor["sha256"]
+        or target.get("serving_manifest_sha256") != h_manifest_descriptor["sha256"]
         or target.get("key_manifest_sha256") != key_descriptor["sha256"]
         or target.get("validation_sha256") != validation_descriptor["sha256"]
         or source.get("config_sha256") != config_descriptor["sha256"]
@@ -587,13 +551,13 @@ def relocate_checkpoint(
         key_manifest.get("schema_version") != 1
         or key_manifest.get("kind") != "cwam_serving_ema_bf16_key_manifest"
         or key_manifest.get("selection") != "net_ema.* only; key names preserved"
-        or key_manifest.get("key_count") != _EXPECTED_EMA_KEY_COUNT
+        or key_manifest.get("key_count") != expected_ema_key_count
         or key_manifest.get("target_model_path") != original_h_checkpoint
     ):
         raise DswInputProvenanceError("EMA key manifest header mismatch")
     raw_keys = key_manifest.get("keys")
-    if not isinstance(raw_keys, list) or len(raw_keys) != _EXPECTED_EMA_KEY_COUNT:
-        raise DswInputProvenanceError("EMA key manifest must contain exactly 809 keys")
+    if not isinstance(raw_keys, list) or len(raw_keys) != expected_ema_key_count:
+        raise DswInputProvenanceError(f"EMA key manifest must contain exactly {expected_ema_key_count} keys")
     observed_keys: list[str] = []
     observed_chunks = 0
     for index, record in enumerate(raw_keys):
@@ -616,7 +580,7 @@ def relocate_checkpoint(
             raise DswInputProvenanceError(f"EMA key manifest chunk inventory mismatch for {key}")
         observed_keys.append(key)
         observed_chunks += chunk_count
-    if observed_keys != sorted(set(observed_keys)) or observed_chunks != _EXPECTED_EMA_CHUNK_COUNT:
+    if observed_keys != sorted(set(observed_keys)) or observed_chunks != expected_ema_chunk_count:
         raise DswInputProvenanceError("EMA key manifest key ordering/count or chunk count mismatch")
 
     full_readback = validation.get("full_readback")
@@ -627,8 +591,8 @@ def relocate_checkpoint(
         or validation.get("status") != "passed"
         or not isinstance(full_readback, dict)
         or full_readback.get("status") != "passed"
-        or full_readback.get("verified_key_count") != _EXPECTED_EMA_KEY_COUNT
-        or full_readback.get("verified_chunk_count") != _EXPECTED_EMA_CHUNK_COUNT
+        or full_readback.get("verified_key_count") != expected_ema_key_count
+        or full_readback.get("verified_chunk_count") != expected_ema_chunk_count
         or full_readback.get("verified_shard_count") != _EXPECTED_TARGET_SHARD_COUNT
         or full_readback.get("checkpoint_tree_sha256") != h_tree
         or full_readback.get("every_serialized_chunk_sha256_recorded") is not True
@@ -656,14 +620,10 @@ def relocate_checkpoint(
     source_dcp_binding = source_receipt["source"]
     if (
         source.get("model_path") != source_dcp_binding["model_path"]
-        or source.get("origin_manifest_sha256")
-        != source_dcp_binding["origin_manifest_sha256"]
-        or source.get("origin_tree_sha256")
-        != source_dcp_binding["origin_tree_sha256"]
+        or source.get("origin_manifest_sha256") != source_dcp_binding["origin_manifest_sha256"]
+        or source.get("origin_tree_sha256") != source_dcp_binding["origin_tree_sha256"]
     ):
-        raise DswInputProvenanceError(
-            "source-DCP full receipt and EMA export source bindings differ"
-        )
+        raise DswInputProvenanceError("source-DCP full receipt and EMA export source bindings differ")
 
     destination_manifest_descriptor = _atomic_write_immutable(
         destination_manifest_output,
@@ -712,8 +672,8 @@ def relocate_checkpoint(
             "selected_tree": "net_ema",
             "included_prefix": "net_ema.",
             "excluded_prefix": "net.",
-            "key_count": _EXPECTED_EMA_KEY_COUNT,
-            "chunk_count": _EXPECTED_EMA_CHUNK_COUNT,
+            "key_count": expected_ema_key_count,
+            "chunk_count": expected_ema_chunk_count,
             "source_dtype": "torch.float32",
             "target_dtype": "torch.bfloat16",
             "custom_load_planner": "CustomLoadPlanner(load_ema_to_reg=True)",
@@ -757,11 +717,9 @@ def verify_static_inputs(
         expected_mode=0o444,
     )
     try:
-        checkpoint_verification = (
-            cwam_serving_checkpoint_manifest.verify_serving_checkpoint_manifest(
-                manifest,
-                checkpoint_path,
-            )
+        checkpoint_verification = cwam_serving_checkpoint_manifest.verify_serving_checkpoint_manifest(
+            manifest,
+            checkpoint_path,
         )
     except cwam_serving_checkpoint_manifest.ServingCheckpointManifestError as error:
         raise DswInputProvenanceError(str(error)) from error
@@ -811,16 +769,10 @@ def verify_source_snapshot(
     if phase not in {"pre", "post"}:
         raise DswInputProvenanceError("source verification phase must be pre or post")
     root = _canonical_directory(snapshot_root, "Cosmos source snapshot")
-    manifest_path = _canonical_file(
-        manifest_path, "Cosmos source manifest", expected_mode=0o444
-    )
+    manifest_path = _canonical_file(manifest_path, "Cosmos source manifest", expected_mode=0o444)
     if manifest_path != root / "SNAPSHOT_MANIFEST.json":
-        raise DswInputProvenanceError(
-            "source manifest must be the exact SNAPSHOT_MANIFEST.json under the snapshot"
-        )
-    expected_source_commit = _require_commit(
-        expected_source_commit, "expected source commit"
-    )
+        raise DswInputProvenanceError("source manifest must be the exact SNAPSHOT_MANIFEST.json under the snapshot")
+    expected_source_commit = _require_commit(expected_source_commit, "expected source commit")
     manifest, descriptor = _read_json(
         manifest_path,
         label="Cosmos source manifest",
@@ -834,9 +786,7 @@ def verify_source_snapshot(
         or not isinstance(manifest.get("files"), list)
         or manifest.get("file_count") != len(manifest["files"])
     ):
-        raise DswInputProvenanceError(
-            "source manifest schema, source_head, clean state, or file count mismatch"
-        )
+        raise DswInputProvenanceError("source manifest schema, source_head, clean state, or file count mismatch")
     try:
         live = cwam_formal_provenance.verify_snapshot(
             snapshot_root=root,
@@ -889,22 +839,16 @@ def verify_environment(
     if environment_type not in {"cosmos", "robocasa"}:
         raise DswInputProvenanceError("environment_type must be cosmos or robocasa")
     if installation_mode not in {"native_exact_rebuild", "portable_bundle_fallback"}:
-        raise DswInputProvenanceError(
-            "installation_mode must be native_exact_rebuild or portable_bundle_fallback"
-        )
+        raise DswInputProvenanceError("installation_mode must be native_exact_rebuild or portable_bundle_fallback")
     environment = _canonical_directory(environment, f"{environment_type} environment")
-    marker_path = _canonical_file(
-        marker_path, f"{environment_type} environment marker", expected_mode=0o444
-    )
+    marker_path = _canonical_file(marker_path, f"{environment_type} environment marker", expected_mode=0o444)
     expected_marker_name = (
         ".cwam_env_ready.json"
         if installation_mode == "native_exact_rebuild" or environment_type == "cosmos"
         else ".cwam_bundle_manifest.json"
     )
     if marker_path != environment / expected_marker_name:
-        raise DswInputProvenanceError(
-            f"{environment_type} marker must be {environment / expected_marker_name}"
-        )
+        raise DswInputProvenanceError(f"{environment_type} marker must be {environment / expected_marker_name}")
     marker, marker_descriptor = _read_json(
         marker_path,
         label=f"{environment_type} environment marker",
@@ -915,9 +859,7 @@ def verify_environment(
         raise DswInputProvenanceError("environment marker schema_version must be 1")
     if environment_type == "cosmos":
         if installation_mode != "native_exact_rebuild":
-            raise DswInputProvenanceError(
-                "Cosmos formal environment must use a native exact rebuild"
-            )
+            raise DswInputProvenanceError("Cosmos formal environment must use a native exact rebuild")
         _require_exact_keys(
             marker,
             {
@@ -941,9 +883,7 @@ def verify_environment(
             raise DswInputProvenanceError("Cosmos environment marker status must be ready")
         if expected_source_commit is None:
             raise DswInputProvenanceError("Cosmos environment requires expected_source_commit")
-        expected_source_commit = _require_commit(
-            expected_source_commit, "expected Cosmos source commit"
-        )
+        expected_source_commit = _require_commit(expected_source_commit, "expected Cosmos source commit")
         if marker.get("source_head") != expected_source_commit:
             raise DswInputProvenanceError("Cosmos environment marker source_head mismatch")
         if (
@@ -952,9 +892,7 @@ def verify_environment(
             or marker.get("uv") != "0.11.28"
             or marker.get("cuda_available") is not True
         ):
-            raise DswInputProvenanceError(
-                "Cosmos native ready marker runtime versions differ from the formal contract"
-            )
+            raise DswInputProvenanceError("Cosmos native ready marker runtime versions differ from the formal contract")
         _require_sha256(marker.get("pyproject_sha256"), "Cosmos marker pyproject_sha256")
         _require_sha256(marker.get("uv_lock_sha256"), "Cosmos marker uv_lock_sha256")
         if not isinstance(marker.get("packages"), dict) or not marker["packages"]:
@@ -966,19 +904,13 @@ def verify_environment(
                 or not isinstance(expected_version, str)
                 or not expected_version
             ):
-                raise DswInputProvenanceError(
-                    "Cosmos marker packages must map names to non-empty versions"
-                )
+                raise DswInputProvenanceError("Cosmos marker packages must map names to non-empty versions")
             try:
                 live_version = importlib.metadata.version(package_name)
             except importlib.metadata.PackageNotFoundError as error:
-                raise DswInputProvenanceError(
-                    f"Cosmos marker package is not installed: {package_name}"
-                ) from error
+                raise DswInputProvenanceError(f"Cosmos marker package is not installed: {package_name}") from error
             if live_version != expected_version:
-                raise DswInputProvenanceError(
-                    f"Cosmos live package version differs for {package_name}"
-                )
+                raise DswInputProvenanceError(f"Cosmos live package version differs for {package_name}")
     elif installation_mode == "native_exact_rebuild":
         _require_exact_keys(
             marker,
@@ -1013,29 +945,20 @@ def verify_environment(
             or marker.get("robocasa") != "1.0.1"
             or marker.get("robosuite") != "1.5.2"
             or marker.get("cuda_available") is not True
-            or marker.get("package_source_note")
-            != _EXPECTED_ROBOCASA_PACKAGE_SOURCE_NOTE
+            or marker.get("package_source_note") != _EXPECTED_ROBOCASA_PACKAGE_SOURCE_NOTE
         ):
             raise DswInputProvenanceError(
                 "RoboCasa native ready marker runtime versions differ from the formal contract"
             )
-        expected_robocasa_commit = _require_commit(
-            expected_robocasa_commit, "expected RoboCasa commit"
-        )
-        expected_robosuite_commit = _require_commit(
-            expected_robosuite_commit, "expected robosuite commit"
-        )
+        expected_robocasa_commit = _require_commit(expected_robocasa_commit, "expected RoboCasa commit")
+        expected_robosuite_commit = _require_commit(expected_robosuite_commit, "expected robosuite commit")
         if (
             marker.get("robocasa_commit") != expected_robocasa_commit
             or marker.get("robosuite_commit") != expected_robosuite_commit
         ):
             raise DswInputProvenanceError("RoboCasa native marker commit binding mismatch")
         distribution_count = marker.get("distribution_count")
-        if (
-            isinstance(distribution_count, bool)
-            or not isinstance(distribution_count, int)
-            or distribution_count < 1
-        ):
+        if isinstance(distribution_count, bool) or not isinstance(distribution_count, int) or distribution_count < 1:
             raise DswInputProvenanceError("RoboCasa marker distribution_count is invalid")
         for key in (
             "distributions_sha256",
@@ -1058,9 +981,7 @@ def verify_environment(
     try:
         executable.relative_to(environment)
     except ValueError as error:
-        raise DswInputProvenanceError(
-            "live Python executable is outside the declared environment"
-        ) from error
+        raise DswInputProvenanceError("live Python executable is outside the declared environment") from error
 
     probes: list[dict[str, Any]] = []
     for name in import_probes:
@@ -1084,14 +1005,8 @@ def verify_environment(
 
     marker_python = marker.get("python")
     live_python = platform.python_version()
-    if (
-        not isinstance(marker_python, str)
-        or not marker_python
-        or marker_python.split()[0] != live_python
-    ):
-        raise DswInputProvenanceError(
-            "live Python version differs from the native environment marker"
-        )
+    if not isinstance(marker_python, str) or not marker_python or marker_python.split()[0] != live_python:
+        raise DswInputProvenanceError("live Python version differs from the native environment marker")
 
     cuda: dict[str, Any] | None = None
     if expect_cuda_gpus:
@@ -1099,10 +1014,7 @@ def verify_environment(
             raise DswInputProvenanceError("only the Cosmos environment may require CUDA GPUs")
         import torch
 
-        if (
-            not torch.cuda.is_available()
-            or torch.cuda.device_count() != expect_cuda_gpus
-        ):
+        if not torch.cuda.is_available() or torch.cuda.device_count() != expect_cuda_gpus:
             raise DswInputProvenanceError(
                 f"expected {expect_cuda_gpus} live CUDA GPUs, got {torch.cuda.device_count()}"
             )
@@ -1118,9 +1030,7 @@ def verify_environment(
                 raise DswInputProvenanceError(f"unexpected formal-eval GPU: {record}")
             gpus.append(record)
         if marker.get("torch") != torch.__version__ or marker.get("torch_cuda") != torch.version.cuda:
-            raise DswInputProvenanceError(
-                "live torch/CUDA versions differ from the Cosmos ready marker"
-            )
+            raise DswInputProvenanceError("live torch/CUDA versions differ from the Cosmos ready marker")
         cuda = {
             "available": True,
             "device_count": expect_cuda_gpus,
@@ -1136,31 +1046,21 @@ def verify_environment(
             or torch.version.cuda != marker["torch_cuda"]
             or torch.cuda.is_available() is not marker["cuda_available"]
         ):
-            raise DswInputProvenanceError(
-                "live RoboCasa torch/CUDA runtime differs from the native marker"
-            )
+            raise DswInputProvenanceError("live RoboCasa torch/CUDA runtime differs from the native marker")
         expected_probe_versions = {
             "mujoco": marker["mujoco"],
             "robocasa": marker["robocasa"],
             "robosuite": marker["robosuite"],
         }
-        observed_probe_versions = {
-            probe["module"]: probe["version"] for probe in probes
-        }
+        observed_probe_versions = {probe["module"]: probe["version"] for probe in probes}
         if observed_probe_versions != expected_probe_versions:
-            raise DswInputProvenanceError(
-                "live RoboCasa package versions differ from the native marker"
-            )
-        live_distribution_count, live_distributions_sha256 = (
-            _live_distribution_summary()
-        )
+            raise DswInputProvenanceError("live RoboCasa package versions differ from the native marker")
+        live_distribution_count, live_distributions_sha256 = _live_distribution_summary()
         if (
             live_distribution_count != marker["distribution_count"]
             or live_distributions_sha256 != marker["distributions_sha256"]
         ):
-            raise DswInputProvenanceError(
-                "live RoboCasa distribution inventory differs from the native marker"
-            )
+            raise DswInputProvenanceError("live RoboCasa distribution inventory differs from the native marker")
         cuda = {
             "available": marker["cuda_available"],
             "device_count": torch.cuda.device_count(),
@@ -1190,9 +1090,7 @@ def verify_environment(
         "relocation": {
             "portable_bundle_used": installation_mode == "portable_bundle_fallback",
             "native_exact_rebuild_used": installation_mode == "native_exact_rebuild",
-            "marker_embedded_source_paths_are_provenance_only": (
-                installation_mode == "portable_bundle_fallback"
-            ),
+            "marker_embedded_source_paths_are_provenance_only": (installation_mode == "portable_bundle_fallback"),
             "live_sys_prefix_and_executable_are_dsw_path_bound": True,
         },
         "validation": {
@@ -1246,9 +1144,7 @@ def verify_closure_provenance(
     if bound_manifest_sha is None and isinstance(verification.get("manifest"), dict):
         bound_manifest_sha = verification["manifest"].get("sha256")
     if bound_manifest_sha != manifest_descriptor["sha256"]:
-        raise DswInputProvenanceError(
-            "H closure verification does not bind the exact closure manifest"
-        )
+        raise DswInputProvenanceError("H closure verification does not bind the exact closure manifest")
     receipt = {
         "schema_version": 1,
         "kind": _CLOSURE_KIND,
@@ -1286,6 +1182,8 @@ def _parser() -> argparse.ArgumentParser:
     relocate.add_argument("--expected-source-dcp-receipt-sha256", required=True)
     relocate.add_argument("--training-config-path", type=Path, required=True)
     relocate.add_argument("--expected-training-config-sha256", required=True)
+    relocate.add_argument("--expected-ema-key-count", type=int, required=True)
+    relocate.add_argument("--expected-ema-chunk-count", type=int, required=True)
     relocate.add_argument("--destination-manifest-output", type=Path, required=True)
     relocate.add_argument("--relocation-receipt-output", type=Path, required=True)
 
@@ -1313,9 +1211,7 @@ def _parser() -> argparse.ArgumentParser:
     environment = subparsers.add_parser("verify-environment")
     environment.add_argument("--phase", choices=("pre", "post"), required=True)
     environment.add_argument("--environment", type=Path, required=True)
-    environment.add_argument(
-        "--environment-type", choices=("cosmos", "robocasa"), required=True
-    )
+    environment.add_argument("--environment-type", choices=("cosmos", "robocasa"), required=True)
     environment.add_argument(
         "--installation-mode",
         choices=("native_exact_rebuild", "portable_bundle_fallback"),
@@ -1357,6 +1253,8 @@ def main() -> None:
             expected_source_dcp_receipt_sha256=args.expected_source_dcp_receipt_sha256,
             training_config_path=args.training_config_path,
             expected_training_config_sha256=args.expected_training_config_sha256,
+            expected_ema_key_count=args.expected_ema_key_count,
+            expected_ema_chunk_count=args.expected_ema_chunk_count,
             destination_manifest_output=args.destination_manifest_output,
             relocation_receipt_output=args.relocation_receipt_output,
         )

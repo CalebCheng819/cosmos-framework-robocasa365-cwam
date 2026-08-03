@@ -916,24 +916,29 @@ def _validate_checkpoint_atomic_publication_receipt(
 ) -> dict[str, Any]:
     """Validate the committed hidden-stage to canonical-checkpoint transition."""
 
+    expected_receipt_keys = {
+        "completed_at",
+        "final_root",
+        "final_root_absent_before_publication",
+        "kind",
+        "mode",
+        "postpublication",
+        "prepublication",
+        "publication",
+        "recovered_uncommitted_final_before_publication",
+        "schema_version",
+        "stage_root",
+        "status",
+    }
+    if "publication_contract_sha256" in value:
+        expected_receipt_keys.add("publication_contract_sha256")
+        _require_sha256(
+            value.get("publication_contract_sha256"),
+            "checkpoint publication contract SHA-256",
+        )
     _require_exact_keys(
         value,
-        frozenset(
-            {
-                "completed_at",
-                "final_root",
-                "final_root_absent_before_publication",
-                "kind",
-                "mode",
-                "postpublication",
-                "prepublication",
-                "publication",
-                "recovered_uncommitted_final_before_publication",
-                "schema_version",
-                "stage_root",
-                "status",
-            }
-        ),
+        frozenset(expected_receipt_keys),
         "checkpoint atomic publication receipt",
     )
     if (
@@ -968,7 +973,11 @@ def _validate_checkpoint_atomic_publication_receipt(
     if (
         final_root != expected_final_root
         or Path(stage_root).parent != Path(final_root).parent
-        or Path(stage_root).name != f".{Path(final_root).name}.incomplete-transfer-20260731"
+        or re.fullmatch(
+            rf"[.]{re.escape(Path(final_root).name)}[.]incomplete-transfer-[0-9]{{8}}",
+            Path(stage_root).name,
+        )
+        is None
     ):
         raise ValueError("checkpoint atomic publication stage/final paths do not bind the serving checkpoint")
     if os.path.lexists(stage_root):
@@ -1700,6 +1709,41 @@ def _gpu_inventory() -> list[dict[str, Any]]:
     return inventory
 
 
+def _validate_ema_selection_binding(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("DLC runtime EMA selection binding must be an object")
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "selected_tree",
+                "included_prefix",
+                "excluded_prefix",
+                "key_count",
+                "chunk_count",
+                "source_dtype",
+                "target_dtype",
+                "custom_load_planner",
+            }
+        ),
+        "DLC runtime EMA selection binding",
+    )
+    if (
+        value.get("selected_tree") != "net_ema"
+        or value.get("included_prefix") != "net_ema."
+        or value.get("excluded_prefix") != "net."
+        or type(value.get("key_count")) is not int
+        or value["key_count"] <= 0
+        or type(value.get("chunk_count")) is not int
+        or value["chunk_count"] <= 0
+        or value.get("source_dtype") != "torch.float32"
+        or value.get("target_dtype") != "torch.bfloat16"
+        or value.get("custom_load_planner") != "CustomLoadPlanner(load_ema_to_reg=True)"
+    ):
+        raise ValueError("DLC runtime EMA selection binding is invalid")
+    return dict(value)
+
+
 def validate_runtime_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     _require_exact_keys(
         value,
@@ -1799,6 +1843,7 @@ def validate_runtime_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
                 "demian_openpi_server_source",
                 "egl_mapping_receipt",
                 "egl_vendor_json",
+                "ema_selection",
                 "launch_nonce",
                 "qwen_tokenizer_manifest",
                 "qwen_tokenizer_path",
@@ -1817,6 +1862,7 @@ def validate_runtime_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     _require_sha256(bindings.get("launch_nonce"), "DLC runtime receipt launch_nonce")
     _require_commit(bindings.get("demian_commit"), "DLC runtime receipt demian_commit")
     _require_commit(bindings.get("source_commit"), "DLC runtime receipt source_commit")
+    ema_selection = _validate_ema_selection_binding(bindings.get("ema_selection"))
     demian_openpi_source = bindings.get("demian_openpi_server_source")
     if not isinstance(demian_openpi_source, dict):
         raise TypeError("DLC runtime demian_openpi_server_source must be a descriptor")
@@ -1898,10 +1944,10 @@ def validate_runtime_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     expected_weight = {
         "selected_weight_tree": "net_ema",
         "selected_source_prefix": "net_ema.",
-        "selected_key_count": 809,
-        "selected_source_dtype_census": {"torch.bfloat16": 809},
+        "selected_key_count": ema_selection["key_count"],
+        "selected_source_dtype_census": {"torch.bfloat16": ema_selection["key_count"]},
         "regular_key_count": 0,
-        "ema_key_count": 809,
+        "ema_key_count": ema_selection["key_count"],
         "other_key_count": 0,
         "serving_only_selected_tree": True,
         "load_planner": "CustomLoadPlanner(load_ema_to_reg=True)",
@@ -2097,6 +2143,14 @@ def capture_runtime(
         expected_labels=_REQUIRED_RUNTIME_PROVENANCE,
         label="runtime provenance",
     )
+    relocation = provenance_values["checkpoint_relocation"]
+    if (
+        relocation.get("schema_version") != 1
+        or relocation.get("kind") != "cwam_dsw_serving_checkpoint_relocation"
+        or relocation.get("status") != "passed"
+    ):
+        raise ValueError("checkpoint relocation receipt schema/kind/status mismatch")
+    ema_selection = _validate_ema_selection_binding(relocation.get("ema_selection"))
     _validate_checkpoint_atomic_publication_receipt(
         provenance_values["checkpoint_atomic_publication"],
         checkpoint_path=checkpoint_path,
@@ -2240,6 +2294,7 @@ def capture_runtime(
             "demian_openpi_server_source": demian_openpi_source_descriptor,
             "egl_mapping_receipt": egl_mapping_descriptor,
             "egl_vendor_json": egl_vendor_descriptor,
+            "ema_selection": ema_selection,
             "launch_nonce": expected_launch_nonce,
             "robocasa_environment_path": str(robocasa_environment_path),
             "robocasa_ready_marker": robocasa_ready_marker_descriptor,

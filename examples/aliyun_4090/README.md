@@ -20,6 +20,26 @@ its success bit is not used as an admission criterion and the episode is
 explicitly excluded from the 340-episode primary metric. The formal eight-shard
 loop starts only after this gate passes.
 
+## Eight-GPU DLC S1 extension
+
+`launch_cwam_cosmos3_robocasa365_eval_dlc.sh` and
+`run_cwam_cosmos3_robocasa365_eval_dlc.sh` preserve the same 17-task,
+20-episode, seed-42 protocol on one Alibaba DLC worker with eight physical
+GPUs, 126 CPUs, and 960 GiB of cgroup memory. The policy is one eight-rank FSDP
+service; the eight evaluator shards remain logical and run sequentially.
+
+The fixed hashes and counts below describe the historical R14 DSW closure.
+S1 scratch checkpoints instead require a SHA-256-bound publication contract.
+That contract supplies the exact checkpoint paths, model files, source-DCP
+receipt, transfer-only files, EMA key count, EMA chunk count, and optional
+logical byte totals. `cwam_ema_transfer_contract.py`,
+`transfer_cwam_ema_item_to_dsw.sh`, and
+`publish_cwam_ema_checkpoint_dsw.py --contract ...` validate that closure.
+The resulting key and chunk counts must also be passed as
+`EXPECTED_EMA_KEY_COUNT` and `EXPECTED_EMA_CHUNK_COUNT`; the eight-rank policy
+server re-reads DCP metadata and refuses a mixed tree, a non-BF16 tree, or a
+different key count.
+
 ## Audited immutable inputs
 
 The following hashes are fixed by the H export and the assets already verified
@@ -127,12 +147,13 @@ the pinned DeMiAn `openpi/src` tree. Runtime evidence binds that exact source
 path and SHA-256; an independently installed `openpi_server` wheel cannot
 silently select a different WebSocket implementation.
 
-The EMA serving checkpoint is not an ordinary model copy. Its receipts bind
-selection of `net_ema.*` only: 809 keys, 6,472 chunks, FP32-to-BF16 conversion,
-and eight DCP shards. The runner hashes the complete destination tree, verifies
-it against the H tree hash, then creates a new DSW-path-bound checkpoint
-manifest. The H manifest remains source provenance and is never treated as
-portable path metadata.
+The R14 EMA serving checkpoint is not an ordinary model copy. Its receipts
+bind selection of `net_ema.*` only: 809 keys, 6,472 chunks, FP32-to-BF16
+conversion, and eight DCP shards. The runner hashes the complete destination
+tree, verifies it against the H tree hash, then creates a new DSW-path-bound
+checkpoint manifest. The H manifest remains source provenance and is never
+treated as portable path metadata. S1 uses the dynamic, hash-bound counts
+described above rather than inheriting these R14 values.
 
 ## Native DSW environments
 

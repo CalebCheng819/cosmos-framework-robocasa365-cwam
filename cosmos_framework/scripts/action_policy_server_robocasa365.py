@@ -139,16 +139,11 @@ def _websocket_server_receipt(server_cls: type[Any]) -> dict[str, Any]:
 
     source_file = inspect.getsourcefile(server_cls)
     if source_file is None:
-        raise RuntimeError(
-            "RoboCasa365 WebSocket server class has no inspectable Python source"
-        )
+        raise RuntimeError("RoboCasa365 WebSocket server class has no inspectable Python source")
     source_path = _canonical_non_symlink_path(Path(source_file), kind="file")
     expected_module = "openpi.serving.websocket_policy_server"
     expected_qualname = "WebsocketPolicyServer"
-    if (
-        server_cls.__module__ != expected_module
-        or server_cls.__qualname__ != expected_qualname
-    ):
+    if server_cls.__module__ != expected_module or server_cls.__qualname__ != expected_qualname:
         raise RuntimeError(
             "RoboCasa365 formal serving selected an unexpected WebSocket class: "
             f"{server_cls.__module__}.{server_cls.__qualname__}"
@@ -166,15 +161,18 @@ def _dcp_selected_weight_receipt(
     *,
     use_ema_weights: bool,
     require_serving_only_ema_bf16: bool,
+    expected_ema_key_count: int,
 ) -> dict[str, Any]:
     """Describe the exact DCP namespace selected by the inference load planner.
 
-    The DSW formal service uses a derived checkpoint that intentionally contains
-    only the 809 ``net_ema.*`` tensors, converted from FP32 to BF16.  Reading the
-    live DCP metadata after model construction proves that the successfully
-    loaded service was pointed at that namespace instead of merely echoing the
-    requested ``use_ema_weights`` boolean.
+    Formal serving uses a derived checkpoint that intentionally contains only
+    ``net_ema.*`` tensors, converted from FP32 to BF16. Reading the live DCP
+    metadata after model construction proves that the successfully loaded
+    service was pointed at the manifest-bound namespace instead of merely
+    echoing the requested ``use_ema_weights`` boolean.
     """
+    if type(expected_ema_key_count) is not int or expected_ema_key_count <= 0:
+        raise ValueError("expected_ema_key_count must be a positive integer")
     root = _canonical_non_symlink_path(checkpoint_path, kind="directory")
     metadata_path = _canonical_non_symlink_path(root / ".metadata", kind="file")
     metadata = FileSystemReader(str(root)).read_metadata()
@@ -213,17 +211,18 @@ def _dcp_selected_weight_receipt(
     )
     if require_serving_only_ema_bf16:
         if not use_ema_weights:
-            raise RuntimeError("DSW formal serving requires use_ema_weights=true")
-        expected_dtype_census = {"torch.bfloat16": 809}
-        if len(ema_keys) != 809 or regular_keys or other_keys:
+            raise RuntimeError("formal serving requires use_ema_weights=true")
+        expected_dtype_census = {"torch.bfloat16": expected_ema_key_count}
+        if len(ema_keys) != expected_ema_key_count or regular_keys or other_keys:
             raise RuntimeError(
-                "DSW formal checkpoint must contain exactly 809 net_ema.* tensors "
+                "formal checkpoint must contain exactly the manifest-bound number "
+                f"of net_ema.* tensors ({expected_ema_key_count}) "
                 f"and no other trees, got ema={len(ema_keys)} regular={len(regular_keys)} "
                 f"other={len(other_keys)}"
             )
         if dtype_census != expected_dtype_census:
             raise RuntimeError(
-                "DSW formal net_ema.* source tensors must all be BF16: "
+                "formal net_ema.* source tensors must all be BF16: "
                 f"expected={expected_dtype_census}, actual={dtype_census}"
             )
 
@@ -242,9 +241,7 @@ def _dcp_selected_weight_receipt(
         "other_key_count": len(other_keys),
         "serving_only_selected_tree": serving_only_selected_tree,
         "load_planner": (
-            "CustomLoadPlanner(load_ema_to_reg=True)"
-            if use_ema_weights
-            else "CustomLoadPlanner(load_ema_to_reg=False)"
+            "CustomLoadPlanner(load_ema_to_reg=True)" if use_ema_weights else "CustomLoadPlanner(load_ema_to_reg=False)"
         ),
     }
 
@@ -465,6 +462,8 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     """Action domain ID used by the formal training recipe."""
     launch_nonce: str
     """Per-process 256-bit nonce used to bind receipts to this exact launch."""
+    expected_ema_key_count: int = 809
+    """Manifest-bound EMA tensor count; 809 preserves the published R14 contract."""
     wan2pt2_vae_path: Path | None = None
     """Optional canonical Wan2.2 VAE file override for portable serving."""
     qwen_tokenizer_path: Path | None = None
@@ -523,6 +522,8 @@ class RoboCasa365PolicyService(ActionModelService):
     def __init__(self, args: RoboCasa365ServerArgs) -> None:
         if _LAUNCH_NONCE_RE.fullmatch(args.launch_nonce) is None:
             raise ValueError("RoboCasa365 formal serving requires a 64-character lowercase hex launch nonce")
+        if type(args.expected_ema_key_count) is not int or args.expected_ema_key_count <= 0:
+            raise ValueError("RoboCasa365 formal serving requires a positive expected_ema_key_count")
         if args.fps != 20:
             raise ValueError(f"RoboCasa365 formal serving requires fps=20, got {args.fps}")
         if args.action_chunk_size != 16:
@@ -564,7 +565,8 @@ class RoboCasa365PolicyService(ActionModelService):
         self._checkpoint_weight_receipt = _dcp_selected_weight_receipt(
             self.checkpoint_path,
             use_ema_weights=bool(self.setup_args.use_ema_weights),
-            require_serving_only_ema_bf16=self.distributed_world_size == 4,
+            require_serving_only_ema_bf16=self.distributed_world_size > 1,
+            expected_ema_key_count=args.expected_ema_key_count,
         )
         self._dispatch_lock = threading.Lock()
         self._next_distributed_sequence = 0

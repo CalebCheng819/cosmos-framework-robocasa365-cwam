@@ -50,9 +50,7 @@ def test_immutable_receipt_retries_only_strict_cpfs_identity_mismatch(
         nonlocal attempts
         attempts += 1
         if attempts < 3:
-            raise provenance.DswInputProvenanceError(
-                f"{label} changed while opening: {path}"
-            )
+            raise provenance.DswInputProvenanceError(f"{label} changed while opening: {path}")
         return real_stable_file_descriptor(
             path,
             label=label,
@@ -291,6 +289,8 @@ def test_checkpoint_relocation_rebinds_path_and_preserves_exact_tree(tmp_path: P
         expected_source_dcp_receipt_sha256=receipts["source"][1],
         training_config_path=config,
         expected_training_config_sha256=config_sha,
+        expected_ema_key_count=809,
+        expected_ema_chunk_count=6472,
         destination_manifest_output=destination_manifest,
         relocation_receipt_output=relocation_receipt,
     )

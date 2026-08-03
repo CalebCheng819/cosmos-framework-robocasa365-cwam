@@ -39,16 +39,13 @@ EXPECTED_STAGE_ROOT = Path(
     ".R14-iter_000010000-serving-ema-bf16-v1.incomplete-transfer-20260731"
 )
 EXPECTED_FINAL_ROOT = Path(
-    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints/"
-    "R14-iter_000010000-serving-ema-bf16-v1"
+    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints/R14-iter_000010000-serving-ema-bf16-v1"
 )
 DEFAULT_RECEIPT = Path(
-    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/"
-    "ema-checkpoint-atomic-publication.json"
+    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/ema-checkpoint-atomic-publication.json"
 )
 DEFAULT_LOCK = Path(
-    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/"
-    ".ema-checkpoint-atomic-publication.lock"
+    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/.ema-checkpoint-atomic-publication.lock"
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -74,6 +71,8 @@ class PublicationContract:
     ema_chunk_count: int
     ema_source_logical_bytes: int | None = None
     ema_target_logical_bytes: int | None = None
+    transfer_only_files: Mapping[str, FileExpectation] | None = None
+    source_contract_sha256: str | None = None
 
 
 MODEL_FILES: tuple[Mapping[str, Any], ...] = (
@@ -165,13 +164,8 @@ H_SUMS: Mapping[str, str] = {
     "ema-bf16-key-manifest.json": ROOT_FILES["ema-bf16-key-manifest.json"].sha256,
     "ema-bf16-validation.json": ROOT_FILES["ema-bf16-validation.json"].sha256,
     "exporter-source.py": "916c77a3373d201b0bcf79151857f039dbdc3c7231be37b8a8ec4c28cbf41400",
-    **{
-        f"model/{record['relative_path']}": str(record["sha256"])
-        for record in MODEL_FILES
-    },
-    "serving-checkpoint-manifest.json": ROOT_FILES[
-        "h-serving-checkpoint-manifest.json"
-    ].sha256,
+    **{f"model/{record['relative_path']}": str(record["sha256"]) for record in MODEL_FILES},
+    "serving-checkpoint-manifest.json": ROOT_FILES["h-serving-checkpoint-manifest.json"].sha256,
 }
 
 FORMAL_CONTRACT = PublicationContract(
@@ -218,18 +212,11 @@ def _canonical_directory(path: Path, label: str, *, mode: int = 0o755) -> Path:
         metadata = supplied.lstat()
     except FileNotFoundError:
         raise CheckpointPublicationError(f"{label} does not exist: {supplied}") from None
-    if (
-        supplied != canonical
-        or stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISDIR(metadata.st_mode)
-    ):
-        raise CheckpointPublicationError(
-            f"{label} must be a canonical non-symlink directory: {supplied}"
-        )
+    if supplied != canonical or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise CheckpointPublicationError(f"{label} must be a canonical non-symlink directory: {supplied}")
     if stat.S_IMODE(metadata.st_mode) != mode:
         raise CheckpointPublicationError(
-            f"{label} mode mismatch: expected={oct(mode)}, "
-            f"actual={oct(stat.S_IMODE(metadata.st_mode))}"
+            f"{label} mode mismatch: expected={oct(mode)}, actual={oct(stat.S_IMODE(metadata.st_mode))}"
         )
     return canonical
 
@@ -278,8 +265,7 @@ def _stable_file(
         "mode": "0444",
     }
     if expected is not None and (
-        observed["size_bytes"] != expected.size_bytes
-        or observed["sha256"] != expected.sha256
+        observed["size_bytes"] != expected.size_bytes or observed["sha256"] != expected.sha256
     ):
         raise CheckpointPublicationError(
             f"{label} content mismatch: expected=({expected.size_bytes}, {expected.sha256}), "
@@ -314,6 +300,215 @@ def _load_json(
     return value, descriptor
 
 
+def _contract_path(value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise CheckpointPublicationError(f"{label} must be an absolute path")
+    normalized = os.path.normpath(value)
+    if normalized != value or any(character in value for character in ("\x00", "\r", "\n")):
+        raise CheckpointPublicationError(f"{label} must be a normalized absolute path")
+    return Path(value)
+
+
+def _contract_file_expectation(value: object, label: str) -> FileExpectation:
+    if not isinstance(value, Mapping) or set(value) != {"size_bytes", "sha256"}:
+        raise CheckpointPublicationError(f"{label} expectation is invalid")
+    size_bytes = value["size_bytes"]
+    sha256 = value["sha256"]
+    if type(size_bytes) is not int or size_bytes < 0:
+        raise CheckpointPublicationError(f"{label} size is invalid")
+    if not isinstance(sha256, str) or _SHA256_RE.fullmatch(sha256) is None:
+        raise CheckpointPublicationError(f"{label} SHA-256 is invalid")
+    return FileExpectation(size_bytes=size_bytes, sha256=sha256)
+
+
+def load_publication_contract(
+    path: Path,
+    *,
+    expected_sha256: str,
+) -> PublicationContract:
+    """Load one immutable, SHA-bound checkpoint publication contract."""
+
+    if _SHA256_RE.fullmatch(expected_sha256) is None:
+        raise CheckpointPublicationError("expected publication contract SHA-256 is invalid")
+    descriptor, payload = _stable_file(
+        Path(os.path.abspath(path.expanduser())),
+        label="publication contract",
+        capture=True,
+    )
+    if descriptor["sha256"] != expected_sha256:
+        raise CheckpointPublicationError(
+            f"publication contract SHA-256 mismatch: expected={expected_sha256}, actual={descriptor['sha256']}"
+        )
+    assert payload is not None
+    try:
+        value = json.loads(payload, object_pairs_hook=_reject_duplicate_json_keys)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CheckpointPublicationError(f"publication contract is invalid JSON: {error}") from error
+    required = {
+        "schema_version",
+        "kind",
+        "stage_root",
+        "final_root",
+        "source_model_path",
+        "tree_sha256",
+        "root_files",
+        "model_files",
+        "h_sums",
+        "transfer_only_files",
+        "ema_key_count",
+        "ema_chunk_count",
+        "ema_source_logical_bytes",
+        "ema_target_logical_bytes",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise CheckpointPublicationError("publication contract top-level key set is invalid")
+    if value["schema_version"] != 1 or value["kind"] != "cwam_ema_checkpoint_publication_contract":
+        raise CheckpointPublicationError("publication contract header is invalid")
+
+    stage_root = _contract_path(value["stage_root"], "stage root")
+    final_root = _contract_path(value["final_root"], "final root")
+    expected_parent = Path("/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints")
+    if (
+        stage_root.parent != expected_parent
+        or final_root.parent != expected_parent
+        or not final_root.name.startswith("S1-")
+        or re.fullmatch(
+            rf"[.]{re.escape(final_root.name)}[.]incomplete-transfer-[0-9]{{8}}",
+            stage_root.name,
+        )
+        is None
+    ):
+        raise CheckpointPublicationError("publication paths leave the reserved S1 root")
+
+    source_model_path = _contract_path(value["source_model_path"], "source model path")
+    source_prefix = Path("/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/artifacts/cwam_e35")
+    try:
+        source_model_path.relative_to(source_prefix)
+    except ValueError:
+        raise CheckpointPublicationError("source model path leaves the reserved H artifact root") from None
+
+    tree_sha256 = value["tree_sha256"]
+    if not isinstance(tree_sha256, str) or _SHA256_RE.fullmatch(tree_sha256) is None:
+        raise CheckpointPublicationError("publication tree SHA-256 is invalid")
+    expected_root_names = {
+        "H-SHA256SUMS",
+        "config.yaml",
+        "h-serving-checkpoint-manifest.json",
+        "ema-bf16-export-receipt.json",
+        "ema-bf16-key-manifest.json",
+        "ema-bf16-validation.json",
+        "source-dcp-full-verification.json",
+        "ema-serving-dcp-transfer-manifest.json",
+    }
+    root_values = value["root_files"]
+    if not isinstance(root_values, Mapping) or set(root_values) != expected_root_names:
+        raise CheckpointPublicationError("publication root-file set is invalid")
+    root_files = {
+        name: _contract_file_expectation(expectation, f"root file {name}") for name, expectation in root_values.items()
+    }
+
+    raw_model_files = value["model_files"]
+    expected_model_names = [".metadata", *(f"__{index}_0.distcp" for index in range(8))]
+    if not isinstance(raw_model_files, list) or len(raw_model_files) != 9:
+        raise CheckpointPublicationError("publication model-file list is invalid")
+    model_files: list[dict[str, Any]] = []
+    for record in raw_model_files:
+        if not isinstance(record, Mapping) or set(record) != {
+            "relative_path",
+            "size_bytes",
+            "sha256",
+        }:
+            raise CheckpointPublicationError("publication model-file record is invalid")
+        name = record["relative_path"]
+        expectation = _contract_file_expectation(
+            {
+                "size_bytes": record["size_bytes"],
+                "sha256": record["sha256"],
+            },
+            f"model file {name}",
+        )
+        model_files.append(
+            {
+                "relative_path": name,
+                "size_bytes": expectation.size_bytes,
+                "sha256": expectation.sha256,
+            }
+        )
+    if [record["relative_path"] for record in model_files] != expected_model_names:
+        raise CheckpointPublicationError("publication model-file ordering is invalid")
+    if _records_digest(model_files) != tree_sha256:
+        raise CheckpointPublicationError("publication model records do not reproduce tree SHA-256")
+
+    raw_h_sums = value["h_sums"]
+    expected_h_sum_names = {
+        "config.yaml",
+        "ema-bf16-export-receipt.json",
+        "ema-bf16-key-manifest.json",
+        "ema-bf16-validation.json",
+        "exporter-source.py",
+        "serving-checkpoint-manifest.json",
+        *(f"model/{name}" for name in expected_model_names),
+    }
+    if not isinstance(raw_h_sums, Mapping) or set(raw_h_sums) != expected_h_sum_names:
+        raise CheckpointPublicationError("publication H-SHA256SUMS contract is invalid")
+    h_sums: dict[str, str] = {}
+    for name, digest in raw_h_sums.items():
+        if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+            raise CheckpointPublicationError(f"publication H sum is invalid for {name}")
+        h_sums[name] = digest
+
+    transfer_values = value["transfer_only_files"]
+    if not isinstance(transfer_values, Mapping) or set(transfer_values) != {"exporter-source.py"}:
+        raise CheckpointPublicationError("publication transfer-only file set is invalid")
+    transfer_only_files = {
+        name: _contract_file_expectation(expectation, f"transfer-only file {name}")
+        for name, expectation in transfer_values.items()
+    }
+    if transfer_only_files["exporter-source.py"].sha256 != h_sums["exporter-source.py"]:
+        raise CheckpointPublicationError("exporter-source contract hash mismatch")
+
+    h_sum_bindings = {
+        "config.yaml": root_files["config.yaml"].sha256,
+        "ema-bf16-export-receipt.json": root_files["ema-bf16-export-receipt.json"].sha256,
+        "ema-bf16-key-manifest.json": root_files["ema-bf16-key-manifest.json"].sha256,
+        "ema-bf16-validation.json": root_files["ema-bf16-validation.json"].sha256,
+        "serving-checkpoint-manifest.json": root_files["h-serving-checkpoint-manifest.json"].sha256,
+        **{f"model/{record['relative_path']}": str(record["sha256"]) for record in model_files},
+    }
+    if any(h_sums[name] != digest for name, digest in h_sum_bindings.items()):
+        raise CheckpointPublicationError("publication H sums disagree with file records")
+
+    def positive_integer(field: str) -> int:
+        result = value[field]
+        if type(result) is not int or result <= 0:
+            raise CheckpointPublicationError(f"publication {field} is invalid")
+        return result
+
+    def optional_positive_integer(field: str) -> int | None:
+        result = value[field]
+        if result is None:
+            return None
+        if type(result) is not int or result <= 0:
+            raise CheckpointPublicationError(f"publication {field} is invalid")
+        return result
+
+    return PublicationContract(
+        stage_root=stage_root,
+        final_root=final_root,
+        source_model_path=str(source_model_path),
+        tree_sha256=tree_sha256,
+        root_files=root_files,
+        model_files=tuple(model_files),
+        h_sums=h_sums,
+        ema_key_count=positive_integer("ema_key_count"),
+        ema_chunk_count=positive_integer("ema_chunk_count"),
+        ema_source_logical_bytes=optional_positive_integer("ema_source_logical_bytes"),
+        ema_target_logical_bytes=optional_positive_integer("ema_target_logical_bytes"),
+        transfer_only_files=transfer_only_files,
+        source_contract_sha256=expected_sha256,
+    )
+
+
 def _records_digest(records: Sequence[Mapping[str, Any]]) -> str:
     payload = json.dumps(
         list(records),
@@ -322,6 +517,41 @@ def _records_digest(records: Sequence[Mapping[str, Any]]) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _validated_source_dcp_records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != 9:
+        raise CheckpointPublicationError("source DCP receipt must contain exactly nine file records")
+    expected_names = [".metadata", *(f"__{index}_0.distcp" for index in range(8))]
+    records: list[dict[str, Any]] = []
+    for index, raw_record in enumerate(value):
+        if not isinstance(raw_record, Mapping) or set(raw_record) != {
+            "relative_path",
+            "size_bytes",
+            "sha256",
+        }:
+            raise CheckpointPublicationError(f"source DCP file record {index} is malformed")
+        relative_path = raw_record["relative_path"]
+        size_bytes = raw_record["size_bytes"]
+        sha256 = raw_record["sha256"]
+        if (
+            not isinstance(relative_path, str)
+            or type(size_bytes) is not int
+            or size_bytes <= 0
+            or not isinstance(sha256, str)
+            or _SHA256_RE.fullmatch(sha256) is None
+        ):
+            raise CheckpointPublicationError(f"source DCP file record {index} has invalid values")
+        records.append(
+            {
+                "relative_path": relative_path,
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+            }
+        )
+    if [record["relative_path"] for record in records] != expected_names:
+        raise CheckpointPublicationError("source DCP receipt file ordering/set mismatch")
+    return records
 
 
 def _parse_h_sums(payload: bytes) -> dict[str, str]:
@@ -341,9 +571,7 @@ def _parse_h_sums(payload: bytes) -> dict[str, str]:
             or any(part in ("", ".", "..") for part in relative.split("/"))
             or relative in result
         ):
-            raise CheckpointPublicationError(
-                f"H-SHA256SUMS line {index} has an unsafe or duplicate path"
-            )
+            raise CheckpointPublicationError(f"H-SHA256SUMS line {index} has an unsafe or duplicate path")
         result[relative] = digest
     return result
 
@@ -403,12 +631,9 @@ def _validate_ema_jsons(
         or not isinstance(publication, Mapping)
         or target.get("shard_count") != 8
         or target.get("checkpoint_tree_sha256") != contract.tree_sha256
-        or target.get("serving_manifest_sha256")
-        != root_files["h-serving-checkpoint-manifest.json"].sha256
-        or target.get("key_manifest_sha256")
-        != root_files["ema-bf16-key-manifest.json"].sha256
-        or target.get("validation_sha256")
-        != root_files["ema-bf16-validation.json"].sha256
+        or target.get("serving_manifest_sha256") != root_files["h-serving-checkpoint-manifest.json"].sha256
+        or target.get("key_manifest_sha256") != root_files["ema-bf16-key-manifest.json"].sha256
+        or target.get("validation_sha256") != root_files["ema-bf16-validation.json"].sha256
         or target.get("metadata_sha256") != contract.model_files[0]["sha256"]
         or export_source.get("config_sha256") != root_files["config.yaml"].sha256
         or publication.get("final_model_path") != contract.source_model_path
@@ -447,10 +672,7 @@ def _validate_ema_jsons(
             raise CheckpointPublicationError(f"EMA key record {index} is invalid")
         observed_names.append(name)
         observed_chunks += chunk_count
-    if (
-        observed_names != sorted(set(observed_names))
-        or observed_chunks != contract.ema_chunk_count
-    ):
+    if observed_names != sorted(set(observed_names)) or observed_chunks != contract.ema_chunk_count:
         raise CheckpointPublicationError("EMA key ordering or chunk count mismatch")
 
     full = validation.get("full_readback")
@@ -483,6 +705,7 @@ def _validate_ema_jsons(
 
     derived = source.get("derived_target_binding")
     source_body = source.get("source")
+    source_records = _validated_source_dcp_records(source_body.get("files")) if isinstance(source_body, Mapping) else []
     if (
         source.get("schema_version") != 1
         or source.get("kind") != "cwam_source_dcp_full_verification"
@@ -490,12 +713,11 @@ def _validate_ema_jsons(
         or not isinstance(derived, Mapping)
         or not isinstance(source_body, Mapping)
         or source_body.get("file_count") != 9
-        or source_body.get("total_bytes") != 91_061_947_649
+        or source_body.get("total_bytes") != sum(int(record["size_bytes"]) for record in source_records)
         or source_body.get("full_file_sha256_readback") is not True
-        or derived.get("export_receipt_sha256")
-        != root_files["ema-bf16-export-receipt.json"].sha256
-        or derived.get("target_manifest_sha256")
-        != root_files["h-serving-checkpoint-manifest.json"].sha256
+        or source_body.get("origin_tree_sha256") != _records_digest(source_records)
+        or derived.get("export_receipt_sha256") != root_files["ema-bf16-export-receipt.json"].sha256
+        or derived.get("target_manifest_sha256") != root_files["h-serving-checkpoint-manifest.json"].sha256
         or derived.get("target_tree_sha256") != contract.tree_sha256
     ):
         raise CheckpointPublicationError("source DCP full-verification binding mismatch")
@@ -516,35 +738,36 @@ def _validate_transfer_manifest(
         or not isinstance(items, list)
         or len(items) != 17
         or not isinstance(bindings, Mapping)
-        or bindings.get("export_receipt_sha256")
-        != contract.root_files["ema-bf16-export-receipt.json"].sha256
+        or bindings.get("export_receipt_sha256") != contract.root_files["ema-bf16-export-receipt.json"].sha256
         or bindings.get("source_dcp_full_verification_sha256")
         != contract.root_files["source-dcp-full-verification.json"].sha256
         or bindings.get("target_tree_sha256") != contract.tree_sha256
     ):
         raise CheckpointPublicationError("Ceph transfer manifest header/binding mismatch")
 
+    transfer_only_files = contract.transfer_only_files or {
+        "exporter-source.py": FileExpectation(
+            55_882,
+            contract.h_sums["exporter-source.py"],
+        )
+    }
+    if set(transfer_only_files) != {"exporter-source.py"}:
+        raise CheckpointPublicationError("transfer-only file contract is invalid")
     identity_expected: dict[str, FileExpectation] = {
         "SHA256SUMS": contract.root_files["H-SHA256SUMS"],
         "config.yaml": contract.root_files["config.yaml"],
         "ema-bf16-export-receipt.json": contract.root_files["ema-bf16-export-receipt.json"],
         "ema-bf16-key-manifest.json": contract.root_files["ema-bf16-key-manifest.json"],
         "ema-bf16-validation.json": contract.root_files["ema-bf16-validation.json"],
-        "exporter-source.py": FileExpectation(55_882, contract.h_sums["exporter-source.py"]),
-        "serving-checkpoint-manifest.json": contract.root_files[
-            "h-serving-checkpoint-manifest.json"
-        ],
+        "exporter-source.py": transfer_only_files["exporter-source.py"],
+        "serving-checkpoint-manifest.json": contract.root_files["h-serving-checkpoint-manifest.json"],
         "model/.metadata": FileExpectation(
             int(contract.model_files[0]["size_bytes"]),
             str(contract.model_files[0]["sha256"]),
         ),
-        "source-dcp-full-verification.json": contract.root_files[
-            "source-dcp-full-verification.json"
-        ],
+        "source-dcp-full-verification.json": contract.root_files["source-dcp-full-verification.json"],
     }
-    model_by_path = {
-        str(record["relative_path"]): record for record in contract.model_files
-    }
+    model_by_path = {str(record["relative_path"]): record for record in contract.model_files}
     observed_paths: list[str] = []
     for item in items:
         if not isinstance(item, Mapping):
@@ -564,15 +787,11 @@ def _validate_transfer_manifest(
                 or item.get("transfer_size_bytes") != expected.size_bytes
                 or item.get("transfer_sha256") != expected.sha256
             ):
-                raise CheckpointPublicationError(
-                    f"identity transfer item mismatch for {object_path}"
-                )
+                raise CheckpointPublicationError(f"identity transfer item mismatch for {object_path}")
             continue
         match = re.fullmatch(r"model/(__[0-7]_0[.]distcp)[.]gz", object_path)
         if match is None:
-            raise CheckpointPublicationError(
-                f"unexpected Ceph transfer object: {object_path}"
-            )
+            raise CheckpointPublicationError(f"unexpected Ceph transfer object: {object_path}")
         raw_name = match.group(1)
         expected_record = model_by_path[raw_name]
         if (
@@ -586,9 +805,7 @@ def _validate_transfer_manifest(
             or _SHA256_RE.fullmatch(item["transfer_sha256"]) is None
         ):
             raise CheckpointPublicationError(f"gzip transfer item mismatch for {object_path}")
-    expected_paths = sorted(
-        [*identity_expected, *(f"model/__{index}_0.distcp.gz" for index in range(8))]
-    )
+    expected_paths = sorted([*identity_expected, *(f"model/__{index}_0.distcp.gz" for index in range(8))])
     if observed_paths != expected_paths:
         raise CheckpointPublicationError("Ceph transfer item ordering/set mismatch")
 
@@ -666,9 +883,7 @@ def audit_checkpoint_root(
     model = _canonical_directory(root / "model", "checkpoint model directory")
     model_before = model.lstat()
     model_names = {entry.name for entry in os.scandir(model)}
-    expected_model_names = {
-        str(record["relative_path"]) for record in contract.model_files
-    }
+    expected_model_names = {str(record["relative_path"]) for record in contract.model_files}
     if model_names != expected_model_names:
         raise CheckpointPublicationError(
             "model file set mismatch: "
@@ -693,10 +908,7 @@ def audit_checkpoint_root(
                 "sha256": observed["sha256"],
             }
         )
-    if (
-        model_records != list(contract.model_files)
-        or _records_digest(model_records) != contract.tree_sha256
-    ):
+    if model_records != list(contract.model_files) or _records_digest(model_records) != contract.tree_sha256:
         raise CheckpointPublicationError("model tree SHA-256 mismatch")
 
     if _identity(model_before) != _identity(model.lstat()):
@@ -761,9 +973,7 @@ def _assert_directory_inode(
         or stat.S_IMODE(metadata.st_mode) != 0o755
         or _inode_key(metadata) != expected_inode
     ):
-        raise CheckpointPublicationError(
-            f"{label} inode/type/mode changed: {path}"
-        )
+        raise CheckpointPublicationError(f"{label} inode/type/mode changed: {path}")
     return metadata
 
 
@@ -801,14 +1011,10 @@ def _mkdir_exclusive_directory(
         finally:
             os.umask(previous_umask)
         if not os.path.lexists(supplied):
-            raise CheckpointPublicationError(
-                f"{label} exclusive mkdir returned without a directory"
-            )
+            raise CheckpointPublicationError(f"{label} exclusive mkdir returned without a directory")
         metadata = supplied.lstat()
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise CheckpointPublicationError(
-                f"{label} exclusive mkdir did not create a directory"
-            )
+            raise CheckpointPublicationError(f"{label} exclusive mkdir did not create a directory")
         created_inode = _inode_key(metadata)
         if stat.S_IMODE(metadata.st_mode) != 0o755:
             os.chmod(supplied, 0o755, follow_symlinks=False)
@@ -838,17 +1044,10 @@ def _validate_expected_entry_metadata(
     contract: PublicationContract,
 ) -> None:
     if stat.S_ISLNK(metadata.st_mode):
-        raise CheckpointPublicationError(
-            f"transaction source entry must not be a symlink: {path}"
-        )
+        raise CheckpointPublicationError(f"transaction source entry must not be a symlink: {path}")
     if name == "model":
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != 0o755
-        ):
-            raise CheckpointPublicationError(
-                f"transaction model entry type/mode mismatch: {path}"
-            )
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o755:
+            raise CheckpointPublicationError(f"transaction model entry type/mode mismatch: {path}")
         return
     expected = contract.root_files[name]
     if (
@@ -856,9 +1055,7 @@ def _validate_expected_entry_metadata(
         or stat.S_IMODE(metadata.st_mode) != 0o444
         or metadata.st_size != expected.size_bytes
     ):
-        raise CheckpointPublicationError(
-            f"transaction top-level entry type/mode/size mismatch: {path}"
-        )
+        raise CheckpointPublicationError(f"transaction top-level entry type/mode/size mismatch: {path}")
 
 
 def _move_entry_to_absent_destination(
@@ -880,23 +1077,14 @@ def _move_entry_to_absent_destination(
     )
     source = source_root / name
     destination = destination_root / name
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     source_descriptor = os.open(source_root, flags)
     destination_descriptor = os.open(destination_root, flags)
     try:
         if _inode_key(os.fstat(source_descriptor)) != source_inode:
-            raise CheckpointPublicationError(
-                f"{source_label} descriptor inode mismatch"
-            )
+            raise CheckpointPublicationError(f"{source_label} descriptor inode mismatch")
         if _inode_key(os.fstat(destination_descriptor)) != destination_inode:
-            raise CheckpointPublicationError(
-                f"{destination_label} descriptor inode mismatch"
-            )
+            raise CheckpointPublicationError(f"{destination_label} descriptor inode mismatch")
         try:
             source_metadata = os.stat(
                 name,
@@ -904,9 +1092,7 @@ def _move_entry_to_absent_destination(
                 follow_symlinks=False,
             )
         except FileNotFoundError:
-            raise CheckpointPublicationError(
-                f"transaction source entry disappeared: {source}"
-            ) from None
+            raise CheckpointPublicationError(f"transaction source entry disappeared: {source}") from None
         _validate_expected_entry_metadata(
             source_metadata,
             path=source,
@@ -923,9 +1109,7 @@ def _move_entry_to_absent_destination(
         except FileNotFoundError:
             pass
         else:
-            raise CheckpointPublicationError(
-                f"transaction destination entry already exists: {destination}"
-            )
+            raise CheckpointPublicationError(f"transaction destination entry already exists: {destination}")
         os.rename(
             name,
             name,
@@ -941,9 +1125,7 @@ def _move_entry_to_absent_destination(
         except FileNotFoundError:
             pass
         else:
-            raise CheckpointPublicationError(
-                f"transaction source entry remained after rename: {source}"
-            )
+            raise CheckpointPublicationError(f"transaction source entry remained after rename: {source}")
         destination_metadata = os.stat(
             name,
             dir_fd=destination_descriptor,
@@ -956,9 +1138,7 @@ def _move_entry_to_absent_destination(
             contract=contract,
         )
         if _inode_key(destination_metadata) != source_entry_inode:
-            raise CheckpointPublicationError(
-                f"transaction entry inode changed during rename: {name}"
-            )
+            raise CheckpointPublicationError(f"transaction entry inode changed during rename: {name}")
         os.fsync(source_descriptor)
         os.fsync(destination_descriptor)
     finally:
@@ -1040,27 +1220,20 @@ def _recover_uncommitted_transaction_to_stage(
         label="uncommitted checkpoint final reservation",
     )
     if stage_state is None and final_state is None:
-        raise CheckpointPublicationError(
-            "hidden stage and uncommitted final reservation are both absent"
-        )
+        raise CheckpointPublicationError("hidden stage and uncommitted final reservation are both absent")
     stage_names = set() if stage_state is None else stage_state[2]
     final_names = set() if final_state is None else final_state[2]
     extra = (stage_names | final_names) - expected_names
     overlap = stage_names & final_names
     missing = expected_names - (stage_names | final_names)
     if extra:
-        raise CheckpointPublicationError(
-            f"uncommitted checkpoint transaction has extra entries: {sorted(extra)}"
-        )
+        raise CheckpointPublicationError(f"uncommitted checkpoint transaction has extra entries: {sorted(extra)}")
     if overlap:
         raise CheckpointPublicationError(
-            "uncommitted checkpoint transaction has overlapping entries: "
-            f"{sorted(overlap)}"
+            f"uncommitted checkpoint transaction has overlapping entries: {sorted(overlap)}"
         )
     if missing:
-        raise CheckpointPublicationError(
-            f"uncommitted checkpoint transaction is missing entries: {sorted(missing)}"
-        )
+        raise CheckpointPublicationError(f"uncommitted checkpoint transaction is missing entries: {sorted(missing)}")
     if final_state is None:
         assert stage_state is not None
         stage = stage_state[0]
@@ -1075,13 +1248,8 @@ def _recover_uncommitted_transaction_to_stage(
         )
     else:
         stage, stage_inode, _ = stage_state
-    if (
-        stage.stat().st_dev != final.stat().st_dev
-        or stage.stat().st_dev != parent.stat().st_dev
-    ):
-        raise CheckpointPublicationError(
-            "checkpoint transaction directories must share one filesystem"
-        )
+    if stage.stat().st_dev != final.stat().st_dev or stage.stat().st_dev != parent.stat().st_dev:
+        raise CheckpointPublicationError("checkpoint transaction directories must share one filesystem")
     _move_entries(
         source_root=final,
         source_inode=final_inode,
@@ -1092,22 +1260,21 @@ def _recover_uncommitted_transaction_to_stage(
         source_label="uncommitted checkpoint final reservation",
         destination_label="recovered hidden checkpoint stage",
     )
-    if _directory_names(
-        stage,
-        stage_inode,
-        label="recovered hidden checkpoint stage",
-    ) != expected_names:
-        raise CheckpointPublicationError(
-            "recovered hidden checkpoint stage closure is incomplete"
+    if (
+        _directory_names(
+            stage,
+            stage_inode,
+            label="recovered hidden checkpoint stage",
         )
+        != expected_names
+    ):
+        raise CheckpointPublicationError("recovered hidden checkpoint stage closure is incomplete")
     if _directory_names(
         final,
         final_inode,
         label="uncommitted checkpoint final reservation",
     ):
-        raise CheckpointPublicationError(
-            "uncommitted checkpoint final reservation is not empty after recovery"
-        )
+        raise CheckpointPublicationError("uncommitted checkpoint final reservation is not empty after recovery")
     audit = audit_checkpoint_root(stage, contract=contract)
     _assert_directory_inode(
         stage,
@@ -1140,12 +1307,8 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
         raise CheckpointPublicationError("publication receipt parent must be canonical")
     if os.path.lexists(supplied):
         raise CheckpointPublicationError(f"refusing to overwrite publication receipt: {supplied}")
-    payload = (
-        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{supplied.name}.", suffix=".tmp", dir=parent
-    )
+    payload = (json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{supplied.name}.", suffix=".tmp", dir=parent)
     temporary = Path(temporary_name)
     committed = False
     try:
@@ -1161,9 +1324,7 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
                 or not stat.S_ISREG(opened_metadata.st_mode)
                 or stat.S_IMODE(opened_metadata.st_mode) != 0o444
             ):
-                raise CheckpointPublicationError(
-                    "publication receipt temporary inode/type/mode mismatch"
-                )
+                raise CheckpointPublicationError("publication receipt temporary inode/type/mode mismatch")
             os.link(temporary, supplied, follow_symlinks=False)
             committed = True
             published_metadata = supplied.lstat()
@@ -1174,9 +1335,7 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
                 temporary_metadata.st_dev,
                 temporary_metadata.st_ino,
             ):
-                raise CheckpointPublicationError(
-                    "publication receipt hard link inode mismatch"
-                )
+                raise CheckpointPublicationError("publication receipt hard link inode mismatch")
             # Finish both directory mutations, then persist the shared inode's
             # post-link metadata while the original descriptor is still pinned.
             temporary.unlink()
@@ -1188,13 +1347,11 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
         except Exception as cleanup_error:
             if not committed:
                 raise CheckpointPublicationError(
-                    "publication receipt preparation failed and temporary "
-                    f"cleanup also failed: {cleanup_error}"
+                    f"publication receipt preparation failed and temporary cleanup also failed: {cleanup_error}"
                 ) from error
         if committed:
             raise ReceiptCommitPointCrossedError(
-                "publication receipt commit point was crossed but durability "
-                f"follow-up failed: {error}"
+                f"publication receipt commit point was crossed but durability follow-up failed: {error}"
             ) from error
         raise
     expected = FileExpectation(len(payload), hashlib.sha256(payload).hexdigest())
@@ -1218,15 +1375,13 @@ def _atomic_write_read_only(path: Path, value: Mapping[str, Any]) -> dict[str, A
                     raise
                 if time.monotonic() >= deadline:
                     raise CheckpointPublicationError(
-                        "publication receipt metadata did not stabilize within "
-                        "10 seconds"
+                        "publication receipt metadata did not stabilize within 10 seconds"
                     ) from error
                 time.sleep(delay_seconds)
                 delay_seconds = min(delay_seconds * 2.0, 0.5)
     except Exception as error:
         raise ReceiptCommitPointCrossedError(
-            "publication receipt commit point was crossed but immutable "
-            f"readback failed: {error}"
+            f"publication receipt commit point was crossed but immutable readback failed: {error}"
         ) from error
 
 
@@ -1244,9 +1399,7 @@ def publish_checkpoint(
     stage_supplied = Path(os.path.abspath(stage_root.expanduser()))
     final_supplied = Path(os.path.abspath(final_root.expanduser()))
     if stage_supplied != contract.stage_root or final_supplied != contract.final_root:
-        raise CheckpointPublicationError(
-            "stage/final path differs from the pinned formal publication contract"
-        )
+        raise CheckpointPublicationError("stage/final path differs from the pinned formal publication contract")
     if stage_supplied.parent != final_supplied.parent:
         raise CheckpointPublicationError("stage and final roots must be siblings")
     parent = _canonical_directory(stage_supplied.parent, "checkpoint parent")
@@ -1256,16 +1409,13 @@ def publish_checkpoint(
     if not publish:
         if os.path.lexists(final_supplied):
             raise CheckpointPublicationError(
-                "final checkpoint already exists; refusing audit-only operation: "
-                f"{final_supplied}"
+                f"final checkpoint already exists; refusing audit-only operation: {final_supplied}"
             )
         stage = _canonical_directory(stage_supplied, "hidden incomplete checkpoint")
         if stage.stat().st_dev != parent.stat().st_dev:
-            raise CheckpointPublicationError(
-                "stage and final parent are not on one filesystem"
-            )
+            raise CheckpointPublicationError("stage and final parent are not on one filesystem")
         prepublication = audit_checkpoint_root(stage, contract=contract)
-        return {
+        result = {
             "schema_version": 2,
             "kind": "cwam_dsw_ema_checkpoint_publication",
             "status": "audit_passed",
@@ -1275,15 +1425,14 @@ def publish_checkpoint(
             "final_root_absent_before_publication": True,
             "prepublication": prepublication,
         }
+        if contract.source_contract_sha256 is not None:
+            result["publication_contract_sha256"] = contract.source_contract_sha256
+        return result
 
     receipt_output = Path(os.path.abspath(receipt_output.expanduser()))
     lock_path = Path(os.path.abspath(lock_path.expanduser()))
-    if contract is FORMAL_CONTRACT and (
-        receipt_output != DEFAULT_RECEIPT or lock_path != DEFAULT_LOCK
-    ):
-        raise CheckpointPublicationError(
-            "formal publication receipt and lock paths are pinned"
-        )
+    if contract is FORMAL_CONTRACT and (receipt_output != DEFAULT_RECEIPT or lock_path != DEFAULT_LOCK):
+        raise CheckpointPublicationError("formal publication receipt and lock paths are pinned")
     if receipt_output.parent != lock_path.parent:
         raise CheckpointPublicationError("publication receipt and lock must share one directory")
     lock_parent = _canonical_directory(lock_path.parent, "publication lock parent")
@@ -1295,21 +1444,15 @@ def publish_checkpoint(
         except BlockingIOError:
             raise CheckpointPublicationError("another checkpoint publisher owns the lock") from None
         if os.path.lexists(receipt_output):
-            raise CheckpointPublicationError(
-                "publication receipt already exists; refusing to alter checkpoint state"
-            )
-        stage, prepublication, recovered_uncommitted_final = (
-            _recover_uncommitted_transaction_to_stage(
-                stage_root=stage_supplied,
-                final_root=final_supplied,
-                parent=parent,
-                contract=contract,
-            )
+            raise CheckpointPublicationError("publication receipt already exists; refusing to alter checkpoint state")
+        stage, prepublication, recovered_uncommitted_final = _recover_uncommitted_transaction_to_stage(
+            stage_root=stage_supplied,
+            final_root=final_supplied,
+            parent=parent,
+            contract=contract,
         )
         if stage.stat().st_dev != parent.stat().st_dev:
-            raise CheckpointPublicationError(
-                "stage and final parent are not on one filesystem"
-            )
+            raise CheckpointPublicationError("stage and final parent are not on one filesystem")
         result: dict[str, Any] = {
             "schema_version": 2,
             "kind": "cwam_dsw_ema_checkpoint_publication",
@@ -1318,26 +1461,19 @@ def publish_checkpoint(
             "stage_root": str(stage),
             "final_root": str(final_supplied),
             "final_root_absent_before_publication": True,
-            "recovered_uncommitted_final_before_publication": (
-                recovered_uncommitted_final
-            ),
+            "recovered_uncommitted_final_before_publication": (recovered_uncommitted_final),
             "prepublication": prepublication,
         }
-        if (
-            receipt_output.parent != lock_parent
-            or os.path.lexists(receipt_output)
-        ):
-            raise CheckpointPublicationError(
-                "publication receipt path must be absent in the canonical lock directory"
-            )
+        if contract.source_contract_sha256 is not None:
+            result["publication_contract_sha256"] = contract.source_contract_sha256
+        if receipt_output.parent != lock_parent or os.path.lexists(receipt_output):
+            raise CheckpointPublicationError("publication receipt path must be absent in the canonical lock directory")
         transaction_started = False
         commit_point_crossed = False
         try:
             _fsync_directory(parent)
             if os.path.lexists(final_supplied):
-                raise CheckpointPublicationError(
-                    "final checkpoint appeared before exclusive reservation"
-                )
+                raise CheckpointPublicationError("final checkpoint appeared before exclusive reservation")
             stage_inode = _inode_key(stage.lstat())
             final, final_inode = _mkdir_exclusive_directory(
                 final_supplied,
@@ -1345,13 +1481,8 @@ def publish_checkpoint(
                 label="exclusive final checkpoint reservation",
             )
             transaction_started = True
-            if (
-                stage.stat().st_dev != final.stat().st_dev
-                or final.stat().st_dev != parent.stat().st_dev
-            ):
-                raise CheckpointPublicationError(
-                    "stage, final reservation, and parent must share one filesystem"
-                )
+            if stage.stat().st_dev != final.stat().st_dev or final.stat().st_dev != parent.stat().st_dev:
+                raise CheckpointPublicationError("stage, final reservation, and parent must share one filesystem")
             _move_entries(
                 source_root=stage,
                 source_inode=stage_inode,
@@ -1367,27 +1498,21 @@ def publish_checkpoint(
                 stage_inode,
                 label="hidden checkpoint transaction stage",
             ):
-                raise CheckpointPublicationError(
-                    "hidden checkpoint stage is not empty after entry transaction"
-                )
+                raise CheckpointPublicationError("hidden checkpoint stage is not empty after entry transaction")
             if _directory_names(
                 final,
                 final_inode,
                 label="exclusive final checkpoint reservation",
             ) != _expected_top_level_names(contract):
-                raise CheckpointPublicationError(
-                    "final checkpoint reservation closure is incomplete"
-                )
+                raise CheckpointPublicationError("final checkpoint reservation closure is incomplete")
             _fsync_directory(parent)
             postpublication = audit_checkpoint_root(
                 final,
                 contract=contract,
             )
             if (
-                postpublication["model"]["files"]
-                != prepublication["model"]["files"]
-                or postpublication["model"]["tree_sha256"]
-                != prepublication["model"]["tree_sha256"]
+                postpublication["model"]["files"] != prepublication["model"]["files"]
+                or postpublication["model"]["tree_sha256"] != prepublication["model"]["tree_sha256"]
                 or [
                     (item["relative_path"], item["size_bytes"], item["sha256"])
                     for item in postpublication["top_level_files"]
@@ -1397,9 +1522,7 @@ def publish_checkpoint(
                     for item in prepublication["top_level_files"]
                 ]
             ):
-                raise CheckpointPublicationError(
-                    "post-publication full readback differs"
-                )
+                raise CheckpointPublicationError("post-publication full readback differs")
             _assert_directory_inode(
                 final,
                 final_inode,
@@ -1419,14 +1542,9 @@ def publish_checkpoint(
             result.update(
                 {
                     "status": "published",
-                    "completed_at": dt.datetime.now(dt.timezone.utc)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
+                    "completed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
                     "publication": {
-                        "primitive": (
-                            "mkdir(final)+per-entry-rename+"
-                            "exclusive-receipt-hardlink"
-                        ),
+                        "primitive": ("mkdir(final)+per-entry-rename+exclusive-receipt-hardlink"),
                         "same_parent_same_filesystem": True,
                         "parent_fsync_before_and_after": True,
                         "stage_absent_after": True,
@@ -1481,13 +1599,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--final-root", type=Path, default=EXPECTED_FINAL_ROOT)
     parser.add_argument("--receipt-output", type=Path, default=DEFAULT_RECEIPT)
     parser.add_argument("--lock-path", type=Path, default=DEFAULT_LOCK)
+    parser.add_argument("--contract", type=Path)
+    parser.add_argument("--expected-contract-sha256")
     parser.add_argument(
         "--publish",
         action="store_true",
-        help=(
-            "perform the CPFS exclusive-reservation entry transaction and "
-            "receipt commit after every audit passes"
-        ),
+        help=("perform the CPFS exclusive-reservation entry transaction and receipt commit after every audit passes"),
     )
     return parser
 
@@ -1495,12 +1612,23 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     try:
+        if (args.contract is None) != (args.expected_contract_sha256 is None):
+            raise CheckpointPublicationError("--contract and --expected-contract-sha256 must be provided together")
+        contract = (
+            FORMAL_CONTRACT
+            if args.contract is None
+            else load_publication_contract(
+                args.contract,
+                expected_sha256=args.expected_contract_sha256,
+            )
+        )
         result = publish_checkpoint(
             stage_root=args.stage_root,
             final_root=args.final_root,
             receipt_output=args.receipt_output,
             lock_path=args.lock_path,
             publish=args.publish,
+            contract=contract,
         )
     except (CheckpointPublicationError, OSError) as error:
         raise SystemExit(f"checkpoint publication failed: {error}") from error
