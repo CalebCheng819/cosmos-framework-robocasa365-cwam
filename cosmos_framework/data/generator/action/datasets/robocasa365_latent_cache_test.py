@@ -647,6 +647,87 @@ def test_batched_overlapping_window_decode_is_pixel_exact(
     assert [len(timestamps) for _, timestamps in calls] == [18, 18]
 
 
+def test_overlapping_segments_share_canonical_timestamp_identity_and_pixels(
+    dataset_view: tuple[Path, Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, source_root, _ = dataset_view
+    split_path = root / "splits" / "train.parquet"
+    base_row = pq.read_table(split_path).to_pylist()[0]
+    first_row = {
+        **base_row,
+        "demian_episode_index": 1,
+        "valid_window_count": 89,
+        "source_frame_offset": 0,
+        "action_offset": 0,
+        "action_length": 105,
+        "robot0_agentview_left_from_timestamp": 11.7,
+        "robot0_agentview_right_from_timestamp": 11.7,
+        "robot0_eye_in_hand_from_timestamp": 11.7,
+    }
+    second_row = {
+        **base_row,
+        "demian_episode_index": 108,
+        "valid_window_count": 47,
+        "source_frame_offset": 80,
+        "action_offset": 80,
+        "action_length": 63,
+        "robot0_agentview_left_from_timestamp": 15.7,
+        "robot0_agentview_right_from_timestamp": 15.7,
+        "robot0_eye_in_hand_from_timestamp": 15.7,
+    }
+    pq.write_table(pa.Table.from_pylist([first_row, second_row]), split_path)
+
+    manifest_path = root / "dataset_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["counts"]["action_rows"] = 200
+    _write_json(manifest_path, manifest)
+    np.save(
+        root / "data" / "actions" / "actions_rot6d_f32.npy",
+        np.zeros((200, 10), dtype=np.float32),
+        allow_pickle=False,
+    )
+    success = json.loads((root / "_SUCCESS.json").read_text())
+    success["dataset_manifest_sha256"] = sha256_file(manifest_path)
+    _write_json(root / "_SUCCESS.json", success)
+
+    dataset = RoboCasa365SegmentDataset(
+        root=str(root),
+        source_root=str(source_root),
+        image_size=8,
+        action_normalization=None,
+        latent_cache_mode="disabled",
+        load_actions=False,
+    )
+    first_index = 87
+    second_index = 96
+    first_identity = dataset.get_visual_window_identity(first_index)
+    second_identity = dataset.get_visual_window_identity(second_index)
+    assert first_identity == second_identity
+    assert first_identity["camera_effective_start_timestamps"] == [16.05, 16.05]
+
+    calls: list[tuple[str, list[float]]] = []
+
+    def fake_decode(path: Path, timestamps: list[float]) -> torch.Tensor:
+        calls.append((path.name, timestamps))
+        camera_offset = 0.1 if "left" in path.name else 0.2
+        values = torch.tensor([camera_offset + timestamp / 100.0 for timestamp in timestamps])
+        return values[:, None, None, None].expand(-1, 3, 4, 4).contiguous()
+
+    monkeypatch.setattr(dataset, "_decode_video", fake_decode)
+    first_video = dataset._load_video(*dataset.resolve_window(first_index))
+    second_video = dataset._load_video(*dataset.resolve_window(second_index))
+    torch.testing.assert_close(first_video, second_video, rtol=0, atol=0)
+    assert calls[0][1] == calls[2][1]
+    assert calls[1][1] == calls[3][1]
+
+    calls.clear()
+    batched = dataset.load_video_windows([first_index, second_index])
+    torch.testing.assert_close(batched[0], batched[1], rtol=0, atol=0)
+    assert len(calls) == 2
+    assert [len(timestamps) for _, timestamps in calls] == [17, 17]
+
+
 def test_dataset_requires_explicit_cache_contract(
     dataset_view: tuple[Path, Path, str],
     tmp_path: Path,

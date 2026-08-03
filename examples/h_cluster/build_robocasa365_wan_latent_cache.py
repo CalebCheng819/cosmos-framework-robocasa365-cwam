@@ -450,6 +450,7 @@ def _build_request(
             "requested_vae_batch_size": args.requested_vae_batch_size,
             "vae_batch_size": args.vae_batch_size,
             "equivalence_samples_per_rank": args.equivalence_samples_per_rank,
+            "planning_identity_audit": args.planning_identity_audit,
             "real_backend_preflight": args.real_backend_preflight_receipts,
             "code_sha256": code_sha,
             "versions": {
@@ -489,6 +490,90 @@ def _physical_locator(identity: Mapping[str, Any]) -> bytes:
     )
 
 
+def _register_visual_identity(
+    identity: Mapping[str, Any],
+    *,
+    identity_to_ordinal: dict[bytes, int],
+    identity_payload_by_digest: dict[bytes, bytes],
+    locator_by_anchor: dict[bytes, bytes],
+    context: str,
+) -> tuple[bytes, bytes, int, bool]:
+    payload = canonical_json_bytes(identity)
+    digest = hashlib.sha256(payload).digest()
+    previous_payload = identity_payload_by_digest.get(digest)
+    if previous_payload is not None and previous_payload != payload:
+        raise RuntimeError(f"SHA-256 collision while enumerating visual identities ({context}).")
+    identity_payload_by_digest.setdefault(digest, payload)
+
+    anchor = _physical_anchor(identity)
+    locator = _physical_locator(identity)
+    previous_locator = locator_by_anchor.setdefault(anchor, locator)
+    if previous_locator != locator:
+        raise RuntimeError(
+            "Overlapping RoboCasa365 segments disagree on the effective video locator for "
+            f"{context}, identity={dict(identity)!r}."
+        )
+
+    ordinal = identity_to_ordinal.get(digest)
+    is_new = ordinal is None
+    if ordinal is None:
+        ordinal = len(identity_to_ordinal)
+        if ordinal >= np.iinfo(np.uint32).max:
+            raise OverflowError("RoboCasa365 latent cache exceeded uint32 ordinal capacity.")
+        identity_to_ordinal[digest] = ordinal
+    return payload, digest, ordinal, is_new
+
+
+def _audit_visual_identity_plan(
+    args: argparse.Namespace,
+    *,
+    source_root: Path,
+) -> dict[str, Any]:
+    identity_to_ordinal: dict[bytes, int] = {}
+    identity_payload_by_digest: dict[bytes, bytes] = {}
+    locator_by_anchor: dict[bytes, bytes] = {}
+    split_info: dict[str, dict[str, Any]] = {}
+
+    for split in args.splits:
+        dataset = _make_dataset(args, split, source_root)
+        ordered_digest = hashlib.sha256()
+        split_digests: set[bytes] = set()
+        for sample_index in range(len(dataset)):
+            identity = dataset.get_visual_window_identity(sample_index)
+            payload, digest, _, _ = _register_visual_identity(
+                identity,
+                identity_to_ordinal=identity_to_ordinal,
+                identity_payload_by_digest=identity_payload_by_digest,
+                locator_by_anchor=locator_by_anchor,
+                context=f"split={split}, sample_index={sample_index}",
+            )
+            split_digests.add(digest)
+            ordered_digest.update(len(payload).to_bytes(8, "little"))
+            ordered_digest.update(payload)
+        split_info[split] = {
+            "logical_samples": len(dataset),
+            "unique_records": len(split_digests),
+            "duplicate_samples": len(dataset) - len(split_digests),
+            "ordered_visual_identity_sha256": ordered_digest.hexdigest(),
+        }
+
+    logical_samples = sum(info["logical_samples"] for info in split_info.values())
+    unique_records = len(identity_to_ordinal)
+    if unique_records != len(locator_by_anchor):
+        raise RuntimeError(
+            "Canonical visual identity count does not match physical-anchor count: "
+            f"identities={unique_records}, anchors={len(locator_by_anchor)}."
+        )
+    return {
+        "status": "passed",
+        "splits": split_info,
+        "logical_samples": logical_samples,
+        "unique_records": unique_records,
+        "duplicate_samples": logical_samples - unique_records,
+        "physical_anchors": len(locator_by_anchor),
+    }
+
+
 def _enumerate_and_write_plan(
     args: argparse.Namespace,
     *,
@@ -511,28 +596,16 @@ def _enumerate_and_write_plan(
         ordered_digest = hashlib.sha256()
         for sample_index in range(len(dataset)):
             identity = dataset.get_visual_window_identity(sample_index)
-            payload = canonical_json_bytes(identity)
-            digest = hashlib.sha256(payload).digest()
-            previous_payload = identity_payload_by_digest.get(digest)
-            if previous_payload is not None and previous_payload != payload:
-                raise RuntimeError("SHA-256 collision while enumerating visual identities.")
-            identity_payload_by_digest.setdefault(digest, payload)
-
-            anchor = _physical_anchor(identity)
-            locator = _physical_locator(identity)
-            previous_locator = locator_by_anchor.setdefault(anchor, locator)
-            if previous_locator != locator:
-                raise RuntimeError(
-                    "Overlapping RoboCasa365 segments disagree on the effective video locator for "
-                    f"split={split}, sample_index={sample_index}, identity={identity!r}."
-                )
-
-            ordinal = identity_to_ordinal.get(digest)
-            if ordinal is None:
-                ordinal = len(records)
-                if ordinal >= np.iinfo(np.uint32).max:
-                    raise OverflowError("RoboCasa365 latent cache exceeded uint32 ordinal capacity.")
-                identity_to_ordinal[digest] = ordinal
+            payload, digest, ordinal, is_new = _register_visual_identity(
+                identity,
+                identity_to_ordinal=identity_to_ordinal,
+                identity_payload_by_digest=identity_payload_by_digest,
+                locator_by_anchor=locator_by_anchor,
+                context=f"split={split}, sample_index={sample_index}",
+            )
+            if is_new:
+                if ordinal != len(records):
+                    raise RuntimeError("Visual identity registry returned a non-contiguous ordinal.")
                 records.append(
                     {
                         "ordinal": ordinal,
@@ -1692,6 +1765,23 @@ def main() -> None:
     _all_rank_errors(local_error, world_size=world_size)
     _barrier(world_size)
 
+    planning_identity_audit: dict[str, Any] | None = None
+    local_error = None
+    if rank == 0:
+        try:
+            planning_identity_audit = _audit_visual_identity_plan(args, source_root=active_source_root)
+        except BaseException as error:  # noqa: BLE001 - broadcast rank-zero audit failures
+            local_error = f"{type(error).__name__}: {error}"
+    _all_rank_errors(local_error, world_size=world_size)
+    if world_size > 1:
+        audit_payload: list[dict[str, Any] | None] = [planning_identity_audit]
+        dist.broadcast_object_list(audit_payload, src=0)
+        planning_identity_audit = audit_payload[0]
+    assert planning_identity_audit is not None
+    args.planning_identity_audit = planning_identity_audit
+    if rank == 0:
+        print(f"IDENTITY_PLAN_AUDIT {json.dumps(planning_identity_audit, sort_keys=True)}", flush=True)
+
     tokenizer, preflight_receipts = _distributed_real_backend_preflight(
         args,
         rank=rank,
@@ -1715,6 +1805,7 @@ def main() -> None:
                     "expected_latent_shape": list(args.expected_latent_shape),
                     "requested_vae_batch_size": args.requested_vae_batch_size,
                     "effective_vae_batch_size": args.vae_batch_size,
+                    "planning_identity_audit": planning_identity_audit,
                     "rank_receipts": preflight_receipts,
                 },
             )

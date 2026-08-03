@@ -221,3 +221,59 @@ def test_post_padding_crop_stage_remains_backward_compatible() -> None:
     )
     assert selected.shape == (48, 5, 16, 48)
     assert torch.equal(selected, latent[:, :, :16, :48])
+
+
+def _visual_identity(*, timestamp: float = 16.05, video_path: str = "left.mp4") -> dict[str, object]:
+    return {
+        "source_revision": "revision-v1",
+        "source_prefix": "pretrain/atomic/task/day",
+        "source_episode_index": 1,
+        "source_frame_index": 87,
+        "camera_mode": "agentview_left",
+        "camera_fields": ["robot0_agentview_left"],
+        "camera_video_paths": [video_path],
+        "camera_effective_start_timestamps": [timestamp],
+        "fps": 20.0,
+        "num_frames": 17,
+    }
+
+
+class _FakeIdentityDataset:
+    def __init__(self, identities: list[dict[str, object]]) -> None:
+        self.identities = identities
+
+    def __len__(self) -> int:
+        return len(self.identities)
+
+    def get_visual_window_identity(self, index: int) -> dict[str, object]:
+        return self.identities[index]
+
+
+def test_full_identity_audit_counts_canonical_overlaps_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = _visual_identity()
+    dataset = _FakeIdentityDataset([identity, dict(identity)])
+    monkeypatch.setattr(builder, "_make_dataset", lambda *_args, **_kwargs: dataset)
+    args = argparse.Namespace(splits=("train",))
+
+    audit = builder._audit_visual_identity_plan(args, source_root=Path("/not/read"))
+
+    assert audit["status"] == "passed"
+    assert audit["logical_samples"] == 2
+    assert audit["unique_records"] == 1
+    assert audit["duplicate_samples"] == 1
+    assert audit["physical_anchors"] == 1
+    assert audit["splits"]["train"]["logical_samples"] == 2
+    assert audit["splits"]["train"]["unique_records"] == 1
+    assert audit["splits"]["train"]["duplicate_samples"] == 1
+    assert len(audit["splits"]["train"]["ordered_visual_identity_sha256"]) == 64
+
+
+def test_full_identity_audit_still_rejects_real_locator_disagreement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _FakeIdentityDataset([_visual_identity(), _visual_identity(timestamp=16.10)])
+    monkeypatch.setattr(builder, "_make_dataset", lambda *_args, **_kwargs: dataset)
+    args = argparse.Namespace(splits=("train",))
+
+    with pytest.raises(RuntimeError, match="disagree on the effective video locator"):
+        builder._audit_visual_identity_plan(args, source_root=Path("/not/read"))

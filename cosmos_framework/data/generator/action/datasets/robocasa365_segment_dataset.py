@@ -105,6 +105,7 @@ _VIEWPOINT_BY_MODE = {
 }
 _ACTION_SPEC = build_action_spec(Pos(), Rot("rot6d"), Gripper())
 _STAT_KEYS = {"mean", "std", "min", "max", "q01", "q99"}
+_VIDEO_TIMESTAMP_DECIMALS = 9
 
 
 def _sha256(path: Path) -> str:
@@ -113,6 +114,21 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _canonical_video_timestamps(
+    base_timestamp: float,
+    frame_offsets: np.ndarray,
+    fps: float,
+) -> list[float]:
+    """Canonicalize frame timestamps well below the decoder tolerance."""
+
+    offsets = np.asarray(frame_offsets, dtype=np.float64)
+    timestamps = float(base_timestamp) + offsets / float(fps)
+    if not np.isfinite(timestamps).all():
+        raise ValueError("RoboCasa365 camera timestamps must be finite.")
+    canonical = np.round(timestamps, decimals=_VIDEO_TIMESTAMP_DECIMALS)
+    return [float(value) for value in canonical.tolist()]
 
 
 class RoboCasa365SegmentDataset(Dataset):
@@ -504,11 +520,15 @@ class RoboCasa365SegmentDataset(Dataset):
         video_paths = [str(segment[f"{field}_video_path"]) for field in camera_fields]
         if any(not path for path in video_paths):
             raise ValueError("RoboCasa365 camera video paths must be non-empty for latent caching.")
+        start_offset = np.asarray([window_offset], dtype=np.float64)
         effective_start_timestamps = [
-            float(segment[f"{field}_from_timestamp"]) + float(window_offset) / self._fps for field in camera_fields
+            _canonical_video_timestamps(
+                float(segment[f"{field}_from_timestamp"]),
+                start_offset,
+                self._fps,
+            )[0]
+            for field in camera_fields
         ]
-        if not np.isfinite(effective_start_timestamps).all():
-            raise ValueError("RoboCasa365 effective camera timestamps must be finite for latent caching.")
         return {
             "source_revision": source_revision,
             "source_prefix": source_prefix,
@@ -746,7 +766,7 @@ class RoboCasa365SegmentDataset(Dataset):
             field = _CAMERA_FIELDS[camera_name]
             relative_path = str(segment[f"{field}_video_path"])
             base_timestamp = float(segment[f"{field}_from_timestamp"])
-            timestamps = (base_timestamp + frame_offsets / self._fps).tolist()
+            timestamps = _canonical_video_timestamps(base_timestamp, frame_offsets, self._fps)
             frames = self._decode_video(self._source_root / relative_path, timestamps)
             frames_by_camera.append(self._resize_video(frames))
 
@@ -784,10 +804,11 @@ class RoboCasa365SegmentDataset(Dataset):
                 )
             relative_path = next(iter(paths))
             timestamp_windows = [
-                (
-                    float(segment[f"{field}_from_timestamp"])
-                    + (frame_offsets + float(window_offset)) / self._fps
-                ).tolist()
+                _canonical_video_timestamps(
+                    float(segment[f"{field}_from_timestamp"]),
+                    frame_offsets + float(window_offset),
+                    self._fps,
+                )
                 for segment, window_offset in requests
             ]
             unique_timestamps = sorted({timestamp for window in timestamp_windows for timestamp in window})
