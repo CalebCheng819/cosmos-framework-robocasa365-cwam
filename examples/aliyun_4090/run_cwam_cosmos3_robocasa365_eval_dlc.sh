@@ -2,10 +2,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-# Run the exact 17-task x 20-episode RoboCasa365 formal protocol on one
-# Alibaba PAI DLC worker with eight local 4090 GPUs. The policy is one FSDP8 torchrun
-# service on rank 0's endpoint; task partitioning remains eight logical shards.
-# Workflow iteration: ITER-2026-08-03-E35S1-DLC-EVAL.
+# Run RoboCasa365 evaluation on one Alibaba PAI DLC worker with eight local
+# 4090 GPUs. The default remains the exact 17-task x 20-episode protocol. The
+# S1/R14 matched mode evaluates only the two tasks observed in the R14 run.
 
 set -Eeuo pipefail
 umask 077
@@ -87,9 +86,30 @@ export PYTHONNOUSERSITE=1
 readonly PHYSICAL_GPU_COUNT=8
 readonly PHYSICAL_SERVER_COUNT=1
 readonly LOGICAL_NUM_SHARDS=8
-readonly TASK_COUNT=17
+readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"
+case "$S1_R14_MATCHED_MODE" in
+    0)
+        readonly TASK_COUNT=17
+        readonly EVAL_LOGICAL_NUM_SHARDS=8
+        readonly EXPECTED_EPISODE_COUNT=340
+        EVAL_TASK_ARGS=()
+        ;;
+    1)
+        : "${R14_BASELINE_ARGS:?Set R14_BASELINE_ARGS in S1/R14 matched mode}"
+        : "${R14_BASELINE_RESULTS:?Set R14_BASELINE_RESULTS in S1/R14 matched mode}"
+        : "${R14_BASELINE_RUN_ID:?Set R14_BASELINE_RUN_ID in S1/R14 matched mode}"
+        readonly TASK_COUNT=2
+        readonly EVAL_LOGICAL_NUM_SHARDS=1
+        readonly EXPECTED_EPISODE_COUNT=40
+        EVAL_TASK_ARGS=(--tasks CloseBlenderLid PickPlaceCounterToStove)
+        ;;
+    *)
+        printf 'ERROR S1_R14_MATCHED_MODE must be 0 or 1\n' >&2
+        exit 2
+        ;;
+esac
+readonly EVAL_TASK_ARGS
 readonly EPISODES_PER_TASK=20
-readonly EXPECTED_EPISODE_COUNT=340
 readonly BASE_SEED=42
 readonly MAX_STEPS=400
 readonly OPEN_LOOP_HORIZON=12
@@ -117,6 +137,7 @@ readonly TASK_REGISTRY_REL="demian_wam/eval_utils/robocasa_task_list.py"
 readonly CHECKPOINT_HELPER_REL="examples/h_cluster/cwam_serving_checkpoint_manifest.py"
 readonly SOURCE_PROVENANCE_HELPER_REL="examples/aliyun_4090/cwam_dsw_input_provenance.py"
 readonly DLC_EVIDENCE_HELPER_REL="examples/aliyun_4090/cwam_robocasa365_dlc_evidence.py"
+readonly S1_R14_MATCHED_HELPER_REL="examples/aliyun_4090/cwam_s1_r14_matched_eval.py"
 readonly RUNTIME_CLOSURE_HELPER_REL="examples/aliyun_4090/cwam_dlc_runtime_closure.py"
 readonly COSMOS_ENV_ARCHIVE_HELPER_REL="examples/aliyun_4090/cwam_cosmos_env_archive.py"
 readonly ASSET_VERIFY_HELPER_REL="examples/h_cluster/cwam_robocasa_asset_manifest.py"
@@ -449,6 +470,10 @@ ASSET_ENV_CLOSURE_H_VERIFICATION="$(canonical_existing_file "$ASSET_ENV_CLOSURE_
 ROBOCASA_ASSET_ROOT="$(canonical_existing_dir "$ROBOCASA_ASSET_ROOT")"
 EVAL_EGL_VENDOR_JSON="$(canonical_existing_file "$EVAL_EGL_VENDOR_JSON")"
 EGL_MAPPING_RECEIPT="$(canonical_existing_file "$EGL_MAPPING_RECEIPT")"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    R14_BASELINE_ARGS="$(canonical_existing_file "$R14_BASELINE_ARGS")"
+    R14_BASELINE_RESULTS="$(canonical_existing_file "$R14_BASELINE_RESULTS")"
+fi
 
 require_exact_value \
     cosmos_environment_path \
@@ -652,6 +677,7 @@ mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT" "$RESULTS_DIR"
 readonly SUMMARY_CSV="$RESULTS_DIR/summary.csv"
 readonly TASK_SUCCESS_RATES_CSV="$RESULTS_DIR/task_success_rates.csv"
 readonly EVIDENCE_JSON="$RESULTS_DIR/evaluation_evidence.json"
+readonly COMPARISON_JSON="$RESULTS_DIR/s1_vs_r14_matched_comparison.json"
 readonly RUNTIME_RECEIPT="$CONTROL_DIR/dlc-runtime-receipt.json"
 readonly SHUTDOWN_RECEIPT="$CONTROL_DIR/dlc-controlled-shutdown-receipt.json"
 readonly TERMINAL_RECEIPT="$CONTROL_DIR/dlc-server-terminal-receipt.json"
@@ -1243,12 +1269,12 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     >"$CONTROL_DIR/verify-one-episode-gate.log"
 echo "ONE_EPISODE_GATE_PASSED task=$ONE_EPISODE_GATE_TASK"
 
-for ((shard = 0; shard < LOGICAL_NUM_SHARDS; shard++)); do
+for ((shard = 0; shard < EVAL_LOGICAL_NUM_SHARDS; shard++)); do
     kill -0 "$SERVER_LAUNCHER_PID" 2>/dev/null ||
         die "distributed policy server exited before logical shard $shard"
     evaluator_log="$CONTROL_DIR/evaluator-shard${shard}.log"
     evaluator_gpu=$((shard % PHYSICAL_GPU_COUNT))
-    echo "START_LOGICAL_SHARD shard=$shard num_shards=$LOGICAL_NUM_SHARDS evaluator_gpu=$evaluator_gpu"
+    echo "START_LOGICAL_SHARD shard=$shard num_shards=$EVAL_LOGICAL_NUM_SHARDS evaluator_gpu=$evaluator_gpu"
     if ! timeout \
         --signal=TERM \
         --kill-after=30 \
@@ -1268,8 +1294,9 @@ for ((shard = 0; shard < LOGICAL_NUM_SHARDS; shard++)); do
         __GLX_VENDOR_LIBRARY_NAME=nvidia \
         PYTHONPATH="$EVAL_PYTHONPATH" \
         "$ROBOCASA_PY" "$DEMIAN_REPO/$EVALUATOR_REL" \
+        "${EVAL_TASK_ARGS[@]}" \
         --task-shard "$shard" \
-        --num-shards "$LOGICAL_NUM_SHARDS" \
+        --num-shards "$EVAL_LOGICAL_NUM_SHARDS" \
         --episodes "$EPISODES_PER_TASK" \
         --episodes-start 0 \
         --max-steps "$MAX_STEPS" \
@@ -1288,7 +1315,11 @@ for ((shard = 0; shard < LOGICAL_NUM_SHARDS; shard++)); do
         tail -200 "$evaluator_log" >&2 || true
         die "RoboCasa evaluator logical shard $shard failed"
     fi
-    [[ -s "$RESULTS_DIR/args_shard${shard}.json" ]] ||
+    args_name="args_shard${shard}.json"
+    if ((EVAL_LOGICAL_NUM_SHARDS == 1)); then
+        args_name="args.json"
+    fi
+    [[ -s "$RESULTS_DIR/$args_name" ]] ||
         die "logical shard $shard args artifact is missing"
     [[ -s "$RESULTS_DIR/results_shard${shard}.json" ]] ||
         die "logical shard $shard result artifact is missing"
@@ -1424,68 +1455,100 @@ python3 "$RUNTIME_CLOSURE_HELPER" verify \
     >"$CONTROL_DIR/verify-runtime-closure-local-post.log"
 
 RAW_RESULT_FILES=()
-for ((shard = 0; shard < LOGICAL_NUM_SHARDS; shard++)); do
+for ((shard = 0; shard < EVAL_LOGICAL_NUM_SHARDS; shard++)); do
+    args_name="args_shard${shard}.json"
+    if ((EVAL_LOGICAL_NUM_SHARDS == 1)); then
+        args_name="args.json"
+    fi
     RAW_RESULT_FILES+=(
-        "$RESULTS_DIR/args_shard${shard}.json"
+        "$RESULTS_DIR/$args_name"
         "$RESULTS_DIR/results_shard${shard}.json"
     )
 done
 chmod 0444 "${RAW_RESULT_FILES[@]}"
 
-PYTHONPATH="$COSMOS_SOURCE/examples/h_cluster:$COSMOS_SOURCE" \
-    "$COSMOS_PY" "$COSMOS_SOURCE/$DLC_EVIDENCE_HELPER_REL" \
-    summarize \
-    --experiment-id "$EVAL_EXPERIMENT_ID" \
-    --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
-    --source-commit "$EXPECTED_SOURCE_COMMIT" \
-    --run-name "$EVAL_RUN_NAME" \
-    --results-dir "$RESULTS_DIR" \
-    --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
-    --checkpoint-manifest-sha256 "$DESTINATION_CHECKPOINT_MANIFEST_SHA256" \
-    --training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256" \
-    --action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256" \
-    --wan2pt2-vae-sha256 "$EXPECTED_WAN2PT2_VAE_SHA256" \
-    --qwen-tokenizer-manifest-sha256 "$EXPECTED_QWEN_TOKENIZER_MANIFEST_SHA256" \
-    --source-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256" \
-    --demian-commit "$EXPECTED_DEMIAN_COMMIT" \
-    --base-seed "$BASE_SEED" \
-    --runtime-receipt "$RUNTIME_RECEIPT" \
-    --terminal-receipt "$TERMINAL_RECEIPT" \
-    --post-provenance-receipt "cosmos_environment_post=$COSMOS_ENV_VERIFICATION_POST" \
-    --post-provenance-receipt "qwen_tokenizer_post=$QWEN_VERIFICATION_POST" \
-    --post-provenance-receipt "robocasa_assets_post=$ROBOCASA_ASSET_VERIFICATION_POST" \
-    --post-provenance-receipt "robocasa_environment_post=$ROBOCASA_ENV_VERIFICATION_POST" \
-    --post-provenance-receipt "runtime_closure_local_post=$RUNTIME_CLOSURE_LOCAL_POST" \
-    --post-provenance-receipt "source_snapshot_post=$SOURCE_VERIFICATION_POST" \
-    --post-provenance-receipt "static_inputs_post=$STATIC_INPUTS_POST" \
-    --post-provenance-receipt "one_episode_gate=$ONE_EPISODE_GATE_RECEIPT" \
-    --summary-csv "$SUMMARY_CSV" \
-    --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \
-    --evidence-json "$EVIDENCE_JSON" \
-    >"$CONTROL_DIR/summarize.log"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    [[ -s "$R14_BASELINE_ARGS" ]] || die "R14 baseline args are missing"
+    [[ -s "$R14_BASELINE_RESULTS" ]] || die "R14 baseline results are missing"
+    PYTHONPATH="$COSMOS_SOURCE" \
+        "$COSMOS_PY" "$COSMOS_SOURCE/$S1_R14_MATCHED_HELPER_REL" \
+        compare \
+        --candidate-args "$RESULTS_DIR/args.json" \
+        --candidate-results "$RESULTS_DIR/results_shard0.json" \
+        --baseline-args "$R14_BASELINE_ARGS" \
+        --baseline-results "$R14_BASELINE_RESULTS" \
+        --experiment-id "$EVAL_EXPERIMENT_ID" \
+        --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
+        --baseline-run-id "$R14_BASELINE_RUN_ID" \
+        --source-commit "$EXPECTED_SOURCE_COMMIT" \
+        --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
+        --summary-csv "$SUMMARY_CSV" \
+        --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \
+        --comparison-json "$COMPARISON_JSON" \
+        --evidence-json "$EVIDENCE_JSON" \
+        --verification-receipt "$SEALED_VERIFICATION_RECEIPT" \
+        >"$CONTROL_DIR/s1-r14-matched-compare.log"
+else
+    PYTHONPATH="$COSMOS_SOURCE/examples/h_cluster:$COSMOS_SOURCE" \
+        "$COSMOS_PY" "$COSMOS_SOURCE/$DLC_EVIDENCE_HELPER_REL" \
+        summarize \
+        --experiment-id "$EVAL_EXPERIMENT_ID" \
+        --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
+        --source-commit "$EXPECTED_SOURCE_COMMIT" \
+        --run-name "$EVAL_RUN_NAME" \
+        --results-dir "$RESULTS_DIR" \
+        --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
+        --checkpoint-manifest-sha256 "$DESTINATION_CHECKPOINT_MANIFEST_SHA256" \
+        --training-config-sha256 "$EXPECTED_TRAINING_CONFIG_SHA256" \
+        --action-stats-sha256 "$EXPECTED_ACTION_STATS_SHA256" \
+        --wan2pt2-vae-sha256 "$EXPECTED_WAN2PT2_VAE_SHA256" \
+        --qwen-tokenizer-manifest-sha256 "$EXPECTED_QWEN_TOKENIZER_MANIFEST_SHA256" \
+        --source-manifest-sha256 "$EXPECTED_SOURCE_MANIFEST_SHA256" \
+        --demian-commit "$EXPECTED_DEMIAN_COMMIT" \
+        --base-seed "$BASE_SEED" \
+        --runtime-receipt "$RUNTIME_RECEIPT" \
+        --terminal-receipt "$TERMINAL_RECEIPT" \
+        --post-provenance-receipt "cosmos_environment_post=$COSMOS_ENV_VERIFICATION_POST" \
+        --post-provenance-receipt "qwen_tokenizer_post=$QWEN_VERIFICATION_POST" \
+        --post-provenance-receipt "robocasa_assets_post=$ROBOCASA_ASSET_VERIFICATION_POST" \
+        --post-provenance-receipt "robocasa_environment_post=$ROBOCASA_ENV_VERIFICATION_POST" \
+        --post-provenance-receipt "runtime_closure_local_post=$RUNTIME_CLOSURE_LOCAL_POST" \
+        --post-provenance-receipt "source_snapshot_post=$SOURCE_VERIFICATION_POST" \
+        --post-provenance-receipt "static_inputs_post=$STATIC_INPUTS_POST" \
+        --post-provenance-receipt "one_episode_gate=$ONE_EPISODE_GATE_RECEIPT" \
+        --summary-csv "$SUMMARY_CSV" \
+        --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \
+        --evidence-json "$EVIDENCE_JSON" \
+        >"$CONTROL_DIR/summarize.log"
+fi
 
 [[ -s "$SUMMARY_CSV" ]] || die "summary.csv is missing or empty"
 [[ -s "$TASK_SUCCESS_RATES_CSV" ]] || die "task_success_rates.csv is missing or empty"
 [[ -s "$EVIDENCE_JSON" ]] || die "evaluation_evidence.json is missing or empty"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    [[ -s "$COMPARISON_JSON" ]] || die "S1 versus R14 comparison JSON is missing or empty"
+fi
 chmod 0555 "$RESULTS_DIR"
 
-PYTHONPATH="$PROVENANCE_PYTHONPATH" \
-    "$COSMOS_PY" "$COSMOS_SOURCE/$DLC_EVIDENCE_HELPER_REL" \
-    verify-sealed \
-    --evidence-json "$EVIDENCE_JSON" \
-    --runtime-receipt "$RUNTIME_RECEIPT" \
-    --terminal-receipt "$TERMINAL_RECEIPT" \
-    --results-dir "$RESULTS_DIR" \
-    --summary-csv "$SUMMARY_CSV" \
-    --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \
-    --output "$SEALED_VERIFICATION_RECEIPT" \
-    >"$CONTROL_DIR/verify-sealed.log"
+if [[ "$S1_R14_MATCHED_MODE" == 0 ]]; then
+    PYTHONPATH="$PROVENANCE_PYTHONPATH" \
+        "$COSMOS_PY" "$COSMOS_SOURCE/$DLC_EVIDENCE_HELPER_REL" \
+        verify-sealed \
+        --evidence-json "$EVIDENCE_JSON" \
+        --runtime-receipt "$RUNTIME_RECEIPT" \
+        --terminal-receipt "$TERMINAL_RECEIPT" \
+        --results-dir "$RESULTS_DIR" \
+        --summary-csv "$SUMMARY_CSV" \
+        --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \
+        --output "$SEALED_VERIFICATION_RECEIPT" \
+        >"$CONTROL_DIR/verify-sealed.log"
+fi
 
 "$COSMOS_PY" - \
     "$SEALED_VERIFICATION_RECEIPT" \
     "$TASK_COUNT" \
     "$EXPECTED_EPISODE_COUNT" \
-    "$LOGICAL_NUM_SHARDS" \
+    "$EVAL_LOGICAL_NUM_SHARDS" \
     "$PHYSICAL_GPU_COUNT" <<'PY'
 import json
 import pathlib
@@ -1516,7 +1579,7 @@ echo "ROBOCASA365_DLC_FORMAL_EVAL_SUCCESS" \
     "tasks=$TASK_COUNT" \
     "episodes_per_task=$EPISODES_PER_TASK" \
     "episodes=$EXPECTED_EPISODE_COUNT" \
-    "logical_shards=$LOGICAL_NUM_SHARDS" \
+    "logical_shards=$EVAL_LOGICAL_NUM_SHARDS" \
     "physical_servers=$PHYSICAL_SERVER_COUNT" \
     "physical_gpus=$PHYSICAL_GPU_COUNT" \
     "summary_csv=$SUMMARY_CSV" \

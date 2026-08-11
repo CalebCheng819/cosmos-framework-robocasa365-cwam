@@ -26,6 +26,7 @@ MATRIX = HERE / "run_mujoco_egl_mapping_matrix_dlc.sh"
 RUNTIME_HELPER = HERE / "cwam_dlc_runtime_closure.py"
 RUNTIME_PUBLISHER = HERE / "publish_cwam_dlc_runtime_closure.sh"
 ENV_ARCHIVE_HELPER = HERE / "cwam_cosmos_env_archive.py"
+MATCHED_HELPER = HERE / "cwam_s1_r14_matched_eval.py"
 
 pytestmark = [pytest.mark.L0, pytest.mark.CPU]
 
@@ -169,6 +170,11 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "runtime_closure_local_post",
         "runtime_closure_publication",
         "cwam_robocasa365_dlc_evidence.py",
+        "cwam_s1_r14_matched_eval.py",
+        'readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"',
+        "EVAL_TASK_ARGS=(--tasks CloseBlenderLid PickPlaceCounterToStove)",
+        'R14_BASELINE_ARGS="$(canonical_existing_file "$R14_BASELINE_ARGS")"',
+        '[[ -s "$COMPARISON_JSON" ]]',
     ):
         assert required in script
     for forbidden in (
@@ -269,5 +275,5 @@ def test_dlc_shell_scripts_parse(script: Path) -> None:
 
 
 def test_dlc_python_helpers_compile() -> None:
-    for helper in (RUNTIME_HELPER, ENV_ARCHIVE_HELPER):
+    for helper in (RUNTIME_HELPER, ENV_ARCHIVE_HELPER, MATCHED_HELPER):
         subprocess.run([sys.executable, "-m", "py_compile", str(helper)], check=True)
