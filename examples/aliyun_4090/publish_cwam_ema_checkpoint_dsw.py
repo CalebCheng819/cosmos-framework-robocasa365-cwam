@@ -47,6 +47,9 @@ DEFAULT_RECEIPT = Path(
 DEFAULT_LOCK = Path(
     "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/receipts/.ema-checkpoint-atomic-publication.lock"
 )
+DEFAULT_DYNAMIC_CHECKPOINT_PARENT = Path(
+    "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints"
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SUMS_LINE_RE = re.compile(r"^([0-9a-f]{64})  ([^\x00\r\n]+)$")
@@ -325,6 +328,7 @@ def load_publication_contract(
     path: Path,
     *,
     expected_sha256: str,
+    allowed_checkpoint_parent: Path = DEFAULT_DYNAMIC_CHECKPOINT_PARENT,
 ) -> PublicationContract:
     """Load one immutable, SHA-bound checkpoint publication contract."""
 
@@ -367,7 +371,10 @@ def load_publication_contract(
 
     stage_root = _contract_path(value["stage_root"], "stage root")
     final_root = _contract_path(value["final_root"], "final root")
-    expected_parent = Path("/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints")
+    expected_parent = _contract_path(
+        str(allowed_checkpoint_parent),
+        "allowed checkpoint parent",
+    )
     if (
         stage_root.parent != expected_parent
         or final_root.parent != expected_parent
@@ -1602,6 +1609,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--contract", type=Path)
     parser.add_argument("--expected-contract-sha256")
     parser.add_argument(
+        "--allowed-checkpoint-parent",
+        type=Path,
+        default=DEFAULT_DYNAMIC_CHECKPOINT_PARENT,
+        help="reserved direct parent for a dynamic S1 publication contract",
+    )
+    parser.add_argument(
         "--publish",
         action="store_true",
         help=("perform the CPFS exclusive-reservation entry transaction and receipt commit after every audit passes"),
@@ -1614,12 +1627,15 @@ def main() -> int:
     try:
         if (args.contract is None) != (args.expected_contract_sha256 is None):
             raise CheckpointPublicationError("--contract and --expected-contract-sha256 must be provided together")
+        if args.contract is None and args.allowed_checkpoint_parent != DEFAULT_DYNAMIC_CHECKPOINT_PARENT:
+            raise CheckpointPublicationError("--allowed-checkpoint-parent requires --contract")
         contract = (
             FORMAL_CONTRACT
             if args.contract is None
             else load_publication_contract(
                 args.contract,
                 expected_sha256=args.expected_contract_sha256,
+                allowed_checkpoint_parent=args.allowed_checkpoint_parent,
             )
         )
         result = publish_checkpoint(

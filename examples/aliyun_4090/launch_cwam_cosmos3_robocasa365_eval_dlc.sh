@@ -21,7 +21,25 @@ readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly EGL_PROBE="$COSMOS_SOURCE/examples/aliyun_4090/probe_mujoco_egl_mapping.py"
 readonly EGL_MATRIX="$COSMOS_SOURCE/examples/aliyun_4090/run_mujoco_egl_mapping_matrix_dlc.sh"
 readonly EGL_RECEIPT_GENERATOR="$COSMOS_SOURCE/examples/aliyun_4090/generate_cwam_dlc_egl_mapping_receipt.py"
-readonly FORMAL_RUNNER="$COSMOS_SOURCE/examples/aliyun_4090/run_cwam_cosmos3_robocasa365_eval_dlc.sh"
+readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"
+case "$S1_R14_MATCHED_MODE" in
+    0)
+        [[ -z "${FORMAL_RUNNER_OVERRIDE:-}" ]] || {
+            printf 'ERROR FORMAL_RUNNER_OVERRIDE is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
+        FORMAL_RUNNER="$COSMOS_SOURCE/examples/aliyun_4090/run_cwam_cosmos3_robocasa365_eval_dlc.sh"
+        ;;
+    1)
+        : "${FORMAL_RUNNER_OVERRIDE:?Set FORMAL_RUNNER_OVERRIDE in S1/R14 matched mode}"
+        FORMAL_RUNNER="$FORMAL_RUNNER_OVERRIDE"
+        ;;
+    *)
+        printf 'ERROR S1_R14_MATCHED_MODE must be 0 or 1\n' >&2
+        exit 2
+        ;;
+esac
+readonly FORMAL_RUNNER
 
 die() {
     echo "ERROR: $*" >&2
@@ -47,6 +65,8 @@ require_immutable_source_file "$EGL_PROBE"
 require_immutable_source_file "$EGL_MATRIX"
 require_immutable_source_file "$EGL_RECEIPT_GENERATOR"
 require_immutable_source_file "$FORMAL_RUNNER"
+[[ "$(realpath -e -- "$FORMAL_RUNNER")" == "$FORMAL_RUNNER" ]] ||
+    die "FORMAL_RUNNER must be canonical"
 [[ -f "$EGL_VENDOR_JSON" && ! -L "$EGL_VENDOR_JSON" ]] ||
     die "NVIDIA EGL vendor JSON is missing"
 [[ "$(stat -c %a -- "$EGL_VENDOR_JSON")" == 644 ]] ||

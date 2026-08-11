@@ -89,6 +89,22 @@ readonly LOGICAL_NUM_SHARDS=8
 readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"
 case "$S1_R14_MATCHED_MODE" in
     0)
+        [[ -z "${FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE:-}" ]] || {
+            printf 'ERROR FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
+        [[ -z "${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:-}" ]] || {
+            printf 'ERROR FORMAL_CHECKPOINTS_ROOT_OVERRIDE is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
+        [[ -z "${S1_R14_MATCHED_HELPER:-}" ]] || {
+            printf 'ERROR S1_R14_MATCHED_HELPER is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
+        [[ -z "${EVAL_CONTROL_COMMIT:-}" ]] || {
+            printf 'ERROR EVAL_CONTROL_COMMIT is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
         readonly TASK_COUNT=17
         readonly EVAL_LOGICAL_NUM_SHARDS=8
         readonly EXPECTED_EPISODE_COUNT=340
@@ -98,6 +114,18 @@ case "$S1_R14_MATCHED_MODE" in
         : "${R14_BASELINE_ARGS:?Set R14_BASELINE_ARGS in S1/R14 matched mode}"
         : "${R14_BASELINE_RESULTS:?Set R14_BASELINE_RESULTS in S1/R14 matched mode}"
         : "${R14_BASELINE_RUN_ID:?Set R14_BASELINE_RUN_ID in S1/R14 matched mode}"
+        : "${FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE:?Set the fixed local asset root in S1/R14 matched mode}"
+        : "${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:?Set the local checkpoint parent in S1/R14 matched mode}"
+        : "${S1_R14_MATCHED_HELPER:?Set the immutable matched-comparison helper}"
+        : "${EVAL_CONTROL_COMMIT:?Set the immutable evaluation-control commit}"
+        [[ "$FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE" == /tmp/cwam_s1_r14_matched_assets ]] || {
+            printf 'ERROR matched local asset root must be /tmp/cwam_s1_r14_matched_assets\n' >&2
+            exit 2
+        }
+        [[ "$FORMAL_CHECKPOINTS_ROOT_OVERRIDE" == "$FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE/checkpoints" ]] || {
+            printf 'ERROR matched checkpoint root must be below the fixed local asset root\n' >&2
+            exit 2
+        }
         readonly TASK_COUNT=2
         readonly EVAL_LOGICAL_NUM_SHARDS=1
         readonly EXPECTED_EPISODE_COUNT=40
@@ -137,7 +165,6 @@ readonly TASK_REGISTRY_REL="demian_wam/eval_utils/robocasa_task_list.py"
 readonly CHECKPOINT_HELPER_REL="examples/h_cluster/cwam_serving_checkpoint_manifest.py"
 readonly SOURCE_PROVENANCE_HELPER_REL="examples/aliyun_4090/cwam_dsw_input_provenance.py"
 readonly DLC_EVIDENCE_HELPER_REL="examples/aliyun_4090/cwam_robocasa365_dlc_evidence.py"
-readonly S1_R14_MATCHED_HELPER_REL="examples/aliyun_4090/cwam_s1_r14_matched_eval.py"
 readonly RUNTIME_CLOSURE_HELPER_REL="examples/aliyun_4090/cwam_dlc_runtime_closure.py"
 readonly COSMOS_ENV_ARCHIVE_HELPER_REL="examples/aliyun_4090/cwam_cosmos_env_archive.py"
 readonly ASSET_VERIFY_HELPER_REL="examples/h_cluster/cwam_robocasa_asset_manifest.py"
@@ -148,11 +175,24 @@ readonly FORMAL_INPUT_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs"
 readonly FORMAL_NVME_INPUT_ROOT="/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs"
 readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"
 readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
-readonly FORMAL_CHECKPOINTS_ROOT="$FORMAL_INPUT_ROOT/checkpoints"
+readonly FORMAL_CHECKPOINTS_ROOT="${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:-$FORMAL_INPUT_ROOT/checkpoints}"
 readonly FORMAL_RUNTIME_CLOSURE_ROOT="$FORMAL_INPUT_ROOT/runtime/cosmos-r21-dlc-runtime-v1"
 readonly FORMAL_RUNTIME_CLOSURE_MANIFEST="$FORMAL_INPUT_ROOT/config/cosmos-r21-dlc-runtime-v1-manifest.json"
-readonly FORMAL_COSMOS_ENV_ARCHIVE="$FORMAL_INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
-readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT="${FORMAL_INPUT_ROOT%/inputs}/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    readonly FORMAL_MATCHED_LOCAL_ASSET_ROOT="$FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE"
+    readonly FORMAL_COSMOS_ENV_ARCHIVE="$FORMAL_MATCHED_LOCAL_ASSET_ROOT/envs/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+    readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT="$FORMAL_MATCHED_LOCAL_ASSET_ROOT/control/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
+    readonly FORMAL_RUNTIME_CLOSURE_PUBLICATION_RECEIPT="$FORMAL_MATCHED_LOCAL_ASSET_ROOT/control/cosmos-r21-dlc-runtime-v1-publication-v2.json"
+    readonly FORMAL_WAN2PT2_VAE="$FORMAL_MATCHED_LOCAL_ASSET_ROOT/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+    readonly FORMAL_QWEN_TOKENIZER="$FORMAL_MATCHED_LOCAL_ASSET_ROOT/models/Qwen3-VL-8B-Instruct-tokenizer"
+else
+    readonly FORMAL_MATCHED_LOCAL_ASSET_ROOT=""
+    readonly FORMAL_COSMOS_ENV_ARCHIVE="$FORMAL_INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+    readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT="${FORMAL_INPUT_ROOT%/inputs}/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
+    readonly FORMAL_RUNTIME_CLOSURE_PUBLICATION_RECEIPT="${FORMAL_INPUT_ROOT%/inputs}/control/receipts/cosmos-r21-dlc-runtime-v1-publication-v2.json"
+    readonly FORMAL_WAN2PT2_VAE="$FORMAL_INPUT_ROOT/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+    readonly FORMAL_QWEN_TOKENIZER="$FORMAL_INPUT_ROOT/models/Qwen3-VL-8B-Instruct-tokenizer"
+fi
 readonly FORMAL_ROBOCASA_REPO_SOURCE="$FORMAL_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
 readonly PINNED_COSMOS_ENV_SOURCE_COMMIT="09f23119ea92c707207bba55565e7a09d16896a2"
 readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
@@ -313,7 +353,7 @@ require_exact_value \
 require_exact_value \
     runtime_closure_publication_receipt_path \
     "$RUNTIME_CLOSURE_PUBLICATION_RECEIPT" \
-    "${FORMAL_INPUT_ROOT%/inputs}/control/receipts/cosmos-r21-dlc-runtime-v1-publication-v2.json"
+    "$FORMAL_RUNTIME_CLOSURE_PUBLICATION_RECEIPT"
 require_exact_value \
     runtime_closure_manifest_sha256 \
     "$EXPECTED_RUNTIME_CLOSURE_MANIFEST_SHA256" \
@@ -473,6 +513,11 @@ EGL_MAPPING_RECEIPT="$(canonical_existing_file "$EGL_MAPPING_RECEIPT")"
 if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
     R14_BASELINE_ARGS="$(canonical_existing_file "$R14_BASELINE_ARGS")"
     R14_BASELINE_RESULTS="$(canonical_existing_file "$R14_BASELINE_RESULTS")"
+    S1_R14_MATCHED_HELPER="$(canonical_existing_file "$S1_R14_MATCHED_HELPER")"
+    [[ "$(stat -c %a -- "$S1_R14_MATCHED_HELPER")" == 444 ]] ||
+        die "S1/R14 matched helper must have mode 0444"
+    [[ "$EVAL_CONTROL_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
+        die "EVAL_CONTROL_COMMIT must be a lowercase 40-character Git commit"
 fi
 
 require_exact_value \
@@ -505,7 +550,11 @@ readonly FORMAL_CHECKPOINT_ARTIFACT_ROOT="$(dirname -- "$SERVING_CHECKPOINT_PATH
 [[ "$(dirname -- "$FORMAL_CHECKPOINT_ARTIFACT_ROOT")" == "$FORMAL_CHECKPOINTS_ROOT" ]] ||
     die "checkpoint artifact must be a direct child of $FORMAL_CHECKPOINTS_ROOT"
 readonly FORMAL_CHECKPOINT_ARTIFACT_NAME="$(basename -- "$FORMAL_CHECKPOINT_ARTIFACT_ROOT")"
-readonly FORMAL_CHECKPOINT_PUBLICATION_RECEIPT="${FORMAL_INPUT_ROOT%/inputs}/control/receipts/${FORMAL_CHECKPOINT_ARTIFACT_NAME}-atomic-publication.json"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    readonly FORMAL_CHECKPOINT_PUBLICATION_RECEIPT="$FORMAL_MATCHED_LOCAL_ASSET_ROOT/control/${FORMAL_CHECKPOINT_ARTIFACT_NAME}-atomic-publication.json"
+else
+    readonly FORMAL_CHECKPOINT_PUBLICATION_RECEIPT="${FORMAL_INPUT_ROOT%/inputs}/control/receipts/${FORMAL_CHECKPOINT_ARTIFACT_NAME}-atomic-publication.json"
+fi
 require_exact_value \
     serving_checkpoint_path \
     "$SERVING_CHECKPOINT_PATH" \
@@ -549,11 +598,11 @@ require_exact_value \
 require_exact_value \
     wan2pt2_vae_path \
     "$WAN2PT2_VAE" \
-    "$FORMAL_INPUT_ROOT/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+    "$FORMAL_WAN2PT2_VAE"
 require_exact_value \
     qwen_tokenizer_path \
     "$QWEN_TOKENIZER" \
-    "$FORMAL_INPUT_ROOT/models/Qwen3-VL-8B-Instruct-tokenizer"
+    "$FORMAL_QWEN_TOKENIZER"
 require_exact_value \
     qwen_tokenizer_manifest_path \
     "$QWEN_TOKENIZER_MANIFEST" \
@@ -1471,7 +1520,7 @@ if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
     [[ -s "$R14_BASELINE_ARGS" ]] || die "R14 baseline args are missing"
     [[ -s "$R14_BASELINE_RESULTS" ]] || die "R14 baseline results are missing"
     PYTHONPATH="$COSMOS_SOURCE" \
-        "$COSMOS_PY" "$COSMOS_SOURCE/$S1_R14_MATCHED_HELPER_REL" \
+        "$COSMOS_PY" "$S1_R14_MATCHED_HELPER" \
         compare \
         --candidate-args "$RESULTS_DIR/args.json" \
         --candidate-results "$RESULTS_DIR/results_shard0.json" \
@@ -1481,6 +1530,7 @@ if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
         --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
         --baseline-run-id "$R14_BASELINE_RUN_ID" \
         --source-commit "$EXPECTED_SOURCE_COMMIT" \
+        --control-commit "$EVAL_CONTROL_COMMIT" \
         --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
         --summary-csv "$SUMMARY_CSV" \
         --task-success-rates-csv "$TASK_SUCCESS_RATES_CSV" \

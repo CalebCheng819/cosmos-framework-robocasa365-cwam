@@ -325,8 +325,9 @@ def _make_uncommitted_split(
 
 def _dynamic_contract_payload(
     contract: publisher.PublicationContract,
+    *,
+    stage_parent: str = "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints",
 ) -> dict[str, object]:
-    stage_parent = "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/checkpoints"
     return {
         "schema_version": 1,
         "kind": "cwam_ema_checkpoint_publication_contract",
@@ -394,6 +395,30 @@ def test_dynamic_publication_contract_hash_mismatch_fails_closed(
             contract_path,
             expected_sha256="0" * 64,
         )
+
+
+def test_dynamic_publication_contract_allows_explicit_local_parent(tmp_path: Path) -> None:
+    contract, *_ = _fake_closure(tmp_path)
+    local_parent = tmp_path / "local-checkpoints"
+    payload = _dynamic_contract_payload(contract, stage_parent=str(local_parent))
+    contract_path = tmp_path / "local-publication-contract.json"
+    expectation = _write_json(contract_path, payload)
+
+    with pytest.raises(
+        publisher.CheckpointPublicationError,
+        match="reserved S1 root",
+    ):
+        publisher.load_publication_contract(
+            contract_path,
+            expected_sha256=expectation.sha256,
+        )
+
+    loaded = publisher.load_publication_contract(
+        contract_path,
+        expected_sha256=expectation.sha256,
+        allowed_checkpoint_parent=local_parent,
+    )
+    assert loaded.stage_root.parent == local_parent
 
 
 def test_audit_only_is_read_only(tmp_path: Path) -> None:

@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "kind": "cwam_ema_checkpoint_publication_contract",
+  "stage_root": "/tmp/cwam_s1_r14_matched_assets/checkpoints/.S1-R3-iter_000010000-serving-ema-bf16-v1.incomplete-transfer-20260803",
+  "final_root": "/tmp/cwam_s1_r14_matched_assets/checkpoints/S1-R3-iter_000010000-serving-ema-bf16-v1",
+  "source_model_path": "/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/artifacts/cwam_e35/S1-R3-iter_000010000-serving-ema-bf16-v1/model",
+  "tree_sha256": "87e2fd424ce82c309d3fe06eaab268f905586cbf41dbcc31b8dc8fd690770b9f",
+  "root_files": {
+    "H-SHA256SUMS": {
+      "size_bytes": 1303,
+      "sha256": "322ce5984d46c38cd2ad28751ee9a82a5e73d12f1d8b7001ee4063df4500a244"
+    },
+    "config.yaml": {
+      "size_bytes": 21049,
+      "sha256": "f5da79c66713923dee2bf8cb8c254e93666cc1dac575c5fe28311d5ecd5951db"
+    },
+    "h-serving-checkpoint-manifest.json": {
+      "size_bytes": 1822,
+      "sha256": "60b841044ad6d0d8940411f1c9964f4d687b18288e060216695ee6444229ad59"
+    },
+    "ema-bf16-export-receipt.json": {
+      "size_bytes": 2873,
+      "sha256": "f548369f09576b139223e1bbd09c49e62d56e5932db996cff20daebe2b63dd11"
+    },
+    "ema-bf16-key-manifest.json": {
+      "size_bytes": 5474802,
+      "sha256": "05f2ce5e73e92d49743685ec7c3f5abf753e5913f1a3edb6ca2a5bda86f769c0"
+    },
+    "ema-bf16-validation.json": {
+      "size_bytes": 2001,
+      "sha256": "1ae32013dd10b20f4ed7ce8ebd43856a45807eb93dc3ea1d6c2381277f15ad20"
+    },
+    "source-dcp-full-verification.json": {
+      "size_bytes": 3635,
+      "sha256": "70699cec3ff5d27f25710834408f1d5135140a1cc9319a167612163ab4f4e160"
+    },
+    "ema-serving-dcp-transfer-manifest.json": {
+      "size_bytes": 11166,
+      "sha256": "a6a7c36959932ab3e859df08f986ab483e3469af41d4aec57067aa648b669ae8"
+    }
+  },
+  "model_files": [
+    {
+      "relative_path": ".metadata",
+      "size_bytes": 1356571,
+      "sha256": "0777ba68e0b3b1ecacb1128784419c9b749087f3683cb5d10a5eb08cfea4d464"
+    },
+    {
+      "relative_path": "__0_0.distcp",
+      "size_bytes": 3796677222,
+      "sha256": "6d2c68211c54d2be6036db6cb57bd2ae4d0d69753e850c75359486631dc2d117"
+    },
+    {
+      "relative_path": "__1_0.distcp",
+      "size_bytes": 3796677158,
+      "sha256": "9e079d943b5f31293becb256677c3bac111afad40e46b248a2fda76a37d7577b"
+    },
+    {
+      "relative_path": "__2_0.distcp",
+      "size_bytes": 3796675645,
+      "sha256": "0ac94dc84d4f97366ed26154d3233086e5f8df6072d034c6432fa3e37971c6b3"
+    },
+    {
+      "relative_path": "__3_0.distcp",
+      "size_bytes": 3796675645,
+      "sha256": "ed5bf3109a371b4f0a7f82807edde25aac0e4bc6c5ee15a1ee5bdabc5fdc6842"
+    },
+    {
+      "relative_path": "__4_0.distcp",
+      "size_bytes": 3796675645,
+      "sha256": "acbfcac3a7357d1f9b1add27e6fe56a24ab80209e698e3ccfc1be262866728ac"
+    },
+    {
+      "relative_path": "__5_0.distcp",
+      "size_bytes": 3796675645,
+      "sha256": "63d9a044ae0d81044f3d1e1ea8be02745141cab41d3722706dbc27129781f62d"
+    },
+    {
+      "relative_path": "__6_0.distcp",
+      "size_bytes": 3796675645,
+      "sha256": "9f169b9a38af16a592fcf171d3d95b6e03b3da38a8eeecb80f3910632003630f"
+    },
+    {
+      "relative_path": "__7_0.distcp",
+      "size_bytes": 3796675645,
+      "sha256": "70c19078d6479415b8abeb9730f8478eb37b65f35d8fb3e3b4d7d4cd29d2e896"
+    }
+  ],
+  "h_sums": {
+    "config.yaml": "f5da79c66713923dee2bf8cb8c254e93666cc1dac575c5fe28311d5ecd5951db",
+    "ema-bf16-export-receipt.json": "f548369f09576b139223e1bbd09c49e62d56e5932db996cff20daebe2b63dd11",
+    "ema-bf16-key-manifest.json": "05f2ce5e73e92d49743685ec7c3f5abf753e5913f1a3edb6ca2a5bda86f769c0",
+    "ema-bf16-validation.json": "1ae32013dd10b20f4ed7ce8ebd43856a45807eb93dc3ea1d6c2381277f15ad20",
+    "exporter-source.py": "277c440d36ef79266402e3c46066c6169ec9794ce91ee6b533786baa99acb4c6",
+    "model/.metadata": "0777ba68e0b3b1ecacb1128784419c9b749087f3683cb5d10a5eb08cfea4d464",
+    "model/__0_0.distcp": "6d2c68211c54d2be6036db6cb57bd2ae4d0d69753e850c75359486631dc2d117",
+    "model/__1_0.distcp": "9e079d943b5f31293becb256677c3bac111afad40e46b248a2fda76a37d7577b",
+    "model/__2_0.distcp": "0ac94dc84d4f97366ed26154d3233086e5f8df6072d034c6432fa3e37971c6b3",
+    "model/__3_0.distcp": "ed5bf3109a371b4f0a7f82807edde25aac0e4bc6c5ee15a1ee5bdabc5fdc6842",
+    "model/__4_0.distcp": "acbfcac3a7357d1f9b1add27e6fe56a24ab80209e698e3ccfc1be262866728ac",
+    "model/__5_0.distcp": "63d9a044ae0d81044f3d1e1ea8be02745141cab41d3722706dbc27129781f62d",
+    "model/__6_0.distcp": "9f169b9a38af16a592fcf171d3d95b6e03b3da38a8eeecb80f3910632003630f",
+    "model/__7_0.distcp": "70c19078d6479415b8abeb9730f8478eb37b65f35d8fb3e3b4d7d4cd29d2e896",
+    "serving-checkpoint-manifest.json": "60b841044ad6d0d8940411f1c9964f4d687b18288e060216695ee6444229ad59"
+  },
+  "transfer_only_files": {
+    "exporter-source.py": {
+      "size_bytes": 56916,
+      "sha256": "277c440d36ef79266402e3c46066c6169ec9794ce91ee6b533786baa99acb4c6"
+    }
+  },
+  "ema_key_count": 822,
+  "ema_chunk_count": 6570,
+  "ema_source_logical_bytes": 60726169892,
+  "ema_target_logical_bytes": 30363084946
+}

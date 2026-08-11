@@ -9,6 +9,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ EXPECTED_PROTOCOL = {
     "save_video": False,
     "headless": True,
 }
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _load_object(path: Path) -> dict[str, Any]:
@@ -38,6 +40,12 @@ def _load_object(path: Path) -> dict[str, Any]:
 def _require_equal(label: str, actual: Any, expected: Any) -> None:
     if actual != expected:
         raise ValueError(f"{label} mismatch: expected={expected!r} actual={actual!r}")
+
+
+def _require_commit(label: str, value: str) -> str:
+    if COMMIT_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a lowercase 40-character Git commit")
+    return value
 
 
 def _validate_args(value: dict[str, Any], *, candidate: bool) -> None:
@@ -118,6 +126,8 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def compare(args: argparse.Namespace) -> None:
+    model_source_commit = _require_commit("model source commit", args.source_commit)
+    eval_control_commit = _require_commit("evaluation control commit", args.control_commit)
     candidate_args_path = Path(args.candidate_args).resolve()
     candidate_results_path = Path(args.candidate_results).resolve()
     baseline_args_path = Path(args.baseline_args).resolve()
@@ -212,6 +222,8 @@ def compare(args: argparse.Namespace) -> None:
         "comparison_scope": "selected_two_task_episode_position_matched",
         "candidate_run_id": args.logical_run_id,
         "baseline_run_id": args.baseline_run_id,
+        "model_source_commit": model_source_commit,
+        "eval_control_commit": eval_control_commit,
         "tasks": task_rows,
         "aggregate": aggregate_row,
         "interpretation_boundary": (
@@ -225,7 +237,9 @@ def compare(args: argparse.Namespace) -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "experiment_id": args.experiment_id,
         "logical_run_id": args.logical_run_id,
-        "source_commit": args.source_commit,
+        "source_commit": model_source_commit,
+        "model_source_commit": model_source_commit,
+        "eval_control_commit": eval_control_commit,
         "checkpoint_path": args.checkpoint_path,
         "protocol": {
             **EXPECTED_PROTOCOL,
@@ -267,6 +281,8 @@ def compare(args: argparse.Namespace) -> None:
             "status": "passed",
             "experiment_id": args.experiment_id,
             "logical_run_id": args.logical_run_id,
+            "model_source_commit": model_source_commit,
+            "eval_control_commit": eval_control_commit,
             "counts": evidence["counts"],
             "artifacts": {
                 "summary_csv": str(summary_csv.resolve()),
@@ -296,6 +312,7 @@ def _parser() -> argparse.ArgumentParser:
         "logical_run_id",
         "baseline_run_id",
         "source_commit",
+        "control_commit",
         "checkpoint_path",
         "summary_csv",
         "task_success_rates_csv",

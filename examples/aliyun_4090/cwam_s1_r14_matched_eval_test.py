@@ -83,6 +83,7 @@ def _namespace(tmp_path: Path) -> argparse.Namespace:
         logical_run_id="candidate-run",
         baseline_run_id="baseline-run",
         source_commit="a" * 40,
+        control_commit="b" * 40,
         checkpoint_path="/checkpoint/s1",
     )
 
@@ -96,6 +97,8 @@ def test_compare_writes_full_and_matched_results(tmp_path: Path) -> None:
     assert comparison["aggregate"]["matched_episodes"] == 38
     assert comparison["aggregate"]["candidate_only"] == 2
     assert comparison["aggregate"]["baseline_only"] == 1
+    assert comparison["model_source_commit"] == "a" * 40
+    assert comparison["eval_control_commit"] == "b" * 40
     with Path(args.summary_csv).open(encoding="utf-8") as handle:
         assert len(list(csv.DictReader(handle))) == 40
 
@@ -117,6 +120,14 @@ def test_compare_rejects_protocol_drift(tmp_path: Path) -> None:
     _write(Path(args.candidate_args), candidate_args)
 
     with pytest.raises(ValueError, match="open_loop_horizon mismatch"):
+        matched.compare(args)
+
+
+def test_compare_rejects_invalid_control_commit(tmp_path: Path) -> None:
+    args = _namespace(tmp_path)
+    args.control_commit = "working-tree"
+
+    with pytest.raises(ValueError, match="evaluation control commit"):
         matched.compare(args)
 
 

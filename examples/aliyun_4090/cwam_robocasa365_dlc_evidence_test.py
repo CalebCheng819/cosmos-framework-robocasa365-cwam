@@ -154,7 +154,7 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "readonly EXPECTED_CPU_COUNT=126",
         "readonly EXPECTED_MEMORY_GIB=960",
         "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7",
-        'readonly FORMAL_CHECKPOINTS_ROOT="$FORMAL_INPUT_ROOT/checkpoints"',
+        'readonly FORMAL_CHECKPOINTS_ROOT="${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:-$FORMAL_INPUT_ROOT/checkpoints}"',
         "cosmos-r21-dlc-runtime-v1",
         "EXPECTED_RUNTIME_CLOSURE_MANIFEST_SHA256",
         "EXPECTED_RUNTIME_CLOSURE_TREE_SHA256",
@@ -170,8 +170,9 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "runtime_closure_local_post",
         "runtime_closure_publication",
         "cwam_robocasa365_dlc_evidence.py",
-        "cwam_s1_r14_matched_eval.py",
         'readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"',
+        'S1_R14_MATCHED_HELPER="$(canonical_existing_file "$S1_R14_MATCHED_HELPER")"',
+        '--control-commit "$EVAL_CONTROL_COMMIT"',
         "EVAL_TASK_ARGS=(--tasks CloseBlenderLid PickPlaceCounterToStove)",
         'R14_BASELINE_ARGS="$(canonical_existing_file "$R14_BASELINE_ARGS")"',
         '[[ -s "$COMPARISON_JSON" ]]',
@@ -196,6 +197,7 @@ def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     assert "generate_cwam_dlc_egl_mapping_receipt.py" in script
     assert 'export EXPECTED_EGL_MAPPING_RECEIPT_SHA256="$(sha256_file' in script
     assert 'require_immutable_source_file "$EGL_PROBE"' in script
+    assert ': "${FORMAL_RUNNER_OVERRIDE:?Set FORMAL_RUNNER_OVERRIDE in S1/R14 matched mode}"' in script
     assert 'bash "$EGL_MATRIX"' in script
     assert 'exec bash "$FORMAL_RUNNER"' in script
 
