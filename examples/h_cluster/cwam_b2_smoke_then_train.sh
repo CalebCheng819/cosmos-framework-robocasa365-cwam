@@ -237,34 +237,11 @@ run_training_phase() {
 validate_training_log() {
     local log_path="$1"
     local expected_iteration="$2"
-    "$COSMOS_ENV/bin/python" - "$log_path" "$expected_iteration" <<'PY'
-import math
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-expected = int(sys.argv[2])
-text = path.read_text(errors="replace")
-matches = re.findall(
-    r"Iteration:\s*(\d+),.*?total loss\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)",
-    text,
-)
-if not matches:
-    raise SystemExit(f"no iteration/loss records found in {path}")
-iterations = [int(item[0]) for item in matches]
-losses = [float(item[1]) for item in matches]
-if expected not in iterations:
-    raise SystemExit(f"iteration {expected} absent; observed tail={iterations[-10:]}")
-if not all(math.isfinite(value) for value in losses):
-    raise SystemExit(f"non-finite loss observed: {losses}")
-print(
-    "TRAINING_LOG_VALID",
-    f"expected_iteration={expected}",
-    f"last_iteration={iterations[-1]}",
-    f"last_loss={losses[-1]:.8g}",
-)
-PY
+    "$COSMOS_ENV/bin/python" \
+        "$COSMOS_SOURCE/examples/h_cluster/validate_cwam_b2_training_log.py" \
+        --log "$log_path" \
+        --expected-iteration "$expected_iteration" \
+        --world-size 8
 }
 
 validate_gpu_telemetry() {
@@ -392,7 +369,7 @@ formal_uploader_loop() {
         if ! upload_run_metadata; then
             echo "UPLOAD_RETRY metadata recorded_at=$(date -Is)" >&2
         fi
-        if [[ -s "$FORMAL_LOG" ]] && grep -q 'Iteration:' "$FORMAL_LOG"; then
+        if [[ -s "$FORMAL_LOG" ]] && validate_training_log "$FORMAL_LOG" 1 >/dev/null 2>&1; then
             if [[ ! -e "$EVIDENCE_DIR/formal-first-iteration.ready" ]]; then
                 date -Is > "$EVIDENCE_DIR/formal-first-iteration.ready"
                 write_status running formal_training
