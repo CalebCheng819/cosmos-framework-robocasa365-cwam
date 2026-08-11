@@ -87,6 +87,7 @@ class ActionRelevanceAdapter(nn.Module):
 
         self.query_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
+        self.auxiliary_norm = nn.LayerNorm(hidden_size)
         self.query_proj = nn.Linear(hidden_size, routing_dim, bias=False)
         self.key_proj = nn.Linear(hidden_size, routing_dim, bias=False)
         self.value_proj = nn.Linear(hidden_size, routing_dim, bias=False)
@@ -105,6 +106,8 @@ class ActionRelevanceAdapter(nn.Module):
         nn.init.zeros_(self.query_norm.bias)
         nn.init.ones_(self.context_norm.weight)
         nn.init.zeros_(self.context_norm.bias)
+        nn.init.ones_(self.auxiliary_norm.weight)
+        nn.init.zeros_(self.auxiliary_norm.bias)
 
         input_std = 1.0 / math.sqrt(self.hidden_size)
         output_std = 1.0 / math.sqrt(self.routing_dim)
@@ -153,7 +156,8 @@ class ActionRelevanceAdapter(nn.Module):
         context_is_vision: torch.Tensor,
         position_ids: torch.Tensor,
         sample_lens: list[int],
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        action_seed_hidden: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         if hidden_states.ndim != 2 or hidden_states.shape[1] != self.hidden_size:
             raise ValueError(f"hidden_states must be [N,{self.hidden_size}], got {tuple(hidden_states.shape)}")
         if action_indexes.ndim != 1 or context_indexes.ndim != 1:
@@ -166,10 +170,17 @@ class ActionRelevanceAdapter(nn.Module):
             )
         if sum(sample_lens) != hidden_states.shape[0]:
             raise ValueError("sample_lens do not cover hidden_states")
+        if action_seed_hidden is None:
+            action_seed_hidden = hidden_states[action_indexes]
+        if action_seed_hidden.shape != (action_indexes.numel(), self.hidden_size):
+            raise ValueError(
+                "action_seed_hidden must be aligned with action_indexes: "
+                f"expected {(action_indexes.numel(), self.hidden_size)}, got {tuple(action_seed_hidden.shape)}"
+            )
 
         if action_indexes.numel() == 0:
             zero = hidden_states.sum() * 0.0
-            return hidden_states, {
+            return hidden_states, action_seed_hidden, {
                 "sparsity_loss": zero,
                 "entropy": zero,
                 "topk_mass": zero,
@@ -183,7 +194,10 @@ class ActionRelevanceAdapter(nn.Module):
         context_sample_ids = self._sample_ids(context_indexes, sample_lens)
         num_samples = len(sample_lens)
 
-        query_all = self.query_proj(self.query_norm(hidden_states[action_indexes]))
+        # The auxiliary route queries context from the pre-transformer noisy
+        # action seed. This prevents full-context action states from leaking into
+        # the relevance-only prediction through the query representation.
+        query_all = self.query_proj(self.query_norm(action_seed_hidden))
         context_hidden = self.context_norm(hidden_states[context_indexes])
         key_all = self.key_proj(context_hidden)
         value_all = self.value_proj(context_hidden)
@@ -272,6 +286,23 @@ class ActionRelevanceAdapter(nn.Module):
         )
         residual_gate = self.residual_gate_logit.sigmoid().squeeze(0)
         updated_hidden = hidden_states.index_add(0, ordered_indexes, residual_gate * ordered_residuals)
+        auxiliary_residuals = torch.zeros_like(action_seed_hidden)
+        auxiliary_cursor = 0
+        for action_mask, query_length in zip(
+            (action_sample_ids == sample_id for sample_id in range(num_samples)),
+            query_lengths,
+        ):
+            if query_length == 0:
+                continue
+            local_indexes = action_mask.nonzero(as_tuple=False).squeeze(1)
+            auxiliary_residuals[local_indexes] = ordered_residuals[
+                auxiliary_cursor : auxiliary_cursor + query_length
+            ]
+            auxiliary_cursor += query_length
+        auxiliary_action_hidden = self.auxiliary_norm(action_seed_hidden + auxiliary_residuals)
+        # Keep the B2-only normalization parameters in the backward graph when
+        # this adapter is reused by the zero-auxiliary S1 recipe under FSDP.
+        updated_hidden = updated_hidden + auxiliary_action_hidden.sum() * 0.0
 
         per_head_entropy = -(weights.clamp_min(1.0e-12).log() * weights).sum(dim=-1)
         context_count = torch.tensor(context_lengths, device=hidden_states.device, dtype=torch.float32)
@@ -296,4 +327,4 @@ class ActionRelevanceAdapter(nn.Module):
             "effective_support": masked_mean(effective_support),
             "residual_gate": residual_gate,
         }
-        return updated_hidden, metrics
+        return updated_hidden, auxiliary_action_hidden, metrics

@@ -137,8 +137,6 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
             raise ValueError("action_relevance_enabled=True requires action_gen=True")
         if self.strong_action_expert_enabled and not self.action_gen:
             raise ValueError("strong_action_expert_enabled=True requires action_gen=True")
-        if self.strong_action_expert_enabled and self.action_relevance_enabled:
-            raise ValueError("The S1 relevance adapter and strong action expert are separate experimental variants")
         if self.strong_action_expert_enabled:
             strong_positive_values = {
                 "model_dim": self.strong_action_expert_model_dim,
@@ -893,6 +891,52 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             preds_action = self.unpack_action(preds_action, action.token_shapes, action.noisy_frame_indexes)
             output_dict.update(preds_action=preds_action)
 
+    def _decode_action_relevance_only(
+        self,
+        packed_seq: PackedSequence,
+        action_hidden_states: torch.Tensor,
+        output_dict: dict,
+    ) -> None:
+        """Decode the B2 auxiliary prediction from action-order hidden states."""
+        action = packed_seq.action
+        if action is None or action.tokens is None:
+            raise ValueError("relevance-only action decoding requires action tokens")
+        expected_tokens = sum(int(shape[0]) for shape in action.token_shapes)
+        if action_hidden_states.shape != (expected_tokens, self.hidden_size):
+            raise ValueError(
+                "relevance-only hidden states must follow packed action order: "
+                f"expected {(expected_tokens, self.hidden_size)}, got {tuple(action_hidden_states.shape)}"
+            )
+
+        if not has_noisy_tokens(action):
+            graph_anchor = action_hidden_states.sum() * 0.0
+            preds = [torch.zeros_like(tokens) for tokens in action.tokens]
+            if preds:
+                preds[0] = preds[0] + graph_anchor
+            output_dict["preds_action_relevance_only"] = preds
+            return
+
+        local_noisy_indexes: list[torch.Tensor] = []
+        domain_ids: list[torch.Tensor] = []
+        token_offset = 0
+        for token_shape, noisy_indexes, domain_id in zip(
+            action.token_shapes,
+            action.noisy_frame_indexes,
+            action.domain_id,
+        ):
+            local_noisy_indexes.append(noisy_indexes.to(action_hidden_states.device) + token_offset)
+            domain_ids.append(domain_id.to(action_hidden_states.device).expand(noisy_indexes.numel()))
+            token_offset += int(token_shape[0])
+
+        noisy_hidden = action_hidden_states[torch.cat(local_noisy_indexes)]
+        per_token_domain_id = torch.cat(domain_ids)
+        preds = self.llm2action(noisy_hidden, per_token_domain_id)
+        output_dict["preds_action_relevance_only"] = self.unpack_action(
+            preds,
+            action.token_shapes,
+            action.noisy_frame_indexes,
+        )
+
     def _encode_sound(
         self,
         packed_seq: PackedSequence,
@@ -1034,8 +1078,16 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             original_latent_shapes = self._encode_vision(packed_seq, packed_sequence, target_dtype)
 
         # encode action tokens
+        action_seed_hidden: torch.Tensor | None = None
         if self.config.action_gen:
             self._encode_action(packed_seq, packed_sequence, target_dtype)
+            if self.config.action_relevance_enabled:
+                if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                    raise ValueError("action relevance requires packed action tokens")
+                # Keep an immutable, action-order-aligned copy before the joint
+                # transformer. B2 uses it as the only action-side input to the
+                # relevance-only auxiliary prediction.
+                action_seed_hidden = packed_sequence[packed_seq.action.sequence_indexes].clone()
 
         # encode sound tokens
         if self.config.sound_gen:
@@ -1188,35 +1240,6 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         )  # [N_total,hidden_size]
         output_dict = dict()
 
-        if self.config.action_relevance_enabled:
-            if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
-                raise ValueError("action relevance requires packed action tokens")
-            if packed_seq.vision is None:
-                raise ValueError("action relevance requires packed vision tokens")
-            if not isinstance(packed_seq.text_indexes, torch.Tensor):
-                raise TypeError("action relevance requires finalized text indexes")
-            if not isinstance(packed_seq.position_ids, torch.Tensor):
-                raise TypeError("action relevance requires finalized position IDs")
-
-            clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
-            context_indexes = torch.cat((packed_seq.text_indexes, clean_vision_indexes))
-            context_is_vision = torch.cat(
-                (
-                    torch.zeros_like(packed_seq.text_indexes, dtype=torch.bool),
-                    torch.ones_like(clean_vision_indexes, dtype=torch.bool),
-                )
-            )
-            context_order = context_indexes.argsort()
-            last_hidden_state, action_relevance = self.action_relevance(
-                last_hidden_state,
-                action_indexes=packed_seq.action.sequence_indexes,
-                context_indexes=context_indexes[context_order],
-                context_is_vision=context_is_vision[context_order],
-                position_ids=packed_seq.position_ids,
-                sample_lens=packed_seq.sample_lens,
-            )
-            output_dict.update({f"action_relevance_{name}": value for name, value in action_relevance.items()})
-
         if self.config.strong_action_expert_enabled:
             if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
                 raise ValueError("Strong action expert requires packed action tokens")
@@ -1241,6 +1264,39 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             )
             output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})
 
+        auxiliary_action_hidden: torch.Tensor | None = None
+        if self.config.action_relevance_enabled:
+            if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                raise ValueError("action relevance requires packed action tokens")
+            if packed_seq.vision is None:
+                raise ValueError("action relevance requires packed vision tokens")
+            if not isinstance(packed_seq.text_indexes, torch.Tensor):
+                raise TypeError("action relevance requires finalized text indexes")
+            if not isinstance(packed_seq.position_ids, torch.Tensor):
+                raise TypeError("action relevance requires finalized position IDs")
+
+            clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
+            context_indexes = torch.cat((packed_seq.text_indexes, clean_vision_indexes))
+            context_is_vision = torch.cat(
+                (
+                    torch.zeros_like(packed_seq.text_indexes, dtype=torch.bool),
+                    torch.ones_like(clean_vision_indexes, dtype=torch.bool),
+                )
+            )
+            context_order = context_indexes.argsort()
+            if action_seed_hidden is None:
+                raise RuntimeError("action relevance seed was not captured before the transformer")
+            last_hidden_state, auxiliary_action_hidden, action_relevance = self.action_relevance(
+                last_hidden_state,
+                action_indexes=packed_seq.action.sequence_indexes,
+                context_indexes=context_indexes[context_order],
+                context_is_vision=context_is_vision[context_order],
+                position_ids=packed_seq.position_ids,
+                sample_lens=packed_seq.sample_lens,
+                action_seed_hidden=action_seed_hidden,
+            )
+            output_dict.update({f"action_relevance_{name}": value for name, value in action_relevance.items()})
+
         # decode vision tokens
         if self.config.vision_gen:
             self._decode_vision(packed_seq, last_hidden_state, output_dict, original_latent_shapes)
@@ -1248,6 +1304,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         # decode action tokens
         if self.config.action_gen:
             self._decode_action(packed_seq, last_hidden_state, output_dict)
+            if auxiliary_action_hidden is not None:
+                self._decode_action_relevance_only(packed_seq, auxiliary_action_hidden, output_dict)
 
         # decode sound tokens
         if self.config.sound_gen:

@@ -259,6 +259,11 @@ class OmniMoTModelConfig:
     action_relevance_sparsity_weight: float = 0.01
     action_relevance_sparsity_start_iter: int = 1000
     action_relevance_sparsity_anneal_iters: int = 4000
+    # Optional B2 action objective decoded only from the noisy action seed and
+    # action-relevance-routed context. The full-context action path is retained.
+    action_relevance_aux_loss_weight: float = 0.0
+    action_relevance_aux_start_iter: int = 0
+    action_relevance_aux_warmup_iters: int = 1000
     # DeMiAn-inspired decoupled action tower with explicit proprio/action memory.
     strong_action_expert_enabled: bool = False
     strong_action_expert_model_dim: int = 1024

@@ -4,6 +4,7 @@
 from omegaconf import OmegaConf
 
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_robocasa365_nano import (
+    action_policy_robocasa365_b2_nano,
     action_policy_robocasa365_nano,
     action_policy_robocasa365_s1_nano,
     action_policy_robocasa365_strong_nano,
@@ -81,4 +82,35 @@ def test_strong_gradient_evidence_covers_new_tower_and_action_heads() -> None:
         "llm2action",
         "action_modality_embed",
         "strong_action_expert",
+    ]
+
+
+def test_b2_adds_relevance_auxiliary_objective_without_dropping_strong_context() -> None:
+    b2 = action_policy_robocasa365_b2_nano
+
+    assert b2.model.config.strong_action_expert_enabled is True
+    assert b2.model.config.action_relevance_enabled is True
+    assert b2.model.config.action_relevance_aux_loss_weight == 0.25
+    assert b2.model.config.action_relevance_aux_start_iter == 0
+    assert b2.model.config.action_relevance_aux_warmup_iters == 1000
+    assert b2.model.config.action_relevance_sparsity_start_iter == 1000
+    assert b2.dataloader_train.max_samples_per_batch == 32
+    assert b2.trainer.grad_accum_iter == 2
+    assert "strong_action_expert" in b2.optimizer.keys_to_select
+    assert "action_relevance" in b2.optimizer.keys_to_select
+    assert b2.optimizer.lr_multipliers.strong_action_expert == 5.0
+    assert b2.optimizer.lr_multipliers.action_relevance == 5.0
+    assert "strong_action_expert" in b2.checkpoint.keys_to_skip_loading
+    assert "action_relevance" in b2.checkpoint.keys_to_skip_loading
+
+
+def test_b2_gradient_evidence_covers_both_action_branches() -> None:
+    families = list(action_policy_robocasa365_b2_nano.trainer.callbacks.action_gradient_evidence.families)
+
+    assert families == [
+        "action2llm",
+        "llm2action",
+        "action_modality_embed",
+        "strong_action_expert",
+        "action_relevance",
     ]

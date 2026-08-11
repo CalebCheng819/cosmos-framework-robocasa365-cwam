@@ -82,6 +82,17 @@ from cosmos_framework.utils.lazy_config import instantiate as lazy_instantiate
 from cosmos_framework.utils.timer import Timer
 
 
+def action_relevance_aux_warmup_fraction(*, iteration: int, start_iter: int, warmup_iters: int) -> float:
+    """Return the B2 auxiliary objective's bounded linear warmup fraction."""
+    if iteration < 0 or start_iter < 0 or warmup_iters < 0:
+        raise ValueError("action relevance auxiliary schedule requires non-negative values")
+    if iteration < start_iter:
+        return 0.0
+    if warmup_iters == 0:
+        return 1.0
+    return min((iteration - start_iter + 1) / warmup_iters, 1.0)
+
+
 class OmniMoTModel(ImaginaireModel):
     """
     Mixture of Transformers (MoT) model to be trained with the flow matching objective
@@ -1281,6 +1292,46 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_effective_support=out_net["action_relevance_effective_support"],
                 action_relevance_residual_gate=out_net["action_relevance_residual_gate"],
             )
+
+            aux_loss_weight = self.config.action_relevance_aux_loss_weight
+            aux_start_iter = self.config.action_relevance_aux_start_iter
+            aux_warmup_iters = self.config.action_relevance_aux_warmup_iters
+            if aux_loss_weight < 0.0 or aux_start_iter < 0 or aux_warmup_iters < 0:
+                raise ValueError("action relevance auxiliary schedule requires non-negative values")
+            if aux_loss_weight > 0.0:
+                if "preds_action_relevance_only" not in out_net:
+                    raise ValueError("B2 auxiliary loss requires preds_action_relevance_only")
+                aux_warmup_fraction = action_relevance_aux_warmup_fraction(
+                    iteration=iteration,
+                    start_iter=aux_start_iter,
+                    warmup_iters=aux_warmup_iters,
+                )
+
+                if data_batch_packed.action is not None:
+                    assert isinstance(data_batch_packed.action.condition_mask, list)
+                    assert gen_data_noised.vt_target_action is not None
+                    aux_action_loss, _ = self._compute_flow_matching_loss(
+                        pred=out_net["preds_action_relevance_only"],
+                        target=gen_data_noised.vt_target_action,
+                        condition_mask=data_batch_packed.action.condition_mask,
+                        timesteps=ts_action,
+                        has_valid_tokens=has_noisy_tokens(data_batch_packed.action),
+                        rectified_flow=self.rectified_flow_action,
+                        raw_action_dim=data_batch_packed.action.raw_action_dim,
+                        normalize_by_active=normalize_by_active,
+                    )
+                else:
+                    aux_action_loss = 0.0 * sum(p.sum() for p in out_net["preds_action_relevance_only"])
+
+                effective_aux_weight = rf_cfg.action_loss_weight * aux_loss_weight * aux_warmup_fraction
+                total_loss += aux_action_loss * effective_aux_weight
+                losses_dict.update(
+                    flow_matching_loss_action_relevance_only=aux_action_loss,
+                    action_relevance_aux_loss_weight=torch.tensor(
+                        effective_aux_weight,
+                        **self.tensor_kwargs_fp32,
+                    ),
+                )
 
         if self.config.strong_action_expert_enabled:
             required_metrics = (
@@ -4488,7 +4539,8 @@ class OmniMoTModel(ImaginaireModel):
                 - "preds_vision": list[Tensor[C,T,H,W]], one per sample.
                 - "preds_action": Velocity prediction for action modality (if action_gen enabled).
                 - "preds_sound": Velocity prediction for sound modality (if sound_gen enabled).
-                - "action_relevance_*": S1 routing losses and diagnostics (if enabled).
+                - "action_relevance_*": routing losses and diagnostics (if enabled).
+                - "preds_action_relevance_only": B2 auxiliary action prediction (if enabled).
                 - "strong_action_*": strong action expert diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
@@ -4503,6 +4555,8 @@ class OmniMoTModel(ImaginaireModel):
         output_dict["preds_vision"] = out_net["preds_vision"]
         if self.config.action_gen and "preds_action" in out_net:
             output_dict["preds_action"] = out_net["preds_action"]
+        if self.config.action_relevance_enabled and "preds_action_relevance_only" in out_net:
+            output_dict["preds_action_relevance_only"] = out_net["preds_action_relevance_only"]
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
