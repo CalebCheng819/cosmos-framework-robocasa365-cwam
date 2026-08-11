@@ -439,7 +439,9 @@ class StrongActionContextExpert(nn.Module):
             total_width >= content_width,
             "Configured camera-token width exceeds the visual canvas",
         )
-        left_padding = torch.div(total_width - content_width, 2, rounding_mode="floor")
+        # RoboCasa365's canonical VideoResize contract places valid camera
+        # content at the top-left, so any full-canvas padding trails it.
+        left_padding = torch.zeros_like(total_width)
         view = torch.div(
             horizontal - lo - left_padding,
             self.view_token_width,

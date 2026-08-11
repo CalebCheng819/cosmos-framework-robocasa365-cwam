@@ -52,7 +52,7 @@ def test_strong_recipe_isolated_three_view_control_contract() -> None:
     assert strong.model.config.action_relevance_enabled is False
     assert strong.model.config.strong_action_expert_num_layers == 4
     assert strong.model.config.strong_action_memory_tokens == 4
-    assert strong.model.config.strong_action_view_token_width == 16
+    assert strong.model.config.strong_action_view_token_width == 8
     assert strong.model.config.strong_action_input_resolution == "480"
     assert "strong_action_expert" not in baseline.optimizer.keys_to_select
     assert "strong_action_expert" in strong.optimizer.keys_to_select

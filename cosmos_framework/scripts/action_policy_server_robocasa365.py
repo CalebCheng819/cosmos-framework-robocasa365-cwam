@@ -640,7 +640,7 @@ class RoboCasa365PolicyService(ActionModelService):
                 "strong_action_proprio_history_stride": 12,
                 "strong_action_history_length": 16,
                 "strong_action_num_views": 3,
-                "strong_action_view_token_width": 16,
+                "strong_action_view_token_width": 8,
                 "strong_action_input_resolution": "480",
             }
             actual_strong_config = {

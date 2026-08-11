@@ -70,7 +70,7 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_memory_layers=2,
         strong_action_memory_tokens=4,
         strong_action_num_views=3,
-        strong_action_view_token_width=16,
+        strong_action_view_token_width=8,
         strong_action_initial_gate=0.01,
         natten_parameter_list=None,
         video_temporal_causal=False,

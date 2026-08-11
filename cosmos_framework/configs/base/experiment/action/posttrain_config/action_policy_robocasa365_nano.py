@@ -406,7 +406,8 @@ def _action_policy_robocasa365_strong_nano_model_config() -> dict:
         strong_action_memory_layers=2,
         strong_action_memory_tokens=4,
         strong_action_num_views=3,
-        strong_action_view_token_width=16,
+        # 256 px/view / Wan spatial compression 16 / network patch 2.
+        strong_action_view_token_width=8,
         strong_action_initial_gate=0.01,
         strong_action_input_resolution="480",
     )
