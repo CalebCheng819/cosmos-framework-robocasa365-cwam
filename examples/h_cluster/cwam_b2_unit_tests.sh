@@ -23,5 +23,6 @@ export WANDB_MODE=offline
 
 "$PYTHON_BIN" -m pytest -q -o addopts= --confcutdir="$SOURCE_ROOT/cosmos_framework" \
     cosmos_framework/model/generator/mot/action_relevance_test.py \
+    cosmos_framework/model/generator/mot/strong_action_expert_test.py \
     cosmos_framework/configs/base/experiment/action/posttrain_config/action_policy_robocasa365_s1_nano_test.py \
     cosmos_framework/model/generator/omni_mot_denoise_test.py

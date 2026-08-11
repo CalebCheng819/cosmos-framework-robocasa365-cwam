@@ -22,6 +22,18 @@ _MEMORY_CONTEXT = 4
 _NUM_CONTEXT_TYPES = 5
 
 
+def _strip_optional_collator_axis(
+    values: list[torch.Tensor],
+    *,
+    expected_ndim: int,
+) -> list[torch.Tensor]:
+    """Remove the per-sample singleton axis emitted by the packed collator."""
+    return [
+        value[0] if value.ndim == expected_ndim + 1 and value.shape[0] == 1 else value
+        for value in values
+    ]
+
+
 def _sample_ids(indexes: torch.Tensor, sample_lens: list[int]) -> torch.Tensor:
     if not sample_lens or any(length <= 0 for length in sample_lens):
         raise ValueError(f"sample_lens must contain positive lengths, got {sample_lens!r}")
@@ -462,10 +474,14 @@ class StrongActionContextExpert(nn.Module):
         if action_indexes.numel() == 0 or vision_indexes.numel() == 0:
             raise ValueError("Strong action expert requires action tokens and clean visual context")
 
-        proprio = torch.stack(proprio_history)
-        proprio_valid = torch.stack(proprio_history_mask).bool()
-        history_action = torch.stack(action_history)
-        history_action_valid = torch.stack(action_history_mask).bool()
+        proprio = torch.stack(_strip_optional_collator_axis(proprio_history, expected_ndim=2))
+        proprio_valid = torch.stack(
+            _strip_optional_collator_axis(proprio_history_mask, expected_ndim=1)
+        ).bool()
+        history_action = torch.stack(_strip_optional_collator_axis(action_history, expected_ndim=2))
+        history_action_valid = torch.stack(
+            _strip_optional_collator_axis(action_history_mask, expected_ndim=1)
+        ).bool()
         if proprio.shape[1:] != (self.proprio_history_length, self.state_dim):
             raise ValueError(
                 "Strong action proprio contract mismatch: "

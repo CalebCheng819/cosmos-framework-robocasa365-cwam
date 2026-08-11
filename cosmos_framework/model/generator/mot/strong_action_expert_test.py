@@ -101,6 +101,35 @@ def test_strong_action_expert_rejects_missing_or_misaligned_control_context() ->
         expert(**inputs)
 
 
+def test_strong_action_expert_accepts_singleton_collator_axis() -> None:
+    expert = _expert()
+    inputs = _inputs()
+    for field in (
+        "proprio_history",
+        "proprio_history_mask",
+        "action_history",
+        "action_history_mask",
+    ):
+        inputs[field] = [value.unsqueeze(0) for value in inputs[field]]
+
+    output, metrics = expert(**inputs)
+
+    assert output.shape == inputs["hidden_states"].shape
+    assert torch.isfinite(output).all()
+    assert all(torch.isfinite(value) for value in metrics.values())
+
+
+def test_strong_action_expert_rejects_nonsingleton_collator_axis() -> None:
+    expert = _expert()
+    inputs = _inputs()
+    inputs["proprio_history"] = [
+        value.unsqueeze(0).expand(2, -1, -1) for value in inputs["proprio_history"]
+    ]
+
+    with pytest.raises(ValueError, match="proprio contract mismatch"):
+        expert(**inputs)
+
+
 def test_vision_view_ids_partition_horizontal_tokens_in_camera_order() -> None:
     expert = _expert()
     positions = torch.tensor(
