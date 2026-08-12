@@ -13,14 +13,16 @@ export PYTHONNOUSERSITE=1
     exit 2
 }
 
-readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R4-20260812
-readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R4-20260812
+readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R5-20260812
+readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R5-20260812
 readonly R14_BASELINE_RUN_ID=CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809
 readonly PROJECT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval
 readonly INPUTS_ROOT="$PROJECT_ROOT/inputs"
 readonly OSS_PROJECT_ROOT=/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval
 readonly CONTROL_DEPLOY_ROOT="$PROJECT_ROOT/control/scripts/$EVAL_EXPERIMENT_ID"
 readonly R14_BASELINE_ROOT="$PROJECT_ROOT/control/baselines/$R14_BASELINE_RUN_ID"
+readonly SOURCE_SNAPSHOT_ROOT="$INPUTS_ROOT/source/CWAM-DLC-ROB365-COSMOS3-NANO-S1-20260803-dddd8fd3f61a"
+readonly ROBOCASA_ENV_ROOT="$INPUTS_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"
 readonly LOCAL_ASSET_ROOT=/tmp/cwam_s1_r14_matched_assets
 readonly LOCAL_BUILD_ROOT=/tmp/.cwam_s1_r14_matched_assets.incomplete
 readonly LOCAL_CHECKPOINT_PARENT="$LOCAL_ASSET_ROOT/checkpoints"
@@ -44,8 +46,12 @@ readonly FORMAL_LAUNCHER="$CONTROL_DEPLOY_ROOT/launch_cwam_cosmos3_robocasa365_e
 readonly S1_R14_MATCHED_HELPER="$CONTROL_DEPLOY_ROOT/cwam_s1_r14_matched_eval.py"
 readonly CHECKPOINT_PUBLISHER="$CONTROL_DEPLOY_ROOT/publish_cwam_ema_checkpoint_dsw.py"
 readonly CHECKPOINT_CONTRACT="$CONTROL_DEPLOY_ROOT/cwam_s1_local_checkpoint_publication_contract.json"
+readonly EGL_SMOKE_PROBE="$SOURCE_SNAPSHOT_ROOT/examples/aliyun_4090/probe_mujoco_egl_mapping.py"
 readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"
 readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"
+readonly EGL_GLVD_FRONTEND_SOURCE="$INPUTS_ROOT/runtime/glvnd/libEGL.so.1.1.0"
+readonly EGL_GLVD_RUNTIME_ROOT=/tmp/cwam-glvnd
+readonly EGL_GLVD_FRONTEND="$EGL_GLVD_RUNTIME_ROOT/libEGL.so.1.1.0"
 readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly EGL_VENDOR_DOCUMENT='{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}'
 readonly REQUIRED_LOCAL_BYTES=161061273600
@@ -70,10 +76,29 @@ prepare_nvidia_egl_runtime() {
         *,all,* | *,graphics,*) ;;
         *) die "NVIDIA_DRIVER_CAPABILITIES must include graphics or all" ;;
     esac
-    python3 - <<'PY' || die "NVIDIA graphics capability did not expose libEGL_nvidia.so.0"
-import ctypes
+    [[ -f "$EGL_GLVD_FRONTEND_SOURCE" && ! -L "$EGL_GLVD_FRONTEND_SOURCE" ]] ||
+        die "controlled GLVND EGL frontend is missing or unsafe"
+    [[ "$(realpath -e -- "$EGL_GLVD_FRONTEND_SOURCE")" == "$EGL_GLVD_FRONTEND_SOURCE" ]] ||
+        die "controlled GLVND EGL frontend is not canonical"
+    [[ "$(stat -c %a -- "$EGL_GLVD_FRONTEND_SOURCE")" == 444 ]] ||
+        die "controlled GLVND EGL frontend must have mode 0444"
+    [[ "$(stat -c %s -- "$EGL_GLVD_FRONTEND_SOURCE")" == 72352 ]] ||
+        die "controlled GLVND EGL frontend size mismatch"
+    [[ ! -e "$EGL_GLVD_RUNTIME_ROOT" && ! -L "$EGL_GLVD_RUNTIME_ROOT" ]] ||
+        die "refusing to reuse worker-local GLVND runtime"
+    install -d -m 0755 -- "$EGL_GLVD_RUNTIME_ROOT"
+    install -m 0444 -- "$EGL_GLVD_FRONTEND_SOURCE" "$EGL_GLVD_FRONTEND"
+    ln -s -- "$(basename -- "$EGL_GLVD_FRONTEND")" "$EGL_GLVD_RUNTIME_ROOT/libEGL.so.1"
+    ln -s -- "$(basename -- "$EGL_GLVD_FRONTEND")" "$EGL_GLVD_RUNTIME_ROOT/libEGL.so"
+    export LD_LIBRARY_PATH="$EGL_GLVD_RUNTIME_ROOT${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-ctypes.CDLL("libEGL_nvidia.so.0")
+    python3 - "$EGL_GLVD_FRONTEND" <<'PY' || die "GLVND EGL frontend or NVIDIA backend is unavailable"
+import ctypes
+import sys
+
+frontend = ctypes.CDLL(sys.argv[1], mode=ctypes.RTLD_GLOBAL)
+getattr(frontend, "eglQueryString")
+ctypes.CDLL("libEGL_nvidia.so.0", mode=ctypes.RTLD_GLOBAL)
 PY
 
     egl_vendor_dir="$(dirname -- "$EGL_VENDOR_JSON")"
@@ -101,8 +126,25 @@ expected = {
 if document != expected:
     raise SystemExit(1)
 PY
-    printf 'S1_MATCHED_NVIDIA_EGL_RUNTIME_READY vendor=%s capabilities=%s\n' \
-        "$EGL_VENDOR_JSON" "$NVIDIA_DRIVER_CAPABILITIES"
+    printf 'S1_MATCHED_NVIDIA_EGL_RUNTIME_READY frontend=%s vendor=%s capabilities=%s\n' \
+        "$EGL_GLVD_FRONTEND" "$EGL_VENDOR_JSON" "$NVIDIA_DRIVER_CAPABILITIES"
+}
+
+preflight_mujoco_egl_runtime() {
+    [[ -x "$ROBOCASA_ENV_ROOT/bin/python" ]] || die "RoboCasa Python is not executable"
+    [[ -f "$EGL_SMOKE_PROBE" && ! -L "$EGL_SMOKE_PROBE" ]] ||
+        die "MuJoCo EGL smoke probe is missing or unsafe"
+    [[ "$(stat -c %a -- "$EGL_SMOKE_PROBE")" == 444 ]] ||
+        die "MuJoCo EGL smoke probe must have mode 0444"
+    env \
+        -u LD_PRELOAD \
+        CUDA_VISIBLE_DEVICES=0 \
+        MUJOCO_EGL_DEVICE_ID=0 \
+        MUJOCO_GL=egl \
+        PYOPENGL_PLATFORM=egl \
+        __EGL_VENDOR_LIBRARY_FILENAMES="$EGL_VENDOR_JSON" \
+        "$ROBOCASA_ENV_ROOT/bin/python" "$EGL_SMOKE_PROBE" --hold-seconds 1
+    printf 'S1_MATCHED_PRECOPY_MUJOCO_EGL_SMOKE_PASSED gpu=0\n'
 }
 
 copy_regular_file() {
@@ -213,6 +255,7 @@ prepare_nvidia_egl_runtime
     die "CPFS is not mounted at /mnt/workspace"
 [[ "$(findmnt -n -T /oss-chengjuntao -o TARGET)" == /oss-chengjuntao ]] ||
     die "OSS is not mounted at /oss-chengjuntao"
+preflight_mujoco_egl_runtime
 available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { print $1 }')"
 [[ "$available_local_bytes" =~ ^[0-9]+$ && "$available_local_bytes" -ge "$REQUIRED_LOCAL_BYTES" ]] ||
     die "worker-local /tmp has less than 150 GiB available"
@@ -284,7 +327,7 @@ export R14_BASELINE_ARGS
 export R14_BASELINE_RESULTS
 export R14_BASELINE_RUN_ID
 
-export COSMOS_SOURCE="$INPUTS_ROOT/source/CWAM-DLC-ROB365-COSMOS3-NANO-S1-20260803-dddd8fd3f61a"
+export COSMOS_SOURCE="$SOURCE_SNAPSHOT_ROOT"
 export SOURCE_MANIFEST="$COSMOS_SOURCE/SNAPSHOT_MANIFEST.json"
 export EXPECTED_SOURCE_COMMIT=dddd8fd3f61a336bfe359168eab2520048db9adb
 export EXPECTED_SOURCE_MANIFEST_SHA256=c8112fc6da2256ccd26eb7fbd40d126214e72f626f9456e9c6ae4ef598213067
@@ -298,7 +341,7 @@ export EXPECTED_COSMOS_ENV_READY_MARKER_SHA256=30d569ca042cefcddb8f4729d9edbcf3a
 export EXPECTED_COSMOS_ENV_ARCHIVE_SHA256=55ec70fcc5198daa8cee81c463eb9507e1a2cb736a548369219337dd6ebc170d
 export EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256=a90f84ecad3d30c63ea5a1c05226b81791a542472504440093ffb05f19f8ba9e
 
-export ROBOCASA_ENV="$INPUTS_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"
+export ROBOCASA_ENV="$ROBOCASA_ENV_ROOT"
 export ROBOCASA_ENV_READY_MARKER="$ROBOCASA_ENV/.cwam_env_ready.json"
 export EXPECTED_ROBOCASA_ENV_READY_MARKER_SHA256=d9a60a1b268d2feb2f1f07ae4e6b9cb2cd2e5605ba30315b66e31f31b66adae2
 export ROBOCASA_TORCHCODEC_RELAY_RECEIPT="$INPUTS_ROOT/config/robocasa-torchcodec-plain-wheel-relay-receipt.json"

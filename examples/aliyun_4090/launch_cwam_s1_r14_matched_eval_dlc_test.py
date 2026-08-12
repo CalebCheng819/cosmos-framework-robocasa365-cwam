@@ -24,8 +24,8 @@ def _script() -> str:
 def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R4-20260812" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R4-20260812" in script
+    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R5-20260812" in script
+    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R5-20260812" in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script
@@ -64,13 +64,34 @@ def test_local_capacity_probe_executes_with_gnu_df() -> None:
 def test_bootstrap_provisions_nvidia_egl_before_large_asset_staging() -> None:
     script = _script()
 
+    assert 'readonly EGL_GLVD_FRONTEND_SOURCE="$INPUTS_ROOT/runtime/glvnd/libEGL.so.1.1.0"' in script
+    assert "controlled GLVND EGL frontend size mismatch" in script
+    assert 'install -m 0444 -- "$EGL_GLVD_FRONTEND_SOURCE" "$EGL_GLVD_FRONTEND"' in script
+    assert '"$EGL_GLVD_RUNTIME_ROOT/libEGL.so.1"' in script
+    assert '"$EGL_GLVD_RUNTIME_ROOT/libEGL.so"' in script
+    assert 'export LD_LIBRARY_PATH="$EGL_GLVD_RUNTIME_ROOT${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in script
     assert 'readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json' in script
-    assert 'ctypes.CDLL("libEGL_nvidia.so.0")' in script
+    assert 'getattr(frontend, "eglQueryString")' in script
+    assert 'ctypes.CDLL("libEGL_nvidia.so.0", mode=ctypes.RTLD_GLOBAL)' in script
     assert 'NVIDIA_DRIVER_CAPABILITIES must include graphics or all' in script
     assert 'install -d -m 0755 -- "$egl_vendor_dir"' in script
     assert 'chmod 0644 -- "$temporary_vendor_json"' in script
     assert 'mv -T -- "$temporary_vendor_json" "$EGL_VENDOR_JSON"' in script
     assert script.index("prepare_nvidia_egl_runtime\n") < script.index(
+        'copy_regular_file \\\n    "$SOURCE_ENV_ARCHIVE"'
+    )
+
+
+def test_bootstrap_runs_real_mujoco_egl_smoke_before_large_asset_staging() -> None:
+    script = _script()
+
+    assert 'readonly EGL_SMOKE_PROBE="$SOURCE_SNAPSHOT_ROOT/examples/aliyun_4090/probe_mujoco_egl_mapping.py"' in script
+    assert "CUDA_VISIBLE_DEVICES=0" in script
+    assert "MUJOCO_EGL_DEVICE_ID=0" in script
+    assert "MUJOCO_GL=egl" in script
+    assert "PYOPENGL_PLATFORM=egl" in script
+    assert '"$ROBOCASA_ENV_ROOT/bin/python" "$EGL_SMOKE_PROBE" --hold-seconds 1' in script
+    assert script.index("preflight_mujoco_egl_runtime\n") < script.index(
         'copy_regular_file \\\n    "$SOURCE_ENV_ARCHIVE"'
     )
 
