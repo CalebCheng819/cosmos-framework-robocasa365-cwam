@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,8 +23,8 @@ def _script() -> str:
 def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R1-20260811" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R1-20260811" in script
+    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R2-20260812" in script
+    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R2-20260812" in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script
@@ -39,6 +40,24 @@ def test_bootstrap_requires_one_eight_gpu_worker_and_both_mounts() -> None:
     assert "findmnt -n -T /mnt/workspace -o TARGET" in script
     assert "findmnt -n -T /oss-chengjuntao -o TARGET" in script
     assert "readonly REQUIRED_LOCAL_BYTES=161061273600" in script
+
+
+def test_local_capacity_probe_executes_with_gnu_df() -> None:
+    assignment = next(
+        line for line in _script().splitlines() if line.startswith("available_local_bytes=")
+    )
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"set -Eeuo pipefail\n{assignment}\nprintf '%s\\n' \"$available_local_bytes\"",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip().isdigit()
 
 
 def test_bootstrap_stages_large_assets_under_fixed_local_root() -> None:
