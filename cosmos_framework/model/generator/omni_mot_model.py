@@ -238,6 +238,12 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_num_heads=self.config.action_relevance_num_heads,
                 action_relevance_topk=self.config.action_relevance_topk,
                 action_relevance_initial_gate=self.config.action_relevance_initial_gate,
+                action_relevance_routing_mode=self.config.action_relevance_routing_mode,
+                action_relevance_dselect_num_selectors=self.config.action_relevance_dselect_num_selectors,
+                action_relevance_dselect_capacity=self.config.action_relevance_dselect_capacity,
+                action_relevance_dselect_gamma=self.config.action_relevance_dselect_gamma,
+                action_relevance_dselect_overlap_weight=self.config.action_relevance_dselect_overlap_weight,
+                action_relevance_dselect_invalid_weight=self.config.action_relevance_dselect_invalid_weight,
                 strong_action_expert_enabled=self.config.strong_action_expert_enabled,
                 strong_action_expert_model_dim=self.config.strong_action_expert_model_dim,
                 strong_action_expert_num_heads=self.config.strong_action_expert_num_heads,
@@ -1268,6 +1274,10 @@ class OmniMoTModel(ImaginaireModel):
                 "action_relevance_topk_mass",
                 "action_relevance_effective_support",
                 "action_relevance_residual_gate",
+                "action_relevance_selector_entropy",
+                "action_relevance_selector_overlap",
+                "action_relevance_selector_invalid_mass",
+                "action_relevance_selector_hard_fraction",
             )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
@@ -1291,6 +1301,14 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_topk_mass=out_net["action_relevance_topk_mass"],
                 action_relevance_effective_support=out_net["action_relevance_effective_support"],
                 action_relevance_residual_gate=out_net["action_relevance_residual_gate"],
+                action_relevance_selector_entropy=out_net["action_relevance_selector_entropy"],
+                action_relevance_selector_overlap=out_net["action_relevance_selector_overlap"],
+                action_relevance_selector_invalid_mass=out_net[
+                    "action_relevance_selector_invalid_mass"
+                ],
+                action_relevance_selector_hard_fraction=out_net[
+                    "action_relevance_selector_hard_fraction"
+                ],
             )
 
             aux_loss_weight = self.config.action_relevance_aux_loss_weight

@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_robocasa365_nano import (
     action_policy_robocasa365_b2_nano,
+    action_policy_robocasa365_b3_dselect_nano,
     action_policy_robocasa365_nano,
     action_policy_robocasa365_s1_nano,
     action_policy_robocasa365_strong_nano,
@@ -114,3 +115,23 @@ def test_b2_gradient_evidence_covers_both_action_branches() -> None:
         "strong_action_expert",
         "action_relevance",
     ]
+
+
+def test_b3_changes_only_the_b2_relevance_support_router() -> None:
+    b2 = action_policy_robocasa365_b2_nano
+    b3 = action_policy_robocasa365_b3_dselect_nano
+
+    assert OmegaConf.select(
+        b2.model.config,
+        "action_relevance_routing_mode",
+        default="soft_attention",
+    ) == "soft_attention"
+    assert b3.model.config.action_relevance_routing_mode == "dselect_k"
+    assert b3.model.config.action_relevance_dselect_num_selectors == b2.model.config.action_relevance_topk
+    assert b3.model.config.action_relevance_dselect_capacity == 8192
+    assert b3.model.config.action_relevance_aux_loss_weight == b2.model.config.action_relevance_aux_loss_weight
+    assert b3.model.config.strong_action_expert_enabled is True
+    assert b3.dataloader_train.max_samples_per_batch == b2.dataloader_train.max_samples_per_batch
+    assert b3.trainer.grad_accum_iter == b2.trainer.grad_accum_iter
+    assert b3.optimizer == b2.optimizer
+    assert b3.checkpoint == b2.checkpoint

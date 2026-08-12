@@ -518,3 +518,31 @@ cs.store(
     name="action_policy_robocasa365_b2_nano",
     node=action_policy_robocasa365_b2_nano,
 )
+
+
+def _action_policy_robocasa365_b3_dselect_nano_model_config() -> dict:
+    """Replace B2's top-k-mass proxy with matched-budget DSelect-k support."""
+    cfg = _action_policy_robocasa365_b2_nano_model_config()
+    cfg.update(
+        action_relevance_routing_mode="dselect_k",
+        action_relevance_dselect_num_selectors=32,
+        action_relevance_dselect_capacity=8192,
+        action_relevance_dselect_gamma=1.0,
+        action_relevance_dselect_overlap_weight=0.1,
+        action_relevance_dselect_invalid_weight=1.0,
+    )
+    return cfg
+
+
+action_policy_robocasa365_b3_dselect_nano = copy.deepcopy(action_policy_robocasa365_b2_nano)
+action_policy_robocasa365_b3_dselect_nano.job.name = "action_policy_robocasa365_b3_dselect_nano"
+action_policy_robocasa365_b3_dselect_nano.model.config = (
+    _action_policy_robocasa365_b3_dselect_nano_model_config()
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_b3_dselect_nano",
+    node=action_policy_robocasa365_b3_dselect_nano,
+)

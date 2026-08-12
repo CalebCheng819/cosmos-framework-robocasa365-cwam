@@ -15,6 +15,9 @@ from torch.nn.utils.rnn import pad_sequence
 from cosmos_framework.data.generator.sequence_packing import ModalityData
 
 
+_ROUTING_MODES = frozenset({"soft_attention", "dselect_k"})
+
+
 def conditioned_vision_token_indexes(vision: ModalityData) -> torch.Tensor:
     """Return packed indexes for clean vision frames, preserving item order."""
     if not isinstance(vision.sequence_indexes, torch.Tensor):
@@ -51,6 +54,169 @@ def conditioned_vision_token_indexes(vision: ModalityData) -> torch.Tensor:
     return torch.cat(selected)
 
 
+class DSelectKSupportRouter(nn.Module):
+    """Example-conditioned DSelect-k support over a fixed context capacity.
+
+    Each selector predicts a binary code for one context position. SmoothStep
+    keeps the code differentiable during training and becomes exactly binary
+    outside its transition interval, so the resulting support has at most
+    ``num_selectors`` non-zero positions after convergence.
+    """
+
+    def __init__(
+        self,
+        *,
+        head_dim: int,
+        num_selectors: int,
+        capacity: int,
+        gamma: float,
+    ) -> None:
+        super().__init__()
+        if head_dim <= 0 or num_selectors <= 0:
+            raise ValueError("head_dim and num_selectors must be positive")
+        if capacity <= 1 or capacity & (capacity - 1):
+            raise ValueError("DSelect-k capacity must be a power of two greater than one")
+        if num_selectors > capacity:
+            raise ValueError("DSelect-k num_selectors cannot exceed capacity")
+        if gamma <= 0.0:
+            raise ValueError("DSelect-k gamma must be positive")
+
+        self.head_dim = head_dim
+        self.num_selectors = num_selectors
+        self.capacity = capacity
+        self.gamma = gamma
+        self.num_binary = int(math.log2(capacity))
+        routing_input_dim = 2 * head_dim
+        self.selector_logits = nn.Linear(routing_input_dim, num_selectors * self.num_binary)
+        self.selector_mix_logits = nn.Linear(routing_input_dim, num_selectors)
+
+        values = torch.arange(capacity, dtype=torch.long)[:, None]
+        shifts = torch.arange(self.num_binary - 1, -1, -1, dtype=torch.long)[None, :]
+        self.register_buffer("binary_codes", ((values >> shifts) & 1).bool(), persistent=False)
+
+    def init_weights(self) -> None:
+        nn.init.zeros_(self.selector_logits.weight)
+        nn.init.uniform_(self.selector_logits.bias, -self.gamma / 100.0, self.gamma / 100.0)
+        nn.init.zeros_(self.selector_mix_logits.weight)
+        nn.init.zeros_(self.selector_mix_logits.bias)
+
+    def _smooth_step(self, logits: torch.Tensor) -> torch.Tensor:
+        lower = -self.gamma / 2.0
+        upper = self.gamma / 2.0
+        polynomial = (
+            -2.0 * logits.pow(3) / self.gamma**3
+            + 3.0 * logits / (2.0 * self.gamma)
+            + 0.5
+        )
+        return torch.where(
+            logits <= lower,
+            torch.zeros_like(logits),
+            torch.where(logits >= upper, torch.ones_like(logits), polynomial),
+        )
+
+    @staticmethod
+    def _masked_query_mean(value: torch.Tensor, query_valid: torch.Tensor) -> torch.Tensor:
+        valid = query_valid[:, None, :].expand(-1, value.shape[1], -1)
+        return value.masked_fill(~valid, 0.0).sum() / valid.sum().clamp_min(1)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        *,
+        context_valid: torch.Tensor,
+        query_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if query.ndim != 4 or key.ndim != 4:
+            raise ValueError("DSelect-k query and key must be [B,H,N,D]")
+        if query.shape[:2] != key.shape[:2] or query.shape[-1] != self.head_dim:
+            raise ValueError("DSelect-k query/key head dimensions do not match")
+        if key.shape[-1] != self.head_dim:
+            raise ValueError("DSelect-k key head dimension does not match its configuration")
+        if context_valid.shape != (key.shape[0], key.shape[2]):
+            raise ValueError("DSelect-k context_valid is not aligned with key")
+        if query_valid.shape != (query.shape[0], query.shape[2]):
+            raise ValueError("DSelect-k query_valid is not aligned with query")
+        if key.shape[2] > self.capacity:
+            raise ValueError(
+                f"DSelect-k context length {key.shape[2]} exceeds configured capacity {self.capacity}"
+            )
+
+        context_mask = context_valid[:, None, :, None].to(key.dtype)
+        context_count = context_mask.sum(dim=2).clamp_min(1.0)
+        context_summary = (key * context_mask).sum(dim=2) / context_count
+        context_summary = context_summary[:, :, None, :].expand(-1, -1, query.shape[2], -1)
+        routing_input = torch.cat((query, context_summary), dim=-1)
+
+        selector_logits = self.selector_logits(routing_input).float()
+        selector_logits = selector_logits.view(*query.shape[:3], self.num_selectors, self.num_binary)
+        selector_probabilities = self._smooth_step(selector_logits)
+        selector_mix = torch.softmax(self.selector_mix_logits(routing_input).float(), dim=-1)
+
+        codes = self.binary_codes[: key.shape[2]]
+        valid_context = context_valid[:, None, None, :]
+        support = query.new_zeros((*query.shape[:3], key.shape[2]), dtype=torch.float32)
+        invalid_mass = query.new_zeros(query.shape[:3], dtype=torch.float32)
+        for selector_id in range(self.num_selectors):
+            selector_output = query.new_ones((*query.shape[:3], key.shape[2]), dtype=torch.float32)
+            selector_bits = selector_probabilities[..., selector_id, :]
+            for bit_id in range(self.num_binary):
+                bit_probability = selector_bits[..., bit_id, None]
+                selector_output = selector_output * torch.where(
+                    codes[None, None, None, :, bit_id],
+                    bit_probability,
+                    1.0 - bit_probability,
+                )
+            valid_output = selector_output.masked_fill(~valid_context, 0.0)
+            valid_mass = valid_output.sum(dim=-1)
+            mix = selector_mix[..., selector_id]
+            support = support + mix[..., None] * valid_output
+            invalid_mass = invalid_mass + mix * (1.0 - valid_mass).clamp(0.0, 1.0)
+
+        support_mass = support.sum(dim=-1, keepdim=True)
+        uniform_support = valid_context.float() / valid_context.sum(dim=-1, keepdim=True).clamp_min(1)
+        support = torch.where(
+            support_mass > 1.0e-12,
+            support / support_mass.clamp_min(1.0e-12),
+            uniform_support,
+        )
+
+        probability = selector_probabilities.clamp(0.0, 1.0)
+        bit_entropy = -(
+            probability * probability.clamp_min(1.0e-12).log()
+            + (1.0 - probability) * (1.0 - probability).clamp_min(1.0e-12).log()
+        )
+        selector_entropy = bit_entropy.sum(dim=-1) / (self.num_binary * math.log(2.0))
+        selector_entropy = selector_entropy.mean(dim=-1)
+
+        if self.num_selectors > 1:
+            probability_i = probability.unsqueeze(-2)
+            probability_j = probability.unsqueeze(-3)
+            overlap_per_bit = (
+                (probability_i * probability_j).clamp_min(1.0e-12).sqrt()
+                + ((1.0 - probability_i) * (1.0 - probability_j)).clamp_min(1.0e-12).sqrt()
+            )
+            pairwise_overlap = overlap_per_bit.prod(dim=-1)
+            off_diagonal = ~torch.eye(
+                self.num_selectors,
+                device=query.device,
+                dtype=torch.bool,
+            )
+            selector_overlap = pairwise_overlap[..., off_diagonal].mean(dim=-1)
+        else:
+            selector_overlap = selector_entropy * 0.0
+
+        selector_hard_fraction = ((probability <= 1.0e-6) | (probability >= 1.0 - 1.0e-6)).float()
+        selector_hard_fraction = selector_hard_fraction.mean(dim=(-1, -2))
+        metrics = {
+            "selector_entropy": self._masked_query_mean(selector_entropy, query_valid),
+            "selector_overlap": self._masked_query_mean(selector_overlap, query_valid),
+            "selector_invalid_mass": self._masked_query_mean(invalid_mass, query_valid),
+            "selector_hard_fraction": self._masked_query_mean(selector_hard_fraction, query_valid),
+        }
+        return support, metrics
+
+
 class ActionRelevanceAdapter(nn.Module):
     """Soft relation-aware context routing for packed action tokens.
 
@@ -67,6 +233,12 @@ class ActionRelevanceAdapter(nn.Module):
         num_heads: int,
         topk: int,
         initial_residual_gate: float,
+        routing_mode: str = "soft_attention",
+        dselect_num_selectors: int = 32,
+        dselect_capacity: int = 8192,
+        dselect_gamma: float = 1.0,
+        dselect_overlap_weight: float = 0.1,
+        dselect_invalid_weight: float = 1.0,
     ) -> None:
         super().__init__()
         if hidden_size <= 0 or routing_dim <= 0:
@@ -77,6 +249,10 @@ class ActionRelevanceAdapter(nn.Module):
             raise ValueError("topk must be positive")
         if not 0.0 < initial_residual_gate < 1.0:
             raise ValueError("initial_residual_gate must be strictly between 0 and 1")
+        if routing_mode not in _ROUTING_MODES:
+            raise ValueError(f"unsupported action-relevance routing mode: {routing_mode!r}")
+        if dselect_overlap_weight < 0.0 or dselect_invalid_weight < 0.0:
+            raise ValueError("DSelect-k regularization weights must be non-negative")
 
         self.hidden_size = hidden_size
         self.routing_dim = routing_dim
@@ -84,6 +260,9 @@ class ActionRelevanceAdapter(nn.Module):
         self.head_dim = routing_dim // num_heads
         self.topk = topk
         self.initial_residual_gate = initial_residual_gate
+        self.routing_mode = routing_mode
+        self.dselect_overlap_weight = dselect_overlap_weight
+        self.dselect_invalid_weight = dselect_invalid_weight
 
         self.query_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -96,6 +275,16 @@ class ActionRelevanceAdapter(nn.Module):
             nn.Linear(5, 64),
             nn.SiLU(),
             nn.Linear(64, num_heads),
+        )
+        self.dselect_router = (
+            DSelectKSupportRouter(
+                head_dim=self.head_dim,
+                num_selectors=dselect_num_selectors,
+                capacity=dselect_capacity,
+                gamma=dselect_gamma,
+            )
+            if routing_mode == "dselect_k"
+            else None
         )
         initial_logit = math.log(initial_residual_gate / (1.0 - initial_residual_gate))
         # FSDP2 rejects zero-dimensional parameters.
@@ -127,6 +316,8 @@ class ActionRelevanceAdapter(nn.Module):
         nn.init.zeros_(first_relation.bias)
         nn.init.zeros_(final_relation.weight)
         nn.init.zeros_(final_relation.bias)
+        if self.dselect_router is not None:
+            self.dselect_router.init_weights()
         initial_logit = math.log(self.initial_residual_gate / (1.0 - self.initial_residual_gate))
         nn.init.constant_(self.residual_gate_logit, initial_logit)
 
@@ -186,6 +377,10 @@ class ActionRelevanceAdapter(nn.Module):
                 "topk_mass": zero,
                 "effective_support": zero,
                 "residual_gate": self.residual_gate_logit.sigmoid().squeeze(0),
+                "selector_entropy": zero,
+                "selector_overlap": zero,
+                "selector_invalid_mass": zero,
+                "selector_hard_fraction": zero,
             }
         if context_indexes.numel() == 0:
             raise ValueError("action relevance requires task or clean-vision context tokens")
@@ -270,6 +465,26 @@ class ActionRelevanceAdapter(nn.Module):
         logits = logits + relation_logits.permute(0, 3, 1, 2).float()
         logits = logits.masked_fill(~context_valid[:, None, None, :], -torch.inf)
         weights = torch.softmax(logits, dim=-1)
+        dselect_metrics = {
+            "selector_entropy": weights.sum() * 0.0,
+            "selector_overlap": weights.sum() * 0.0,
+            "selector_invalid_mass": weights.sum() * 0.0,
+            "selector_hard_fraction": weights.sum() * 0.0,
+        }
+        if self.dselect_router is not None:
+            support, dselect_metrics = self.dselect_router(
+                query,
+                key,
+                context_valid=context_valid,
+                query_valid=query_valid,
+            )
+            supported_weights = weights * support
+            supported_mass = supported_weights.sum(dim=-1, keepdim=True)
+            weights = torch.where(
+                supported_mass > 1.0e-12,
+                supported_weights / supported_mass.clamp_min(1.0e-12),
+                weights,
+            )
 
         routed = torch.matmul(weights.to(value.dtype), value)
         routed = routed.transpose(1, 2).reshape(num_samples, max_query, self.routing_dim)
@@ -320,11 +535,20 @@ class ActionRelevanceAdapter(nn.Module):
             return value.masked_fill(~valid_queries, 0.0).sum() / valid_count
 
         mean_topk_mass = masked_mean(topk_mass)
+        if self.dselect_router is None:
+            sparsity_loss = 1.0 - mean_topk_mass
+        else:
+            sparsity_loss = (
+                dselect_metrics["selector_entropy"]
+                + self.dselect_overlap_weight * dselect_metrics["selector_overlap"]
+                + self.dselect_invalid_weight * dselect_metrics["selector_invalid_mass"]
+            )
         metrics = {
-            "sparsity_loss": 1.0 - mean_topk_mass,
+            "sparsity_loss": sparsity_loss,
             "entropy": masked_mean(normalized_entropy),
             "topk_mass": mean_topk_mass,
             "effective_support": masked_mean(effective_support),
             "residual_gate": residual_gate,
+            **dselect_metrics,
         }
         return updated_hidden, auxiliary_action_hidden, metrics

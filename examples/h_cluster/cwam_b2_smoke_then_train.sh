@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-# Execute the B2 experiment inside an already allocated eight-H200 worker.
+# Execute a B2-compatible experiment inside an already allocated H200 worker.
 # A two-step, production-batch smoke must pass before the 20k-step run starts.
 # Runtime outputs stay on worker NVMe; checkpoints and evidence are copied to
 # OSS and verified by path and byte size before older local checkpoints are
@@ -11,9 +11,11 @@
 set -Eeuo pipefail
 umask 077
 
-: "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable B2 source snapshot.}"
+: "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable CWAM source snapshot.}"
 : "${FORMAL_RUN_NAME:=CWAM-B2-20260811-R1}"
 : "${EXPECTED_HOST:=gpu-l-lg-cmc-h-h200-0253.host.h.pjlab.org.cn}"
+: "${NPROC_PER_NODE:=8}"
+: "${TOML_FILE:=$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_b2_nano.toml}"
 : "${CONTROL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/experiments/cwam-b2-20260811/control}"
 : "${PERSONAL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao}"
 : "${COSMOS_ENV:=$PERSONAL_ROOT/envs/cosmos-framework-09f23119-cu128-train}"
@@ -36,6 +38,14 @@ umask 077
     echo "ERROR: unsupported FORMAL_RUN_NAME: $FORMAL_RUN_NAME" >&2
     exit 1
 }
+[[ "$NPROC_PER_NODE" == 4 || "$NPROC_PER_NODE" == 8 ]] || {
+    echo "ERROR: NPROC_PER_NODE must be 4 or 8" >&2
+    exit 1
+}
+[[ "$TOML_FILE" == "$COSMOS_SOURCE"/* && -f "$TOML_FILE" ]] || {
+    echo "ERROR: TOML_FILE must be a file inside COSMOS_SOURCE: $TOML_FILE" >&2
+    exit 1
+}
 [[ "$NVIDIA_SMI_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: NVIDIA_SMI_INTERVAL_SECONDS must be a positive integer" >&2
     exit 1
@@ -45,7 +55,6 @@ umask 077
     exit 1
 }
 
-readonly TOML_FILE="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_b2_nano.toml"
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_robocasa365_nano.sh"
 readonly SMOKE_RUN_NAME="${FORMAL_RUN_NAME}-smoke"
 readonly SMOKE_OUTPUT_ROOT="$RUN_ROOT/smoke"
@@ -212,7 +221,7 @@ run_training_phase() {
         IMAGINAIRE_OUTPUT_ROOT="$output_root" \
         LOG_FILENAME="$log_name" \
         EXTRA_TAIL_OVERRIDES="$overrides" \
-        NPROC_PER_NODE=8 \
+        NPROC_PER_NODE="$NPROC_PER_NODE" \
         RESUME_EXISTING_RUN=0 \
         ROBOCASA365_ROOT="$ROBOCASA365_ROOT" \
         ROBOCASA365_SOURCE_ROOT="$ROBOCASA365_SOURCE_ROOT" \
@@ -241,18 +250,19 @@ validate_training_log() {
         "$COSMOS_SOURCE/examples/h_cluster/validate_cwam_b2_training_log.py" \
         --log "$log_path" \
         --expected-iteration "$expected_iteration" \
-        --world-size 8
+        --world-size "$NPROC_PER_NODE"
 }
 
 validate_gpu_telemetry() {
     local telemetry="$1"
-    "$COSMOS_ENV/bin/python" - "$telemetry" <<'PY'
+    "$COSMOS_ENV/bin/python" - "$telemetry" "$NPROC_PER_NODE" <<'PY'
 import csv
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 path = Path(sys.argv[1])
+expected_gpu_count = int(sys.argv[2])
 max_utilization = defaultdict(float)
 max_memory_mib = defaultdict(float)
 with path.open(newline="") as handle:
@@ -262,14 +272,16 @@ with path.open(newline="") as handle:
         uuid = row[2].strip()
         max_memory_mib[uuid] = max(max_memory_mib[uuid], float(row[5].strip()))
         max_utilization[uuid] = max(max_utilization[uuid], float(row[7].strip()))
-if len(max_utilization) != 8:
-    raise SystemExit(f"expected telemetry for 8 GPUs, found {len(max_utilization)}")
+if len(max_utilization) != expected_gpu_count:
+    raise SystemExit(
+        f"expected telemetry for {expected_gpu_count} GPUs, found {len(max_utilization)}"
+    )
 inactive = [uuid for uuid, value in max_utilization.items() if value <= 0.0]
 if inactive:
     raise SystemExit(f"GPUs without observed utilization: {inactive}")
 print(
     "GPU_TELEMETRY_VALID",
-    "gpu_count=8",
+    f"gpu_count={expected_gpu_count}",
     f"min_peak_utilization={min(max_utilization.values()):.1f}",
     f"max_memory_mib={max(max_memory_mib.values()):.1f}",
 )
@@ -384,7 +396,7 @@ formal_uploader_loop() {
 
 CURRENT_PHASE="preflight"
 [[ ! -e "$RUN_ROOT" ]] || {
-    echo "ERROR: refusing to reuse B2 run root: $RUN_ROOT" >&2
+    echo "ERROR: refusing to reuse CWAM run root: $RUN_ROOT" >&2
     exit 1
 }
 mkdir -p "$EVIDENCE_DIR"
@@ -394,8 +406,8 @@ TRAPS_ACTIVE=1
     echo "ERROR: expected $EXPECTED_HOST, got $(hostname -f)" >&2
     exit 1
 }
-[[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -eq 8 ]] || {
-    echo "ERROR: B2 requires exactly eight visible GPUs" >&2
+[[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -eq "$NPROC_PER_NODE" ]] || {
+    echo "ERROR: expected exactly $NPROC_PER_NODE visible GPUs" >&2
     exit 1
 }
 if nvidia-smi --query-gpu=name --format=csv,noheader | grep -Fvx 'NVIDIA H200' >/dev/null; then
@@ -403,7 +415,7 @@ if nvidia-smi --query-gpu=name --format=csv,noheader | grep -Fvx 'NVIDIA H200' >
     exit 1
 fi
 [[ "$COSMOS_SOURCE" == "$PERSONAL_ROOT/run_snapshots/$FORMAL_RUN_NAME/source" ]] || {
-    echo "ERROR: COSMOS_SOURCE must be the B2 run snapshot" >&2
+    echo "ERROR: COSMOS_SOURCE must be the formal run snapshot" >&2
     exit 1
 }
 [[ -f "$COSMOS_SOURCE/GIT_REVISION" && -f "$COSMOS_SOURCE/RUN_ID" ]] || {
@@ -447,7 +459,7 @@ done
 rclone_cmd listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
 available_nvme_bytes="$(df --output=avail -B1 /nvme | tail -1 | tr -d '[:space:]')"
 [[ "$available_nvme_bytes" -ge 1099511627776 ]] || {
-    echo "ERROR: B2 requires at least 1 TiB free on /nvme" >&2
+    echo "ERROR: CWAM training requires at least 1 TiB free on /nvme" >&2
     exit 1
 }
 export PATH="$COSMOS_ENV/bin:$PATH"
@@ -480,8 +492,8 @@ payload = {
     "run_id": "$FORMAL_RUN_NAME",
     "git_revision": "$GIT_REVISION",
     "hostname": os.uname().nodename,
-    "gpu_count": 8,
-    "recipe": "action_policy_robocasa365_b2_nano",
+    "gpu_count": $NPROC_PER_NODE,
+    "recipe": "$(basename "$TOML_FILE" .toml)",
     "max_iter": 20000,
     "oss_root": "$OSS_ROOT",
     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -524,7 +536,7 @@ UPLOADER_PID=""
 upload_latest_checkpoint
 upload_run_metadata
 [[ "$formal_rc" -eq 0 ]] || {
-    echo "ERROR: formal B2 training failed with rc=$formal_rc" >&2
+    echo "ERROR: formal CWAM training failed with rc=$formal_rc" >&2
     exit "$formal_rc"
 }
 
@@ -539,4 +551,4 @@ rclone_copy_and_check "$EVIDENCE_DIR" "$OSS_ROOT/evidence"
 FINAL_STATE="completed"
 write_status completed completed 0
 best_effort_upload_evidence
-echo "B2_TRAINING_COMPLETE run=$FORMAL_RUN_NAME destination=$OSS_ROOT"
+echo "CWAM_TRAINING_COMPLETE run=$FORMAL_RUN_NAME destination=$OSS_ROOT"

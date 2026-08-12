@@ -256,6 +256,12 @@ class OmniMoTModelConfig:
     action_relevance_num_heads: int = 8
     action_relevance_topk: int = 32
     action_relevance_initial_gate: float = 0.01
+    action_relevance_routing_mode: str = "soft_attention"
+    action_relevance_dselect_num_selectors: int = 32
+    action_relevance_dselect_capacity: int = 8192
+    action_relevance_dselect_gamma: float = 1.0
+    action_relevance_dselect_overlap_weight: float = 0.1
+    action_relevance_dselect_invalid_weight: float = 1.0
     action_relevance_sparsity_weight: float = 0.01
     action_relevance_sparsity_start_iter: int = 1000
     action_relevance_sparsity_anneal_iters: int = 4000

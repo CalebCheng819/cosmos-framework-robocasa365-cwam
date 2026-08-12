@@ -57,6 +57,12 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         action_relevance_num_heads=8,
         action_relevance_topk=32,
         action_relevance_initial_gate=0.01,
+        action_relevance_routing_mode="soft_attention",
+        action_relevance_dselect_num_selectors=32,
+        action_relevance_dselect_capacity=8192,
+        action_relevance_dselect_gamma=1.0,
+        action_relevance_dselect_overlap_weight=0.1,
+        action_relevance_dselect_invalid_weight=1.0,
         strong_action_expert_enabled=False,
         strong_action_expert_model_dim=1024,
         strong_action_expert_num_heads=16,
@@ -114,6 +120,12 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.action_relevance_num_heads = action_relevance_num_heads
         self.action_relevance_topk = action_relevance_topk
         self.action_relevance_initial_gate = action_relevance_initial_gate
+        self.action_relevance_routing_mode = action_relevance_routing_mode
+        self.action_relevance_dselect_num_selectors = action_relevance_dselect_num_selectors
+        self.action_relevance_dselect_capacity = action_relevance_dselect_capacity
+        self.action_relevance_dselect_gamma = action_relevance_dselect_gamma
+        self.action_relevance_dselect_overlap_weight = action_relevance_dselect_overlap_weight
+        self.action_relevance_dselect_invalid_weight = action_relevance_dselect_invalid_weight
         self.strong_action_expert_enabled = strong_action_expert_enabled
         self.strong_action_expert_model_dim = strong_action_expert_model_dim
         self.strong_action_expert_num_heads = strong_action_expert_num_heads
@@ -135,6 +147,10 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
             )
         if self.action_relevance_enabled and not self.action_gen:
             raise ValueError("action_relevance_enabled=True requires action_gen=True")
+        if self.action_relevance_routing_mode not in {"soft_attention", "dselect_k"}:
+            raise ValueError(
+                f"Unsupported action_relevance_routing_mode={self.action_relevance_routing_mode!r}"
+            )
         if self.strong_action_expert_enabled and not self.action_gen:
             raise ValueError("strong_action_expert_enabled=True requires action_gen=True")
         if self.strong_action_expert_enabled:
@@ -237,6 +253,12 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     num_heads=config.action_relevance_num_heads,
                     topk=config.action_relevance_topk,
                     initial_residual_gate=config.action_relevance_initial_gate,
+                    routing_mode=config.action_relevance_routing_mode,
+                    dselect_num_selectors=config.action_relevance_dselect_num_selectors,
+                    dselect_capacity=config.action_relevance_dselect_capacity,
+                    dselect_gamma=config.action_relevance_dselect_gamma,
+                    dselect_overlap_weight=config.action_relevance_dselect_overlap_weight,
+                    dselect_invalid_weight=config.action_relevance_dselect_invalid_weight,
                 )
             if config.strong_action_expert_enabled:
                 self.strong_action_expert = StrongActionContextExpert(
