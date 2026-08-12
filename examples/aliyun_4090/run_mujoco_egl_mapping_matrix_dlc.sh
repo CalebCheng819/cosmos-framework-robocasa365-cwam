@@ -46,11 +46,11 @@ gpu_uuid() {
     local physical_index="$1"
     awk -F, -v wanted="$physical_index" '
         {
-            index = $1
+            gpu_index = $1
             uuid = $2
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", index)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", gpu_index)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", uuid)
-            if (index == wanted) {
+            if (gpu_index == wanted) {
                 print uuid
                 found = 1
             }

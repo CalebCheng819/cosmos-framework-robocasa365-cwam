@@ -19,7 +19,7 @@ readonly EVIDENCE_ROOT="$EGL_CONTROL_ROOT/egl-mapping-evidence-$EVAL_EXPERIMENT_
 readonly EGL_MAPPING_RECEIPT="$EGL_CONTROL_ROOT/robocasa-egl-device-mapping.json"
 readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly EGL_PROBE="$COSMOS_SOURCE/examples/aliyun_4090/probe_mujoco_egl_mapping.py"
-readonly EGL_MATRIX="$COSMOS_SOURCE/examples/aliyun_4090/run_mujoco_egl_mapping_matrix_dlc.sh"
+readonly DEFAULT_EGL_MATRIX="$COSMOS_SOURCE/examples/aliyun_4090/run_mujoco_egl_mapping_matrix_dlc.sh"
 readonly EGL_RECEIPT_GENERATOR="$COSMOS_SOURCE/examples/aliyun_4090/generate_cwam_dlc_egl_mapping_receipt.py"
 readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"
 case "$S1_R14_MATCHED_MODE" in
@@ -28,18 +28,25 @@ case "$S1_R14_MATCHED_MODE" in
             printf 'ERROR FORMAL_RUNNER_OVERRIDE is reserved for S1/R14 matched mode\n' >&2
             exit 2
         }
+        [[ -z "${EGL_MATRIX_OVERRIDE:-}" ]] || {
+            printf 'ERROR EGL_MATRIX_OVERRIDE is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
         FORMAL_RUNNER="$COSMOS_SOURCE/examples/aliyun_4090/run_cwam_cosmos3_robocasa365_eval_dlc.sh"
+        EGL_MATRIX="$DEFAULT_EGL_MATRIX"
         ;;
     1)
         : "${FORMAL_RUNNER_OVERRIDE:?Set FORMAL_RUNNER_OVERRIDE in S1/R14 matched mode}"
+        : "${EGL_MATRIX_OVERRIDE:?Set EGL_MATRIX_OVERRIDE in S1/R14 matched mode}"
         FORMAL_RUNNER="$FORMAL_RUNNER_OVERRIDE"
+        EGL_MATRIX="$EGL_MATRIX_OVERRIDE"
         ;;
     *)
         printf 'ERROR S1_R14_MATCHED_MODE must be 0 or 1\n' >&2
         exit 2
         ;;
 esac
-readonly FORMAL_RUNNER
+readonly FORMAL_RUNNER EGL_MATRIX
 
 die() {
     echo "ERROR: $*" >&2
@@ -67,6 +74,8 @@ require_immutable_source_file "$EGL_RECEIPT_GENERATOR"
 require_immutable_source_file "$FORMAL_RUNNER"
 [[ "$(realpath -e -- "$FORMAL_RUNNER")" == "$FORMAL_RUNNER" ]] ||
     die "FORMAL_RUNNER must be canonical"
+[[ "$(realpath -e -- "$EGL_MATRIX")" == "$EGL_MATRIX" ]] ||
+    die "EGL_MATRIX must be canonical"
 [[ -f "$EGL_VENDOR_JSON" && ! -L "$EGL_VENDOR_JSON" ]] ||
     die "NVIDIA EGL vendor JSON is missing"
 [[ "$(stat -c %a -- "$EGL_VENDOR_JSON")" == 644 ]] ||

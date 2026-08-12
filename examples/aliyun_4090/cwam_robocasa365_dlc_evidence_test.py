@@ -198,6 +198,9 @@ def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     assert 'export EXPECTED_EGL_MAPPING_RECEIPT_SHA256="$(sha256_file' in script
     assert 'require_immutable_source_file "$EGL_PROBE"' in script
     assert ': "${FORMAL_RUNNER_OVERRIDE:?Set FORMAL_RUNNER_OVERRIDE in S1/R14 matched mode}"' in script
+    assert ': "${EGL_MATRIX_OVERRIDE:?Set EGL_MATRIX_OVERRIDE in S1/R14 matched mode}"' in script
+    assert 'EGL_MATRIX="$EGL_MATRIX_OVERRIDE"' in script
+    assert "EGL_MATRIX_OVERRIDE is reserved for S1/R14 matched mode" in script
     assert 'bash "$EGL_MATRIX"' in script
     assert 'exec bash "$FORMAL_RUNNER"' in script
 
@@ -211,6 +214,38 @@ def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     assert "ALL_VISIBLE_DEVICES" in matrix
     assert "nvidia-smi pmon -s um -c 2 -d 1" in matrix
     assert '[[ -f "$PROBE" && ! -L "$PROBE" && "$(stat -c %a "$PROBE")" == 444 ]]' in matrix
+
+
+def test_egl_matrix_gpu_uuid_is_compatible_with_system_awk(tmp_path: Path) -> None:
+    matrix = MATRIX.read_text(encoding="utf-8")
+    function_start = matrix.index("gpu_uuid() {")
+    function_end = matrix.index("\n}\n\nrun_one()", function_start) + 2
+    gpu_uuid_function = matrix[function_start:function_end]
+    inventory = tmp_path / "gpu-inventory.csv"
+    inventory.write_text(
+        "\n".join(
+            f"{index}, GPU-{index:04d}, NVIDIA GeForce RTX 4090, 0000:{index:02x}:00.0"
+            for index in range(8)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'{gpu_uuid_function}\nINVENTORY="$1"\ngpu_uuid 7',
+            "bash",
+            str(inventory),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip() == "GPU-0007"
+    assert "\n            index = $1" not in gpu_uuid_function
 
 
 def test_egl_generator_requires_exact_eight_gpu_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
