@@ -24,8 +24,8 @@ def _script() -> str:
 def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R3-20260812" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R3-20260812" in script
+    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R4-20260812" in script
+    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R4-20260812" in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script
@@ -59,6 +59,20 @@ def test_local_capacity_probe_executes_with_gnu_df() -> None:
     )
 
     assert completed.stdout.strip().isdigit()
+
+
+def test_bootstrap_provisions_nvidia_egl_before_large_asset_staging() -> None:
+    script = _script()
+
+    assert 'readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json' in script
+    assert 'ctypes.CDLL("libEGL_nvidia.so.0")' in script
+    assert 'NVIDIA_DRIVER_CAPABILITIES must include graphics or all' in script
+    assert 'install -d -m 0755 -- "$egl_vendor_dir"' in script
+    assert 'chmod 0644 -- "$temporary_vendor_json"' in script
+    assert 'mv -T -- "$temporary_vendor_json" "$EGL_VENDOR_JSON"' in script
+    assert script.index("prepare_nvidia_egl_runtime\n") < script.index(
+        'copy_regular_file \\\n    "$SOURCE_ENV_ARCHIVE"'
+    )
 
 
 def test_bootstrap_stages_large_assets_under_fixed_local_root() -> None:

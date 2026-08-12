@@ -13,8 +13,8 @@ export PYTHONNOUSERSITE=1
     exit 2
 }
 
-readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R3-20260812
-readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R3-20260812
+readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R4-20260812
+readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R4-20260812
 readonly R14_BASELINE_RUN_ID=CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809
 readonly PROJECT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval
 readonly INPUTS_ROOT="$PROJECT_ROOT/inputs"
@@ -46,6 +46,8 @@ readonly CHECKPOINT_PUBLISHER="$CONTROL_DEPLOY_ROOT/publish_cwam_ema_checkpoint_
 readonly CHECKPOINT_CONTRACT="$CONTROL_DEPLOY_ROOT/cwam_s1_local_checkpoint_publication_contract.json"
 readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"
 readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"
+readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+readonly EGL_VENDOR_DOCUMENT='{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}'
 readonly REQUIRED_LOCAL_BYTES=161061273600
 
 die() {
@@ -58,6 +60,49 @@ require_control_file() {
     [[ -f "$path" && ! -L "$path" ]] || die "missing immutable control file: $path"
     [[ "$(realpath -e -- "$path")" == "$path" ]] || die "control file is not canonical: $path"
     [[ "$(stat -c %a -- "$path")" == 444 ]] || die "control file must have mode 0444: $path"
+}
+
+prepare_nvidia_egl_runtime() {
+    local egl_vendor_dir
+    local temporary_vendor_json
+
+    case ",${NVIDIA_DRIVER_CAPABILITIES:-}," in
+        *,all,* | *,graphics,*) ;;
+        *) die "NVIDIA_DRIVER_CAPABILITIES must include graphics or all" ;;
+    esac
+    python3 - <<'PY' || die "NVIDIA graphics capability did not expose libEGL_nvidia.so.0"
+import ctypes
+
+ctypes.CDLL("libEGL_nvidia.so.0")
+PY
+
+    egl_vendor_dir="$(dirname -- "$EGL_VENDOR_JSON")"
+    if [[ ! -e "$EGL_VENDOR_JSON" && ! -L "$EGL_VENDOR_JSON" ]]; then
+        install -d -m 0755 -- "$egl_vendor_dir"
+        temporary_vendor_json="$(mktemp "$egl_vendor_dir/.10_nvidia.json.XXXXXX")"
+        printf '%s\n' "$EGL_VENDOR_DOCUMENT" > "$temporary_vendor_json"
+        chmod 0644 -- "$temporary_vendor_json"
+        mv -T -- "$temporary_vendor_json" "$EGL_VENDOR_JSON"
+    fi
+    [[ -f "$EGL_VENDOR_JSON" && ! -L "$EGL_VENDOR_JSON" ]] ||
+        die "NVIDIA EGL vendor JSON is missing or unsafe"
+    [[ "$(stat -c %a -- "$EGL_VENDOR_JSON")" == 644 ]] ||
+        die "NVIDIA EGL vendor JSON must have mode 0644"
+    python3 - "$EGL_VENDOR_JSON" <<'PY' || die "NVIDIA EGL vendor JSON has unexpected content"
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = {
+    "file_format_version": "1.0.0",
+    "ICD": {"library_path": "libEGL_nvidia.so.0"},
+}
+if document != expected:
+    raise SystemExit(1)
+PY
+    printf 'S1_MATCHED_NVIDIA_EGL_RUNTIME_READY vendor=%s capabilities=%s\n' \
+        "$EGL_VENDOR_JSON" "$NVIDIA_DRIVER_CAPABILITIES"
 }
 
 copy_regular_file() {
@@ -163,6 +208,7 @@ done
 
 [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l)" == 8 ]] ||
     die "matched evaluation requires exactly eight GPUs"
+prepare_nvidia_egl_runtime
 [[ "$(findmnt -n -T /mnt/workspace -o TARGET)" == /mnt/workspace ]] ||
     die "CPFS is not mounted at /mnt/workspace"
 [[ "$(findmnt -n -T /oss-chengjuntao -o TARGET)" == /oss-chengjuntao ]] ||
