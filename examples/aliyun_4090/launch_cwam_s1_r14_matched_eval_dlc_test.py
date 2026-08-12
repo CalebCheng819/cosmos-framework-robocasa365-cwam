@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import stat
 import subprocess
 from pathlib import Path
 
@@ -23,8 +24,8 @@ def _script() -> str:
 def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R2-20260812" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R2-20260812" in script
+    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R3-20260812" in script
+    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R3-20260812" in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script
@@ -71,6 +72,31 @@ def test_bootstrap_stages_large_assets_under_fixed_local_root() -> None:
     assert '"$SOURCE_QWEN_TOKENIZER"' in script
     assert '"$SOURCE_CHECKPOINT_ROOT"' in script
     assert 'mv -T -- "$LOCAL_BUILD_ROOT" "$LOCAL_ASSET_ROOT"' in script
+
+
+def test_bootstrap_normalizes_staged_directory_modes(tmp_path: Path) -> None:
+    build_root = tmp_path / "build"
+    stage_root = build_root / "checkpoints" / ".checkpoint.incomplete-transfer-20260812"
+    model_root = stage_root / "model"
+    model_root.mkdir(parents=True)
+    for directory in (build_root, stage_root, model_root):
+        directory.chmod(0o700)
+    normalization = next(
+        line
+        for line in _script().splitlines()
+        if line.startswith('find "$LOCAL_BUILD_ROOT" -type d -exec chmod 0755')
+    )
+
+    subprocess.run(
+        ["bash", "-c", normalization],
+        check=True,
+        env={"LOCAL_BUILD_ROOT": str(build_root)},
+    )
+
+    assert all(
+        stat.S_IMODE(directory.stat().st_mode) == 0o755
+        for directory in (build_root, stage_root, model_root)
+    )
 
 
 def test_bootstrap_publishes_s1_from_exact_eight_shard_closure() -> None:
