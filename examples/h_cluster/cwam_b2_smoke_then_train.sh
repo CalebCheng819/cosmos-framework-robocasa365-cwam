@@ -402,10 +402,9 @@ CURRENT_PHASE="preflight"
 mkdir -p "$EVIDENCE_DIR"
 rm -f "$UPLOADER_STOP"
 TRAPS_ACTIVE=1
-[[ "$(hostname -f)" == "$EXPECTED_HOST" ]] || {
-    echo "ERROR: expected $EXPECTED_HOST, got $(hostname -f)" >&2
-    exit 1
-}
+"$COSMOS_ENV/bin/python" \
+    "$COSMOS_SOURCE/examples/h_cluster/validate_h_worker_node.py" \
+    --expected "$EXPECTED_HOST"
 [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -eq "$NPROC_PER_NODE" ]] || {
     echo "ERROR: expected exactly $NPROC_PER_NODE visible GPUs" >&2
     exit 1

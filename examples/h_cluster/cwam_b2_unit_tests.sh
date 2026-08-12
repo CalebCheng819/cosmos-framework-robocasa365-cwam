@@ -22,6 +22,7 @@ export TRANSFORMERS_OFFLINE=1
 export WANDB_MODE=offline
 
 "$PYTHON_BIN" -m pytest -q -o addopts= --confcutdir="$SOURCE_ROOT/cosmos_framework" \
+    examples/h_cluster/validate_h_worker_node_test.py \
     examples/h_cluster/validate_cwam_b2_training_log_test.py \
     cosmos_framework/model/generator/mot/action_relevance_test.py \
     cosmos_framework/model/generator/mot/strong_action_expert_test.py \
