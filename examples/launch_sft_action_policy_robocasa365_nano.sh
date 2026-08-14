@@ -15,7 +15,7 @@
 #   OUTPUT_ROOT              default: outputs/train
 #   RUN_NAME                 unique run name; defaults to a UTC timestamp
 #   NPROC_PER_NODE           local GPU count; default: 8
-# Strong-v1, B2, and B3 only:
+# Strong-v1, B2, B3, and B4 only:
 #   ROBOCASA365_CONTROL_CACHE_ROOT        immutable state/action cache
 #   ROBOCASA365_STRONG_LATENT_CACHE_ROOT  triple-view 480 Wan latent cache
 #   ROBOCASA365_STRONG_LATENT_CACHE_MODE  must be required for formal training
@@ -140,19 +140,24 @@ action_policy_robocasa365_b3_dselect_nano.toml)
     [[ "$NPROC_PER_NODE" -eq 4 || "$NPROC_PER_NODE" -eq 8 ]] ||
         { echo "ERROR: B3 formal training requires exactly 4 or 8 ranks" >&2; exit 1; }
     ;;
+action_policy_robocasa365_b4_adaptive_dselect_nano.toml)
+    [[ "$NPROC_PER_NODE" -eq 8 ]] ||
+        { echo "ERROR: B4 formal training requires exactly 8 ranks" >&2; exit 1; }
+    ;;
 esac
 case "$(basename "$TOML_FILE")" in
 action_policy_robocasa365_strong_nano.toml|\
 action_policy_robocasa365_b2_nano.toml|\
-action_policy_robocasa365_b3_dselect_nano.toml)
+action_policy_robocasa365_b3_dselect_nano.toml|\
+action_policy_robocasa365_b4_adaptive_dselect_nano.toml)
     [[ "$ROBOCASA365_STRONG_LATENT_CACHE_MODE" == required ]] ||
-        { echo "ERROR: Strong-v1/B2/B3 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
     [[ "$CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER" == 1 ]] ||
-        { echo "ERROR: Strong-v1/B2/B3 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
     [[ -f "$ROBOCASA365_CONTROL_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_CONTROL_CACHE_ROOT/_SUCCESS.json" ]] ||
-        { echo "ERROR: Strong-v1/B2/B3 control cache is incomplete" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4 control cache is incomplete" >&2; exit 1; }
     [[ -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/_SUCCESS.json" ]] ||
-        { echo "ERROR: Strong-v1/B2/B3 triple-view 480 latent cache is incomplete" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4 triple-view 480 latent cache is incomplete" >&2; exit 1; }
     ;;
 esac
 '

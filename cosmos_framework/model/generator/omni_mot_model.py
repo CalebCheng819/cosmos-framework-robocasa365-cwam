@@ -244,6 +244,19 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_dselect_gamma=self.config.action_relevance_dselect_gamma,
                 action_relevance_dselect_overlap_weight=self.config.action_relevance_dselect_overlap_weight,
                 action_relevance_dselect_invalid_weight=self.config.action_relevance_dselect_invalid_weight,
+                action_relevance_dselect_adaptive_counts=(self.config.action_relevance_dselect_adaptive_counts),
+                action_relevance_dselect_adaptive_temperature=(
+                    self.config.action_relevance_dselect_adaptive_temperature
+                ),
+                action_relevance_dselect_adaptive_target_selectors=(
+                    self.config.action_relevance_dselect_adaptive_target_selectors
+                ),
+                action_relevance_dselect_adaptive_budget_weight=(
+                    self.config.action_relevance_dselect_adaptive_budget_weight
+                ),
+                action_relevance_dselect_adaptive_entropy_weight=(
+                    self.config.action_relevance_dselect_adaptive_entropy_weight
+                ),
                 strong_action_expert_enabled=self.config.strong_action_expert_enabled,
                 strong_action_expert_model_dim=self.config.strong_action_expert_model_dim,
                 strong_action_expert_num_heads=self.config.strong_action_expert_num_heads,
@@ -1278,6 +1291,11 @@ class OmniMoTModel(ImaginaireModel):
                 "action_relevance_selector_overlap",
                 "action_relevance_selector_invalid_mass",
                 "action_relevance_selector_hard_fraction",
+                "action_relevance_selector_expected_count",
+                "action_relevance_selector_selected_count",
+                "action_relevance_selector_count_entropy",
+                "action_relevance_selector_budget_loss",
+                "action_relevance_selector_utilization",
             )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
@@ -1309,6 +1327,11 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_selector_hard_fraction=out_net[
                     "action_relevance_selector_hard_fraction"
                 ],
+                action_relevance_selector_expected_count=out_net["action_relevance_selector_expected_count"],
+                action_relevance_selector_selected_count=out_net["action_relevance_selector_selected_count"],
+                action_relevance_selector_count_entropy=out_net["action_relevance_selector_count_entropy"],
+                action_relevance_selector_budget_loss=out_net["action_relevance_selector_budget_loss"],
+                action_relevance_selector_utilization=out_net["action_relevance_selector_utilization"],
             )
 
             aux_loss_weight = self.config.action_relevance_aux_loss_weight

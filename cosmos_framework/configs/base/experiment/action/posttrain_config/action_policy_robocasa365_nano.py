@@ -546,3 +546,31 @@ cs.store(
     name="action_policy_robocasa365_b3_dselect_nano",
     node=action_policy_robocasa365_b3_dselect_nano,
 )
+
+
+def _action_policy_robocasa365_b4_adaptive_dselect_nano_model_config() -> dict:
+    """Make B3's fixed selector budget adaptive while retaining its maximum capacity."""
+    cfg = _action_policy_robocasa365_b3_dselect_nano_model_config()
+    cfg.update(
+        action_relevance_routing_mode="adaptive_dselect_k",
+        action_relevance_dselect_adaptive_counts=[4, 8, 12, 16, 24, 32],
+        action_relevance_dselect_adaptive_temperature=1.0,
+        action_relevance_dselect_adaptive_target_selectors=24.0,
+        action_relevance_dselect_adaptive_budget_weight=1.0,
+        action_relevance_dselect_adaptive_entropy_weight=0.01,
+    )
+    return cfg
+
+
+action_policy_robocasa365_b4_adaptive_dselect_nano = copy.deepcopy(action_policy_robocasa365_b3_dselect_nano)
+action_policy_robocasa365_b4_adaptive_dselect_nano.job.name = "action_policy_robocasa365_b4_adaptive_dselect_nano"
+action_policy_robocasa365_b4_adaptive_dselect_nano.model.config = (
+    _action_policy_robocasa365_b4_adaptive_dselect_nano_model_config()
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_b4_adaptive_dselect_nano",
+    node=action_policy_robocasa365_b4_adaptive_dselect_nano,
+)

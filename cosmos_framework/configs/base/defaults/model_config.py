@@ -262,6 +262,11 @@ class OmniMoTModelConfig:
     action_relevance_dselect_gamma: float = 1.0
     action_relevance_dselect_overlap_weight: float = 0.1
     action_relevance_dselect_invalid_weight: float = 1.0
+    action_relevance_dselect_adaptive_counts: list[int] = attrs.field(factory=lambda: [4, 8, 12, 16, 24, 32])
+    action_relevance_dselect_adaptive_temperature: float = 1.0
+    action_relevance_dselect_adaptive_target_selectors: float = 24.0
+    action_relevance_dselect_adaptive_budget_weight: float = 1.0
+    action_relevance_dselect_adaptive_entropy_weight: float = 0.01
     action_relevance_sparsity_weight: float = 0.01
     action_relevance_sparsity_start_iter: int = 1000
     action_relevance_sparsity_anneal_iters: int = 4000

@@ -14,8 +14,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from cosmos_framework.data.generator.sequence_packing import ModalityData
 
-
-_ROUTING_MODES = frozenset({"soft_attention", "dselect_k"})
+_ROUTING_MODES = frozenset({"soft_attention", "dselect_k", "adaptive_dselect_k"})
 
 
 def conditioned_vision_token_indexes(vision: ModalityData) -> torch.Tensor:
@@ -70,6 +69,9 @@ class DSelectKSupportRouter(nn.Module):
         num_selectors: int,
         capacity: int,
         gamma: float,
+        adaptive_counts: tuple[int, ...] | None = None,
+        adaptive_temperature: float = 1.0,
+        adaptive_target_selectors: float = 24.0,
     ) -> None:
         super().__init__()
         if head_dim <= 0 or num_selectors <= 0:
@@ -80,25 +82,55 @@ class DSelectKSupportRouter(nn.Module):
             raise ValueError("DSelect-k num_selectors cannot exceed capacity")
         if gamma <= 0.0:
             raise ValueError("DSelect-k gamma must be positive")
+        if adaptive_temperature <= 0.0:
+            raise ValueError("adaptive DSelect-k temperature must be positive")
+        if adaptive_counts is not None:
+            if len(adaptive_counts) < 2:
+                raise ValueError("adaptive DSelect-k requires at least two candidate counts")
+            if tuple(sorted(set(adaptive_counts))) != adaptive_counts:
+                raise ValueError("adaptive DSelect-k counts must be strictly increasing")
+            if adaptive_counts[0] <= 0 or adaptive_counts[-1] > num_selectors:
+                raise ValueError("adaptive DSelect-k counts must lie within the selector capacity")
+            if not adaptive_counts[0] <= adaptive_target_selectors <= adaptive_counts[-1]:
+                raise ValueError("adaptive DSelect-k target must lie within the candidate range")
 
         self.head_dim = head_dim
         self.num_selectors = num_selectors
         self.capacity = capacity
         self.gamma = gamma
         self.num_binary = int(math.log2(capacity))
+        self.adaptive_counts = adaptive_counts
+        self.adaptive_temperature = adaptive_temperature
+        self.adaptive_target_selectors = adaptive_target_selectors
         routing_input_dim = 2 * head_dim
         self.selector_logits = nn.Linear(routing_input_dim, num_selectors * self.num_binary)
         self.selector_mix_logits = nn.Linear(routing_input_dim, num_selectors)
+        self.selector_count_logits = (
+            nn.Linear(routing_input_dim, len(adaptive_counts)) if adaptive_counts is not None else None
+        )
 
         values = torch.arange(capacity, dtype=torch.long)[:, None]
         shifts = torch.arange(self.num_binary - 1, -1, -1, dtype=torch.long)[None, :]
         self.register_buffer("binary_codes", ((values >> shifts) & 1).bool(), persistent=False)
+        if adaptive_counts is not None:
+            count_values = torch.tensor(adaptive_counts, dtype=torch.float32)
+            selector_ids = torch.arange(num_selectors, dtype=torch.long)[None, :]
+            prefix_masks = selector_ids < count_values.long()[:, None]
+            self.register_buffer("adaptive_count_values", count_values, persistent=False)
+            self.register_buffer("adaptive_prefix_masks", prefix_masks.float(), persistent=False)
 
     def init_weights(self) -> None:
         nn.init.zeros_(self.selector_logits.weight)
         nn.init.uniform_(self.selector_logits.bias, -self.gamma / 100.0, self.gamma / 100.0)
         nn.init.zeros_(self.selector_mix_logits.weight)
         nn.init.zeros_(self.selector_mix_logits.bias)
+        if self.selector_count_logits is not None:
+            nn.init.zeros_(self.selector_count_logits.weight)
+            nn.init.zeros_(self.selector_count_logits.bias)
+            # Start as the fixed-32 B3 baseline; the action and budget losses
+            # decide when a sample can use fewer selectors.
+            with torch.no_grad():
+                self.selector_count_logits.bias[-1] = 2.0
 
     def _smooth_step(self, logits: torch.Tensor) -> torch.Tensor:
         lower = -self.gamma / 2.0
@@ -118,6 +150,62 @@ class DSelectKSupportRouter(nn.Module):
     def _masked_query_mean(value: torch.Tensor, query_valid: torch.Tensor) -> torch.Tensor:
         valid = query_valid[:, None, :].expand(-1, value.shape[1], -1)
         return value.masked_fill(~valid, 0.0).sum() / valid.sum().clamp_min(1)
+
+    @staticmethod
+    def _masked_sample_mean(value: torch.Tensor, query_valid: torch.Tensor) -> torch.Tensor:
+        valid = query_valid.any(dim=-1)
+        return value.masked_fill(~valid, 0.0).sum() / valid.sum().clamp_min(1)
+
+    def _selector_gates(
+        self,
+        routing_input: torch.Tensor,
+        query_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if self.selector_count_logits is None:
+            gates = routing_input.new_ones((routing_input.shape[0], self.num_selectors), dtype=torch.float32)
+            fixed_count = gates.new_full((routing_input.shape[0],), float(self.num_selectors))
+            zero = routing_input.sum(dim=(1, 2, 3), dtype=torch.float32) * 0.0
+            return gates, {
+                "selector_expected_count": self._masked_sample_mean(fixed_count, query_valid),
+                "selector_selected_count": self._masked_sample_mean(fixed_count, query_valid),
+                "selector_count_entropy": self._masked_sample_mean(zero, query_valid),
+                "selector_budget_loss": self._masked_sample_mean(zero, query_valid),
+                "selector_utilization": self._masked_sample_mean(fixed_count, query_valid) / self.num_selectors,
+            }
+
+        query_mask = query_valid[:, None, :, None].to(routing_input.dtype)
+        denominator = (query_mask.sum(dim=(1, 2)) * routing_input.shape[1]).clamp_min(1.0)
+        sample_input = (routing_input * query_mask).sum(dim=(1, 2)) / denominator
+        count_logits = self.selector_count_logits(sample_input).float() / self.adaptive_temperature
+        count_probabilities = torch.softmax(count_logits, dim=-1)
+        hard_indexes = count_probabilities.argmax(dim=-1)
+        hard_probabilities = torch.nn.functional.one_hot(
+            hard_indexes,
+            num_classes=count_probabilities.shape[-1],
+        ).to(count_probabilities.dtype)
+        if self.training:
+            count_selection = hard_probabilities + count_probabilities - count_probabilities.detach()
+        else:
+            count_selection = hard_probabilities
+        gates = torch.matmul(count_selection, self.adaptive_prefix_masks)
+
+        expected_count = torch.matmul(count_probabilities, self.adaptive_count_values)
+        selected_count = self.adaptive_count_values[hard_indexes]
+        selected_count_st = torch.matmul(count_selection, self.adaptive_count_values)
+        count_entropy = -(count_probabilities.clamp_min(1.0e-12).log() * count_probabilities).sum(dim=-1)
+        count_entropy = count_entropy / math.log(count_probabilities.shape[-1])
+        valid_samples = query_valid.any(dim=-1)
+        valid_expected_count = self._masked_sample_mean(expected_count, query_valid)
+        valid_selected_count_st = self._masked_sample_mean(selected_count_st, query_valid)
+        budget_loss = ((valid_selected_count_st - self.adaptive_target_selectors) / self.num_selectors).square()
+        budget_loss = budget_loss + expected_count.masked_fill(valid_samples, 0.0).sum() * 0.0
+        return gates, {
+            "selector_expected_count": valid_expected_count,
+            "selector_selected_count": self._masked_sample_mean(selected_count, query_valid),
+            "selector_count_entropy": self._masked_sample_mean(count_entropy, query_valid),
+            "selector_budget_loss": budget_loss,
+            "selector_utilization": valid_expected_count / self.num_selectors,
+        }
 
     def forward(
         self,
@@ -151,7 +239,14 @@ class DSelectKSupportRouter(nn.Module):
         selector_logits = self.selector_logits(routing_input).float()
         selector_logits = selector_logits.view(*query.shape[:3], self.num_selectors, self.num_binary)
         selector_probabilities = self._smooth_step(selector_logits)
-        selector_mix = torch.softmax(self.selector_mix_logits(routing_input).float(), dim=-1)
+        selector_gates, count_metrics = self._selector_gates(routing_input, query_valid)
+        selector_mix_logits = self.selector_mix_logits(routing_input).float()
+        selector_mix_unnormalized = torch.exp(selector_mix_logits - selector_mix_logits.amax(dim=-1, keepdim=True))
+        selector_mix_unnormalized = selector_mix_unnormalized * selector_gates[:, None, None, :]
+        selector_mix = selector_mix_unnormalized / selector_mix_unnormalized.sum(
+            dim=-1,
+            keepdim=True,
+        ).clamp_min(1.0e-12)
 
         codes = self.binary_codes[: key.shape[2]]
         valid_context = context_valid[:, None, None, :]
@@ -186,8 +281,10 @@ class DSelectKSupportRouter(nn.Module):
             probability * probability.clamp_min(1.0e-12).log()
             + (1.0 - probability) * (1.0 - probability).clamp_min(1.0e-12).log()
         )
-        selector_entropy = bit_entropy.sum(dim=-1) / (self.num_binary * math.log(2.0))
-        selector_entropy = selector_entropy.mean(dim=-1)
+        selector_entropy_per_selector = bit_entropy.sum(dim=-1) / (self.num_binary * math.log(2.0))
+        entropy_gates = selector_gates[:, None, None, :]
+        selector_entropy = (selector_entropy_per_selector * entropy_gates).sum(dim=-1)
+        selector_entropy = selector_entropy / entropy_gates.sum(dim=-1).clamp_min(1.0)
 
         if self.num_selectors > 1:
             probability_i = probability.unsqueeze(-2)
@@ -202,17 +299,22 @@ class DSelectKSupportRouter(nn.Module):
                 device=query.device,
                 dtype=torch.bool,
             )
-            selector_overlap = pairwise_overlap[..., off_diagonal].mean(dim=-1)
+            overlap_gates = selector_gates[:, None, None, :, None] * selector_gates[:, None, None, None, :]
+            overlap_gates = overlap_gates * off_diagonal[None, None, None, :, :]
+            selector_overlap = (pairwise_overlap * overlap_gates).sum(dim=(-1, -2))
+            selector_overlap = selector_overlap / overlap_gates.sum(dim=(-1, -2)).clamp_min(1.0)
         else:
             selector_overlap = selector_entropy * 0.0
 
-        selector_hard_fraction = ((probability <= 1.0e-6) | (probability >= 1.0 - 1.0e-6)).float()
-        selector_hard_fraction = selector_hard_fraction.mean(dim=(-1, -2))
+        selector_hard = ((probability <= 1.0e-6) | (probability >= 1.0 - 1.0e-6)).float()
+        selector_hard_fraction = (selector_hard * entropy_gates[..., None]).sum(dim=(-1, -2))
+        selector_hard_fraction = selector_hard_fraction / (entropy_gates.sum(dim=-1).clamp_min(1.0) * self.num_binary)
         metrics = {
             "selector_entropy": self._masked_query_mean(selector_entropy, query_valid),
             "selector_overlap": self._masked_query_mean(selector_overlap, query_valid),
             "selector_invalid_mass": self._masked_query_mean(invalid_mass, query_valid),
             "selector_hard_fraction": self._masked_query_mean(selector_hard_fraction, query_valid),
+            **count_metrics,
         }
         return support, metrics
 
@@ -239,6 +341,11 @@ class ActionRelevanceAdapter(nn.Module):
         dselect_gamma: float = 1.0,
         dselect_overlap_weight: float = 0.1,
         dselect_invalid_weight: float = 1.0,
+        dselect_adaptive_counts: tuple[int, ...] = (4, 8, 12, 16, 24, 32),
+        dselect_adaptive_temperature: float = 1.0,
+        dselect_adaptive_target_selectors: float = 24.0,
+        dselect_adaptive_budget_weight: float = 1.0,
+        dselect_adaptive_entropy_weight: float = 0.01,
     ) -> None:
         super().__init__()
         if hidden_size <= 0 or routing_dim <= 0:
@@ -251,7 +358,12 @@ class ActionRelevanceAdapter(nn.Module):
             raise ValueError("initial_residual_gate must be strictly between 0 and 1")
         if routing_mode not in _ROUTING_MODES:
             raise ValueError(f"unsupported action-relevance routing mode: {routing_mode!r}")
-        if dselect_overlap_weight < 0.0 or dselect_invalid_weight < 0.0:
+        if (
+            dselect_overlap_weight < 0.0
+            or dselect_invalid_weight < 0.0
+            or dselect_adaptive_budget_weight < 0.0
+            or dselect_adaptive_entropy_weight < 0.0
+        ):
             raise ValueError("DSelect-k regularization weights must be non-negative")
 
         self.hidden_size = hidden_size
@@ -263,6 +375,8 @@ class ActionRelevanceAdapter(nn.Module):
         self.routing_mode = routing_mode
         self.dselect_overlap_weight = dselect_overlap_weight
         self.dselect_invalid_weight = dselect_invalid_weight
+        self.dselect_adaptive_budget_weight = dselect_adaptive_budget_weight
+        self.dselect_adaptive_entropy_weight = dselect_adaptive_entropy_weight
 
         self.query_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -282,8 +396,11 @@ class ActionRelevanceAdapter(nn.Module):
                 num_selectors=dselect_num_selectors,
                 capacity=dselect_capacity,
                 gamma=dselect_gamma,
+                adaptive_counts=(tuple(dselect_adaptive_counts) if routing_mode == "adaptive_dselect_k" else None),
+                adaptive_temperature=dselect_adaptive_temperature,
+                adaptive_target_selectors=dselect_adaptive_target_selectors,
             )
-            if routing_mode == "dselect_k"
+            if routing_mode in {"dselect_k", "adaptive_dselect_k"}
             else None
         )
         initial_logit = math.log(initial_residual_gate / (1.0 - initial_residual_gate))
@@ -371,17 +488,26 @@ class ActionRelevanceAdapter(nn.Module):
 
         if action_indexes.numel() == 0:
             zero = hidden_states.sum() * 0.0
-            return hidden_states, action_seed_hidden, {
-                "sparsity_loss": zero,
-                "entropy": zero,
-                "topk_mass": zero,
-                "effective_support": zero,
-                "residual_gate": self.residual_gate_logit.sigmoid().squeeze(0),
-                "selector_entropy": zero,
-                "selector_overlap": zero,
-                "selector_invalid_mass": zero,
-                "selector_hard_fraction": zero,
-            }
+            return (
+                hidden_states,
+                action_seed_hidden,
+                {
+                    "sparsity_loss": zero,
+                    "entropy": zero,
+                    "topk_mass": zero,
+                    "effective_support": zero,
+                    "residual_gate": self.residual_gate_logit.sigmoid().squeeze(0),
+                    "selector_entropy": zero,
+                    "selector_overlap": zero,
+                    "selector_invalid_mass": zero,
+                    "selector_hard_fraction": zero,
+                    "selector_expected_count": zero,
+                    "selector_selected_count": zero,
+                    "selector_count_entropy": zero,
+                    "selector_budget_loss": zero,
+                    "selector_utilization": zero,
+                },
+            )
         if context_indexes.numel() == 0:
             raise ValueError("action relevance requires task or clean-vision context tokens")
 
@@ -470,6 +596,11 @@ class ActionRelevanceAdapter(nn.Module):
             "selector_overlap": weights.sum() * 0.0,
             "selector_invalid_mass": weights.sum() * 0.0,
             "selector_hard_fraction": weights.sum() * 0.0,
+            "selector_expected_count": weights.sum() * 0.0,
+            "selector_selected_count": weights.sum() * 0.0,
+            "selector_count_entropy": weights.sum() * 0.0,
+            "selector_budget_loss": weights.sum() * 0.0,
+            "selector_utilization": weights.sum() * 0.0,
         }
         if self.dselect_router is not None:
             support, dselect_metrics = self.dselect_router(
@@ -542,6 +673,8 @@ class ActionRelevanceAdapter(nn.Module):
                 dselect_metrics["selector_entropy"]
                 + self.dselect_overlap_weight * dselect_metrics["selector_overlap"]
                 + self.dselect_invalid_weight * dselect_metrics["selector_invalid_mass"]
+                + self.dselect_adaptive_budget_weight * dselect_metrics["selector_budget_loss"]
+                + self.dselect_adaptive_entropy_weight * dselect_metrics["selector_count_entropy"]
             )
         metrics = {
             "sparsity_loss": sparsity_loss,

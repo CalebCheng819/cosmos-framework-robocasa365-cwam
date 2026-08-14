@@ -6,6 +6,7 @@ from omegaconf import OmegaConf
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_robocasa365_nano import (
     action_policy_robocasa365_b2_nano,
     action_policy_robocasa365_b3_dselect_nano,
+    action_policy_robocasa365_b4_adaptive_dselect_nano,
     action_policy_robocasa365_nano,
     action_policy_robocasa365_s1_nano,
     action_policy_robocasa365_strong_nano,
@@ -135,3 +136,22 @@ def test_b3_changes_only_the_b2_relevance_support_router() -> None:
     assert b3.trainer.grad_accum_iter == b2.trainer.grad_accum_iter
     assert b3.optimizer == b2.optimizer
     assert b3.checkpoint == b2.checkpoint
+
+
+def test_b4_changes_only_b3_selector_budget_control() -> None:
+    b3 = action_policy_robocasa365_b3_dselect_nano
+    b4 = action_policy_robocasa365_b4_adaptive_dselect_nano
+
+    assert b3.model.config.action_relevance_routing_mode == "dselect_k"
+    assert b4.model.config.action_relevance_routing_mode == "adaptive_dselect_k"
+    assert list(b4.model.config.action_relevance_dselect_adaptive_counts) == [4, 8, 12, 16, 24, 32]
+    assert b4.model.config.action_relevance_dselect_num_selectors == 32
+    assert b4.model.config.action_relevance_dselect_adaptive_target_selectors == 24.0
+    assert b4.model.config.action_relevance_dselect_adaptive_budget_weight == 1.0
+    assert b4.model.config.action_relevance_dselect_adaptive_entropy_weight == 0.01
+    assert b4.model.config.action_relevance_aux_loss_weight == b3.model.config.action_relevance_aux_loss_weight
+    assert b4.model.config.strong_action_expert_enabled is True
+    assert b4.dataloader_train.max_samples_per_batch == b3.dataloader_train.max_samples_per_batch
+    assert b4.trainer.grad_accum_iter == b3.trainer.grad_accum_iter
+    assert b4.optimizer == b3.optimizer
+    assert b4.checkpoint == b3.checkpoint

@@ -58,6 +58,11 @@ def test_denoise_preserves_action_relevance_metrics() -> None:
         "action_relevance_selector_overlap": torch.tensor(0.1),
         "action_relevance_selector_invalid_mass": torch.tensor(0.0),
         "action_relevance_selector_hard_fraction": torch.tensor(0.5),
+        "action_relevance_selector_expected_count": torch.tensor(24.0),
+        "action_relevance_selector_selected_count": torch.tensor(24.0),
+        "action_relevance_selector_count_entropy": torch.tensor(0.2),
+        "action_relevance_selector_budget_loss": torch.tensor(0.0),
+        "action_relevance_selector_utilization": torch.tensor(0.75),
     }
     network_output = {
         "preds_vision": [torch.zeros(1)],

@@ -63,6 +63,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         action_relevance_dselect_gamma=1.0,
         action_relevance_dselect_overlap_weight=0.1,
         action_relevance_dselect_invalid_weight=1.0,
+        action_relevance_dselect_adaptive_counts=(4, 8, 12, 16, 24, 32),
+        action_relevance_dselect_adaptive_temperature=1.0,
+        action_relevance_dselect_adaptive_target_selectors=24.0,
+        action_relevance_dselect_adaptive_budget_weight=1.0,
+        action_relevance_dselect_adaptive_entropy_weight=0.01,
         strong_action_expert_enabled=False,
         strong_action_expert_model_dim=1024,
         strong_action_expert_num_heads=16,
@@ -126,6 +131,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.action_relevance_dselect_gamma = action_relevance_dselect_gamma
         self.action_relevance_dselect_overlap_weight = action_relevance_dselect_overlap_weight
         self.action_relevance_dselect_invalid_weight = action_relevance_dselect_invalid_weight
+        self.action_relevance_dselect_adaptive_counts = action_relevance_dselect_adaptive_counts
+        self.action_relevance_dselect_adaptive_temperature = action_relevance_dselect_adaptive_temperature
+        self.action_relevance_dselect_adaptive_target_selectors = action_relevance_dselect_adaptive_target_selectors
+        self.action_relevance_dselect_adaptive_budget_weight = action_relevance_dselect_adaptive_budget_weight
+        self.action_relevance_dselect_adaptive_entropy_weight = action_relevance_dselect_adaptive_entropy_weight
         self.strong_action_expert_enabled = strong_action_expert_enabled
         self.strong_action_expert_model_dim = strong_action_expert_model_dim
         self.strong_action_expert_num_heads = strong_action_expert_num_heads
@@ -147,7 +157,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
             )
         if self.action_relevance_enabled and not self.action_gen:
             raise ValueError("action_relevance_enabled=True requires action_gen=True")
-        if self.action_relevance_routing_mode not in {"soft_attention", "dselect_k"}:
+        if self.action_relevance_routing_mode not in {
+            "soft_attention",
+            "dselect_k",
+            "adaptive_dselect_k",
+        }:
             raise ValueError(
                 f"Unsupported action_relevance_routing_mode={self.action_relevance_routing_mode!r}"
             )
@@ -259,6 +273,11 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     dselect_gamma=config.action_relevance_dselect_gamma,
                     dselect_overlap_weight=config.action_relevance_dselect_overlap_weight,
                     dselect_invalid_weight=config.action_relevance_dselect_invalid_weight,
+                    dselect_adaptive_counts=tuple(config.action_relevance_dselect_adaptive_counts),
+                    dselect_adaptive_temperature=config.action_relevance_dselect_adaptive_temperature,
+                    dselect_adaptive_target_selectors=(config.action_relevance_dselect_adaptive_target_selectors),
+                    dselect_adaptive_budget_weight=config.action_relevance_dselect_adaptive_budget_weight,
+                    dselect_adaptive_entropy_weight=config.action_relevance_dselect_adaptive_entropy_weight,
                 )
             if config.strong_action_expert_enabled:
                 self.strong_action_expert = StrongActionContextExpert(

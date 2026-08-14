@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
+import pytest
 import torch
 
 from cosmos_framework.data.generator.sequence_packing import ModalityData
@@ -77,6 +78,11 @@ def test_action_relevance_updates_only_action_tokens_and_backpropagates() -> Non
         "selector_overlap",
         "selector_invalid_mass",
         "selector_hard_fraction",
+        "selector_expected_count",
+        "selector_selected_count",
+        "selector_count_entropy",
+        "selector_budget_loss",
+        "selector_utilization",
     }
     assert all(bool(torch.isfinite(value)) for value in metrics.values())
     assert 0.0 <= metrics["topk_mass"].item() <= 1.0
@@ -206,6 +212,9 @@ def test_dselect_k_hard_codes_produce_at_most_k_support_positions() -> None:
     torch.testing.assert_close(metrics["selector_overlap"], torch.tensor(0.0), atol=1.0e-5, rtol=0.0)
     torch.testing.assert_close(metrics["selector_invalid_mass"], torch.tensor(0.0))
     torch.testing.assert_close(metrics["selector_hard_fraction"], torch.tensor(1.0))
+    torch.testing.assert_close(metrics["selector_expected_count"], torch.tensor(2.0))
+    torch.testing.assert_close(metrics["selector_selected_count"], torch.tensor(2.0))
+    torch.testing.assert_close(metrics["selector_utilization"], torch.tensor(1.0))
 
 
 def test_dselect_k_reports_mass_assigned_beyond_the_valid_context() -> None:
@@ -273,3 +282,108 @@ def test_dselect_k_adapter_backpropagates_through_selector_parameters() -> None:
     assert 0.0 <= metrics["selector_entropy"].item() <= 1.0
     assert 0.0 <= metrics["selector_overlap"].item() <= 1.0
     assert 0.0 <= metrics["selector_invalid_mass"].item() <= 1.0
+
+
+def test_adaptive_dselect_k_uses_the_selected_prefix_budget() -> None:
+    router = DSelectKSupportRouter(
+        head_dim=2,
+        num_selectors=4,
+        capacity=8,
+        gamma=1.0,
+        adaptive_counts=(1, 2, 4),
+        adaptive_target_selectors=2.0,
+    )
+    router.init_weights()
+    assert router.selector_count_logits is not None
+    with torch.no_grad():
+        router.selector_logits.weight.zero_()
+        router.selector_logits.bias.copy_(
+            torch.tensor(
+                [
+                    -1.0,
+                    -1.0,
+                    -1.0,
+                    -1.0,
+                    -1.0,
+                    1.0,
+                    -1.0,
+                    1.0,
+                    -1.0,
+                    1.0,
+                    -1.0,
+                    -1.0,
+                ]
+            )
+        )
+        router.selector_mix_logits.weight.zero_()
+        router.selector_mix_logits.bias.zero_()
+        router.selector_count_logits.weight.zero_()
+        router.selector_count_logits.bias.copy_(torch.tensor([-10.0, 10.0, -10.0]))
+
+    router.eval()
+    support, metrics = router(
+        torch.zeros(1, 1, 1, 2),
+        torch.zeros(1, 1, 8, 2),
+        context_valid=torch.ones(1, 8, dtype=torch.bool),
+        query_valid=torch.ones(1, 1, dtype=torch.bool),
+    )
+
+    assert int((support > 0.0).sum()) == 2
+    torch.testing.assert_close(metrics["selector_selected_count"], torch.tensor(2.0))
+    torch.testing.assert_close(metrics["selector_expected_count"], torch.tensor(2.0))
+    torch.testing.assert_close(metrics["selector_utilization"], torch.tensor(0.5))
+
+
+def test_adaptive_dselect_k_requires_multiple_candidate_counts() -> None:
+    with pytest.raises(ValueError, match="at least two candidate counts"):
+        DSelectKSupportRouter(
+            head_dim=2,
+            num_selectors=4,
+            capacity=8,
+            gamma=1.0,
+            adaptive_counts=(4,),
+            adaptive_target_selectors=4.0,
+        )
+
+
+def test_adaptive_dselect_k_backpropagates_through_the_count_predictor() -> None:
+    torch.manual_seed(23)
+    adapter = ActionRelevanceAdapter(
+        hidden_size=16,
+        routing_dim=8,
+        num_heads=2,
+        topk=2,
+        initial_residual_gate=0.1,
+        routing_mode="adaptive_dselect_k",
+        dselect_num_selectors=2,
+        dselect_capacity=8,
+        dselect_adaptive_counts=(1, 2),
+        dselect_adaptive_target_selectors=1.5,
+    )
+    adapter.init_weights()
+    hidden = torch.randn(8, 16, requires_grad=True)
+    action_indexes = torch.tensor([3, 7])
+
+    updated, auxiliary, metrics = adapter(
+        hidden,
+        action_indexes=action_indexes,
+        context_indexes=torch.tensor([0, 1, 2, 4, 5, 6]),
+        context_is_vision=torch.tensor([False, True, True, False, True, True]),
+        position_ids=torch.stack((torch.arange(8), torch.zeros(8), torch.zeros(8))).long(),
+        sample_lens=[4, 4],
+        action_seed_hidden=torch.randn(2, 16, requires_grad=True),
+    )
+
+    loss = updated[action_indexes].square().mean() + auxiliary.square().mean() + metrics["sparsity_loss"]
+    loss.backward()
+    assert adapter.dselect_router is not None
+    assert adapter.dselect_router.selector_count_logits is not None
+    for parameter in (
+        adapter.dselect_router.selector_count_logits.weight,
+        adapter.dselect_router.selector_count_logits.bias,
+    ):
+        assert parameter.grad is not None
+        assert bool(torch.isfinite(parameter.grad).all())
+        assert bool((parameter.grad != 0.0).any())
+    assert 1.0 <= metrics["selector_expected_count"].item() <= 2.0
+    assert metrics["selector_selected_count"].item() in {1.0, 2.0}
