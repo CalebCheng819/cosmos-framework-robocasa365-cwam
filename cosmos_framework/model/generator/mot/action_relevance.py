@@ -187,11 +187,13 @@ class DSelectKSupportRouter(nn.Module):
             count_selection = hard_probabilities + count_probabilities - count_probabilities.detach()
         else:
             count_selection = hard_probabilities
-        gates = torch.matmul(count_selection, self.adaptive_prefix_masks)
+        prefix_masks = self.adaptive_prefix_masks.to(dtype=count_selection.dtype)
+        count_values = self.adaptive_count_values.to(dtype=count_probabilities.dtype)
+        gates = torch.matmul(count_selection, prefix_masks)
 
-        expected_count = torch.matmul(count_probabilities, self.adaptive_count_values)
-        selected_count = self.adaptive_count_values[hard_indexes]
-        selected_count_st = torch.matmul(count_selection, self.adaptive_count_values)
+        expected_count = torch.matmul(count_probabilities, count_values)
+        selected_count = count_values[hard_indexes]
+        selected_count_st = torch.matmul(count_selection, count_values)
         count_entropy = -(count_probabilities.clamp_min(1.0e-12).log() * count_probabilities).sum(dim=-1)
         count_entropy = count_entropy / math.log(count_probabilities.shape[-1])
         valid_samples = query_valid.any(dim=-1)

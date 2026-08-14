@@ -387,3 +387,36 @@ def test_adaptive_dselect_k_backpropagates_through_the_count_predictor() -> None
         assert bool((parameter.grad != 0.0).any())
     assert 1.0 <= metrics["selector_expected_count"].item() <= 2.0
     assert metrics["selector_selected_count"].item() in {1.0, 2.0}
+
+
+def test_adaptive_dselect_k_supports_bfloat16_model_buffers() -> None:
+    torch.manual_seed(29)
+    router = DSelectKSupportRouter(
+        head_dim=4,
+        num_selectors=4,
+        capacity=8,
+        gamma=1.0,
+        adaptive_counts=(1, 2, 4),
+        adaptive_target_selectors=2.0,
+    )
+    router.init_weights()
+    router.to(dtype=torch.bfloat16)
+    assert router.adaptive_prefix_masks.dtype == torch.bfloat16
+    assert router.adaptive_count_values.dtype == torch.bfloat16
+
+    query = torch.randn(2, 1, 3, 4, dtype=torch.bfloat16, requires_grad=True)
+    key = torch.randn(2, 1, 8, 4, dtype=torch.bfloat16, requires_grad=True)
+    support, metrics = router(
+        query,
+        key,
+        context_valid=torch.ones(2, 8, dtype=torch.bool),
+        query_valid=torch.ones(2, 3, dtype=torch.bool),
+    )
+
+    assert support.dtype == torch.float32
+    assert metrics["selector_expected_count"].dtype == torch.float32
+    loss = support.square().mean() + metrics["selector_budget_loss"]
+    loss.backward()
+    assert router.selector_count_logits is not None
+    assert router.selector_count_logits.weight.grad is not None
+    assert bool(torch.isfinite(router.selector_count_logits.weight.grad).all())
