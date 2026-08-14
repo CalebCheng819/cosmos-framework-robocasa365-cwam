@@ -7,8 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
-from cosmos_framework.model.generator.omni_mot_model import OmniMoTModel
+from cosmos_framework.model.generator.omni_mot_model import OmniMoTModel, optional_model_config_value
 
 
 class _FlowMatchingHarness:
@@ -19,6 +20,15 @@ class _FlowMatchingHarness:
                 torch.tensor(float(iteration if sampling_iteration is None else sampling_iteration)),
             )
         )
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_optional_model_config_value_supports_published_configs_without_b4_fields() -> None:
+    config = OmegaConf.create({"existing": 7})
+
+    assert optional_model_config_value(config, "existing", 3) == 7
+    assert optional_model_config_value(config, "action_relevance_dselect_adaptive_counts", (4, 8)) == (4, 8)
 
 
 @pytest.mark.L0

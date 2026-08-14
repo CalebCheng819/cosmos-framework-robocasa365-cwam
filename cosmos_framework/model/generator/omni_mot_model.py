@@ -93,6 +93,14 @@ def action_relevance_aux_warmup_fraction(*, iteration: int, start_iter: int, war
     return min((iteration - start_iter + 1) / warmup_iters, 1.0)
 
 
+def optional_model_config_value(config: Any, name: str, default: Any) -> Any:
+    """Read a post-training option without breaking older published configs."""
+    try:
+        return getattr(config, name)
+    except (AttributeError, KeyError):
+        return default
+
+
 class OmniMoTModel(ImaginaireModel):
     """
     Mixture of Transformers (MoT) model to be trained with the flow matching objective
@@ -205,6 +213,21 @@ class OmniMoTModel(ImaginaireModel):
     def build_net(self, dtype: torch.dtype, *, lora_enabled: bool | None = None) -> torch.nn.Module:
         # Build model network and parallelize it.
         lora_enabled = self.config.lora_enabled if lora_enabled is None else lora_enabled
+        adaptive_counts = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_counts", (4, 8, 12, 16, 24, 32)
+        )
+        adaptive_temperature = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_temperature", 1.0
+        )
+        adaptive_target_selectors = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_target_selectors", 24.0
+        )
+        adaptive_budget_weight = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_budget_weight", 1.0
+        )
+        adaptive_entropy_weight = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_entropy_weight", 0.01
+        )
         with torch.device("meta"):
             assert self.vlm_config.model_instance is not None, "Model instance should be specified"
 
@@ -244,19 +267,11 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_dselect_gamma=self.config.action_relevance_dselect_gamma,
                 action_relevance_dselect_overlap_weight=self.config.action_relevance_dselect_overlap_weight,
                 action_relevance_dselect_invalid_weight=self.config.action_relevance_dselect_invalid_weight,
-                action_relevance_dselect_adaptive_counts=(self.config.action_relevance_dselect_adaptive_counts),
-                action_relevance_dselect_adaptive_temperature=(
-                    self.config.action_relevance_dselect_adaptive_temperature
-                ),
-                action_relevance_dselect_adaptive_target_selectors=(
-                    self.config.action_relevance_dselect_adaptive_target_selectors
-                ),
-                action_relevance_dselect_adaptive_budget_weight=(
-                    self.config.action_relevance_dselect_adaptive_budget_weight
-                ),
-                action_relevance_dselect_adaptive_entropy_weight=(
-                    self.config.action_relevance_dselect_adaptive_entropy_weight
-                ),
+                action_relevance_dselect_adaptive_counts=adaptive_counts,
+                action_relevance_dselect_adaptive_temperature=adaptive_temperature,
+                action_relevance_dselect_adaptive_target_selectors=adaptive_target_selectors,
+                action_relevance_dselect_adaptive_budget_weight=adaptive_budget_weight,
+                action_relevance_dselect_adaptive_entropy_weight=adaptive_entropy_weight,
                 strong_action_expert_enabled=self.config.strong_action_expert_enabled,
                 strong_action_expert_model_dim=self.config.strong_action_expert_model_dim,
                 strong_action_expert_num_heads=self.config.strong_action_expert_num_heads,
