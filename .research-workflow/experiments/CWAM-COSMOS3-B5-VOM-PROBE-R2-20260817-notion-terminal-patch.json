@@ -1,0 +1,56 @@
+{
+  "properties": {
+    "Status": {
+      "status": {
+        "name": "Failed"
+      }
+    },
+    "Completed At": {
+      "date": {
+        "start": "2026-08-17T07:51:51+08:00"
+      }
+    },
+    "Actual Runtime": {
+      "number": 0.53
+    },
+    "Experiment Window": {
+      "date": {
+        "start": "2026-08-17T07:20:15+08:00",
+        "end": "2026-08-17T07:51:51+08:00"
+      }
+    },
+    "Run IDs": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "train B4WARM-500S; matched validation VAL-NONE, VAL-ZERO, VAL-SHUFFLE; all jobs exited 0"
+          }
+        }
+      ]
+    },
+    "Primary Metrics": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "500 finite steps; complete iter_000000500. Slot abs cosine 0.9986472 -> 0.0073938; diversity loss 0.9972963 -> 0.0000940. Identical 2048-sample action loss: aligned 0.0082494505, zero 0.0082474817, shuffle 0.0082493899. Aligned was 0.02387% worse than zero and 0.00073% worse than shuffle."
+          }
+        }
+      ]
+    },
+    "Artifact URL": {
+      "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/207246a5e06c7c3219c78c5eb61fd5266bde3a36"
+    },
+    "Conclusion / Failure Reason": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "Anti-collapse succeeded, but the representation-use gate failed: learned aligned memory did not improve action loss over zero or shuffled memory. The formal 20k eight-GPU run was not launched. Next probe must make memory structurally necessary or directly supervise temporal object correspondence/action relevance while retaining the same causal interventions."
+          }
+        }
+      ]
+    }
+  }
+}

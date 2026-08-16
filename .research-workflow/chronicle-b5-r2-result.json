@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "ITER-2026-08-17-B5-VISUAL-OBJECT-MEMORY-R2 - anti-collapse passed, causal-use failed"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Commit 207246a5e06c7c3219c78c5eb61fd5266bde3a36 passed 72 focused tests and a B200 BF16 smoke test. The 500-step eight-B200 probe completed with finite gradients and a complete iter_000000500 checkpoint. Competitive slots eliminated collapse: slot absolute cosine fell from 0.9986472 to 0.0073938. However, identical 2048-sample action loss was aligned 0.0082494505, zero 0.0082474817, and shuffle 0.0082493899, so aligned memory did not outperform either intervention. Experiment CWAM-COSMOS3-B5-VOM-PROBE-R2-20260817 is Failed and the formal 20k run was not launched. A future probe must make memory structurally necessary or add direct temporal/action-relevance supervision before another full run."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

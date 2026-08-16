@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R2-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "failed",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3be21e77-89cc-813f-849f-cbebd899a03f",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R2-20260817-competitive-visual-object-memory-probe-3be21e7789cc813f849fcbebd899a03f"
+  },
+  "hypothesis": "Competitive spatially anchored object slots plus joint strong-action adaptation make episode-safe cross-replan visual history diverse and causally useful beyond the complete B4 context.",
+  "objective": "Pass focused tests and finite eight-B200 optimization; keep slot mean absolute off-diagonal cosine below 0.95; make aligned-history held-out action loss at least 1 percent lower than both zero-history and batch-shuffled-history matched interventions.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R1-20260817",
+    "run_ids": [
+      "CWAM-COSMOS3-B5-VOM-PROBE-R1-B4WARM-500S-RETRY2-20260817"
+    ]
+  },
+  "estimated_runtime_seconds": 9000,
+  "initial_eta": "2026-08-17T09:30:00+08:00",
+  "current_eta": "2026-08-17T09:30:00+08:00",
+  "experiment_window": {
+    "start": "2026-08-17T07:20:15+08:00",
+    "end": "2026-08-17T07:51:51+08:00"
+  },
+  "git": {
+    "commit": "207246a5e06c7c3219c78c5eb61fd5266bde3a36",
+    "branch": "exp/cosmos3-b5-visual-object-memory-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R2 competitive slots; eight 2x4 anchors; diversity weight 0.05; initial gate 0.1; train strong_action_expert; 500 optimizer steps; warmup 50; cycle 500; save 500; batch 64 per rank; DP8; accumulation 1; max validation batches 8"
+  },
+  "data": {
+    "version": "RoboCasa365 B4 processed split plus Wan latent cache and visual-history sidecar",
+    "revision": "1143698 fixed records; 280 shards; same-physical-episode t-36/t-24/t-12 visual-history lookup; no future or cross-episode lookup"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130",
+    "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"
+  },
+  "command": "launch_b5_vom_probe_r2_8gpu.sh followed by launch_b5_vom_matched_val_r2.sh none, zero, and shuffle; formal 20k remains blocked unless every acceptance gate passes.",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; global batch 512",
+  "seeds": [
+    42,
+    4242
+  ],
+  "preflight": {
+    "focused_tests": "72 passed in exact container environment",
+    "gpu_smoke": "B200 BF16 forward/backward finite; slots [8,8,1024]; peak allocation 226.44 MiB",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-COMPETITIVE-VOM-R2-GIT-20260817",
+    "base_checkpoint": "/data1/wam/cwam-b4/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B4-ADAPTIVE-DSELECT-R1-20260814/checkpoints/iter_000020000"
+  },
+  "started_at": "2026-08-17T07:20:15+08:00",
+  "completed_at": "2026-08-17T07:51:51+08:00",
+  "actual_runtime_seconds": 1896,
+  "job_id": "cwam-b5-vom-probe-r2",
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-PROBE-R2-B4WARM-500S-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R2-VAL-NONE-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R2-VAL-ZERO-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R2-VAL-SHUFFLE-20260817"
+  ],
+  "primary_metrics": {
+    "initial_action_loss": 0.007985535077750683,
+    "train_end_action_loss": 0.008250664919614792,
+    "aligned_action_loss": 0.008249450474977493,
+    "zero_action_loss": 0.008247481659054756,
+    "shuffle_action_loss": 0.008249389939010143,
+    "aligned_gain_over_zero_fraction": -0.0002387172235267229,
+    "aligned_gain_over_shuffle_fraction": -0.000007338235651068024,
+    "initial_slot_mean_abs_offdiag_cosine": 0.998647153377533,
+    "final_slot_mean_abs_offdiag_cosine": 0.007393846288323402,
+    "initial_diversity_loss": 0.9972962737083435,
+    "final_diversity_loss": 0.00009399522241437808,
+    "memory_gate": 0.099609375,
+    "history_fraction": 0.7589518427848816,
+    "finite_gradients": true,
+    "checkpoint": "iter_000000500",
+    "checkpoint_model_shards": 8,
+    "peak_gpu_memory_mib": 58470,
+    "peak_gpu_power_w": 999.5
+  },
+  "artifact_urls": [
+    "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/207246a5e06c7c3219c78c5eb61fd5266bde3a36"
+  ],
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R2-B4WARM-500S-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R2-B4WARM-500S-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R2-VAL-NONE-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R2-VAL-ZERO-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R2-VAL-SHUFFLE-20260817"
+  ],
+  "conclusion": "Competitive assignment and the diversity loss eliminated slot collapse, but the trained action expert did not causally use sample-specific cross-replan memory. The formal 20k run was not launched.",
+  "failure_reason": "Aligned memory failed to improve held-out action loss by 1 percent over either intervention: it was 0.02387 percent worse than zero and 0.00073 percent worse than shuffle."
+}
