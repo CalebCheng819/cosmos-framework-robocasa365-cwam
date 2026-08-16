@@ -28,7 +28,17 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     tool.chmod(0o555)
     (source / "bin/tool-link").symlink_to("tool")
     marker = source / env_archive.READY_MARKER
-    marker.write_text(json.dumps({"schema_version": 1, "status": "ready"}) + "\n")
+    marker.write_text(
+        json.dumps(
+            {
+                **env_archive._REQUIRED_READY_MARKER_FIELDS,
+                "source_head": "test-source-commit",
+                "packages": env_archive._REQUIRED_READY_MARKER_PACKAGES,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
     marker.chmod(0o444)
     materialization = tmp_path / "materialization.json"
     materialization.write_text('{"status":"ready"}\n')
@@ -75,6 +85,75 @@ def test_publish_and_verify_extract_round_trip(tmp_path: Path) -> None:
     assert verified["archive_sha256"] == verified["extracted_tar_sha256"]
     assert (stage / "bin/tool").read_bytes() == b"complete-environment-tool\n"
     assert (stage / "bin/tool-link").readlink() == Path("tool")
+
+
+def test_metadata_verification_extracts_without_new_hash_identity(tmp_path: Path) -> None:
+    source, archive, receipt, materialization, publisher = _fixture(tmp_path)
+    published = env_archive.publish(
+        source=source,
+        archive=archive,
+        receipt=receipt,
+        materialization_receipt=materialization,
+        publisher_source=publisher,
+    )
+    receipt_value = json.loads(receipt.read_text(encoding="utf-8"))
+    stage = tmp_path / "metadata-stage"
+    stage.mkdir()
+
+    verified = env_archive.verify_metadata_and_extract(
+        archive=archive,
+        receipt=receipt,
+        expected_publication_archive=archive,
+        expected_archive_bytes=archive.stat().st_size,
+        expected_receipt_bytes=receipt.stat().st_size,
+        expected_ready_marker_bytes=receipt_value["ready_marker"]["size_bytes"],
+        expected_regular_files=published["inventory"]["regular_files"],
+        expected_directories=published["inventory"]["directories_including_root"],
+        expected_symlinks=published["inventory"]["symlinks"],
+        expected_regular_file_bytes=published["inventory"]["regular_file_bytes"],
+        expected_source_commit="test-source-commit",
+        stage=stage,
+    )
+
+    assert verified["verification_mode"] == "metadata_no_hash"
+    assert not any("sha" in key for key in verified)
+    assert (stage / "bin/tool").read_bytes() == b"complete-environment-tool\n"
+
+
+def test_metadata_verification_rejects_semantic_receipt_drift(tmp_path: Path) -> None:
+    source, archive, receipt, materialization, publisher = _fixture(tmp_path)
+    published = env_archive.publish(
+        source=source,
+        archive=archive,
+        receipt=receipt,
+        materialization_receipt=materialization,
+        publisher_source=publisher,
+    )
+    receipt_value = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt.chmod(0o644)
+    content = receipt.read_text(encoding="utf-8").replace(
+        '"status": "published"', '"status": "publisheD"'
+    )
+    receipt.write_text(content, encoding="utf-8")
+    receipt.chmod(0o444)
+    stage = tmp_path / "metadata-stage"
+    stage.mkdir()
+
+    with pytest.raises(env_archive.EnvironmentArchiveError, match="header is invalid"):
+        env_archive.verify_metadata_and_extract(
+            archive=archive,
+            receipt=receipt,
+            expected_publication_archive=archive,
+            expected_archive_bytes=archive.stat().st_size,
+            expected_receipt_bytes=receipt.stat().st_size,
+            expected_ready_marker_bytes=receipt_value["ready_marker"]["size_bytes"],
+            expected_regular_files=published["inventory"]["regular_files"],
+            expected_directories=published["inventory"]["directories_including_root"],
+            expected_symlinks=published["inventory"]["symlinks"],
+            expected_regular_file_bytes=published["inventory"]["regular_file_bytes"],
+            expected_source_commit="test-source-commit",
+            stage=stage,
+        )
 
 
 def test_tar_stream_is_deterministic_for_pax_paths(tmp_path: Path) -> None:

@@ -36,6 +36,29 @@ FORMAL_MATERIALIZATION_RECEIPT = (
 )
 READY_MARKER = ".cwam_env_ready.json"
 _SHA256_LENGTH = 64
+_REQUIRED_READY_MARKER_FIELDS = {
+    "schema_version": 1,
+    "status": "ready",
+    "cuda_available": True,
+    "default_index": "offline-local-wheel-closure",
+    "torch": "2.10.0+cu128",
+    "torch_cuda": "12.8",
+    "uv": "0.11.28",
+}
+_REQUIRED_READY_MARKER_PACKAGES = {
+    "flash-attn": "2.7.4.post1+cu128.torch210",
+    "flash-attn-3-nv": "1.0.3+cu128.torch210",
+    "lerobot": "0.4.4",
+    "natten": "0.21.6.dev6+cu128.torch210",
+    "pyarrow": "21.0.0",
+    "pydantic": "2.12.5",
+    "torch": "2.10.0+cu128",
+    "torchao": "0.16.0+cu128",
+    "torchcodec": "0.10.0+cu128",
+    "torchvision": "0.25.0+cu128",
+    "transformer-engine": "2.12+cu128.torch210",
+    "triton": "3.6.0",
+}
 
 
 class EnvironmentArchiveError(RuntimeError):
@@ -132,6 +155,57 @@ def _inventory(root: Path) -> dict[str, Any]:
         "regular_file_bytes": regular_file_bytes,
         "metadata_inventory_sha256": digest.hexdigest(),
     }
+
+
+def _metadata_inventory(root: Path) -> dict[str, int]:
+    """Count the extracted closure without introducing a new hash identity."""
+    root = _canonical_directory(root, "environment root")
+    result = {
+        "regular_files": 0,
+        "directories_including_root": 1,
+        "symlinks": 0,
+        "regular_file_bytes": 0,
+    }
+    for path in root.rglob("*"):
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            result["directories_including_root"] += 1
+        elif stat.S_ISREG(metadata.st_mode):
+            result["regular_files"] += 1
+            result["regular_file_bytes"] += metadata.st_size
+        elif stat.S_ISLNK(metadata.st_mode):
+            result["symlinks"] += 1
+        else:
+            raise EnvironmentArchiveError(f"special environment entry is forbidden: {path}")
+    return result
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int, int]:
+    metadata = path.lstat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _require_exact_int(value: Any, expected: int, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value != expected:
+        raise EnvironmentArchiveError(
+            f"{label} mismatch: expected={expected!r} actual={value!r}"
+        )
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise EnvironmentArchiveError(f"invalid {label}: {error}") from error
+    if not isinstance(value, dict):
+        raise EnvironmentArchiveError(f"{label} must contain a JSON object")
+    return value
 
 
 def _tar_command(root: Path, output: str) -> list[str]:
@@ -465,6 +539,146 @@ def verify_and_extract(
     return result
 
 
+def verify_metadata_and_extract(
+    *,
+    archive: Path,
+    receipt: Path,
+    expected_publication_archive: Path,
+    expected_archive_bytes: int,
+    expected_receipt_bytes: int,
+    expected_ready_marker_bytes: int,
+    expected_regular_files: int,
+    expected_directories: int,
+    expected_symlinks: int,
+    expected_regular_file_bytes: int,
+    expected_source_commit: str,
+    stage: Path,
+) -> dict[str, Any]:
+    """Validate a fixed archive closure by metadata and semantics, then extract it."""
+    archive = _canonical_file(archive, "environment archive", mode=0o444)
+    receipt = _canonical_file(receipt, "archive publication receipt", mode=0o444)
+    expected_publication_archive = Path(
+        os.path.abspath(expected_publication_archive.expanduser())
+    )
+    _require_exact_int(archive.stat().st_size, expected_archive_bytes, "archive size")
+    _require_exact_int(receipt.stat().st_size, expected_receipt_bytes, "receipt size")
+    archive_identity = _file_identity(archive)
+    receipt_identity = _file_identity(receipt)
+
+    value = _load_json_object(receipt, "archive publication receipt")
+    if (
+        value.get("schema_version") != 1
+        or value.get("kind") != "cwam_cosmos_complete_environment_archive_publication"
+        or value.get("status") != "published"
+    ):
+        raise EnvironmentArchiveError("archive publication receipt header is invalid")
+    archive_value = value.get("archive")
+    marker_value = value.get("ready_marker")
+    source_value = value.get("source_environment")
+    publication_value = value.get("publication")
+    if not all(
+        isinstance(item, dict)
+        for item in (archive_value, marker_value, source_value, publication_value)
+    ):
+        raise EnvironmentArchiveError("archive publication receipt closure is malformed")
+    inventory_value = source_value.get("inventory")
+    if not isinstance(inventory_value, dict):
+        raise EnvironmentArchiveError("archive publication receipt inventory is malformed")
+    expected_inventory = {
+        "regular_files": expected_regular_files,
+        "directories_including_root": expected_directories,
+        "symlinks": expected_symlinks,
+        "regular_file_bytes": expected_regular_file_bytes,
+    }
+    if (
+        archive_value.get("path") != str(expected_publication_archive)
+        or archive_value.get("format") != "uncompressed-posix-tar-normalized-mtime"
+        or archive_value.get("root_member") != "."
+        or archive_value.get("mode") != "0444"
+        or archive_value.get("size_bytes") != expected_archive_bytes
+        or source_value.get("stable_during_publication") is not True
+        or marker_value.get("relative_path") != READY_MARKER
+        or marker_value.get("mode") != "0444"
+        or marker_value.get("size_bytes") != expected_ready_marker_bytes
+        or publication_value
+        != {
+            "archive_exclusive_hard_link": True,
+            "receipt_exclusive_hard_link": True,
+            "receipt_is_commit_point": True,
+            "overwrite": False,
+        }
+        or any(
+            inventory_value.get(key) != item
+            for key, item in expected_inventory.items()
+        )
+    ):
+        raise EnvironmentArchiveError("archive publication receipt metadata binding mismatch")
+
+    member_count = _validate_archive_members(archive)
+    expected_member_count = (
+        expected_regular_files + expected_directories + expected_symlinks
+    )
+    _require_exact_int(member_count, expected_member_count, "archive member count")
+    if (
+        _file_identity(archive) != archive_identity
+        or _file_identity(receipt) != receipt_identity
+    ):
+        raise EnvironmentArchiveError("archive or receipt changed during metadata validation")
+
+    stage = Path(os.path.abspath(stage.expanduser()))
+    if (
+        not stage.exists()
+        or stage.is_symlink()
+        or not stage.is_dir()
+        or any(stage.iterdir())
+    ):
+        raise EnvironmentArchiveError("extraction stage must be an existing empty real directory")
+    subprocess.run(
+        ["tar", "-xf", str(archive), "-C", str(stage), "--no-same-owner"],
+        check=True,
+    )
+    if (
+        _file_identity(archive) != archive_identity
+        or _file_identity(receipt) != receipt_identity
+    ):
+        raise EnvironmentArchiveError("archive or receipt changed during extraction")
+
+    marker = _canonical_file(stage / READY_MARKER, "extracted ready marker", mode=0o444)
+    _require_exact_int(marker.stat().st_size, expected_ready_marker_bytes, "ready marker size")
+    marker_document = _load_json_object(marker, "extracted ready marker")
+    for key, expected in _REQUIRED_READY_MARKER_FIELDS.items():
+        if marker_document.get(key) != expected:
+            raise EnvironmentArchiveError(
+                f"ready marker field mismatch: field={key!r} "
+                f"expected={expected!r} actual={marker_document.get(key)!r}"
+            )
+    if marker_document.get("source_head") != expected_source_commit:
+        raise EnvironmentArchiveError("ready marker source commit mismatch")
+    packages = marker_document.get("packages")
+    if not isinstance(packages, dict) or any(
+        packages.get(key) != expected
+        for key, expected in _REQUIRED_READY_MARKER_PACKAGES.items()
+    ):
+        raise EnvironmentArchiveError("ready marker package closure mismatch")
+
+    inventory = _metadata_inventory(stage)
+    if inventory != expected_inventory:
+        raise EnvironmentArchiveError("extracted environment metadata inventory mismatch")
+    result = {
+        "status": "passed",
+        "verification_mode": "metadata_no_hash",
+        "archive_size_bytes": expected_archive_bytes,
+        "receipt_size_bytes": expected_receipt_bytes,
+        "ready_marker_size_bytes": expected_ready_marker_bytes,
+        "member_count": member_count,
+        "inventory": inventory,
+        "source_commit": expected_source_commit,
+        "stage": str(stage),
+    }
+    print(json.dumps(result, sort_keys=True))
+    return result
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -476,6 +690,19 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--expected-receipt-sha256", required=True)
     verify.add_argument("--expected-ready-marker-sha256", required=True)
     verify.add_argument("--stage", type=Path, required=True)
+    metadata = subparsers.add_parser("verify-extract-metadata")
+    metadata.add_argument("--archive", type=Path, required=True)
+    metadata.add_argument("--receipt", type=Path, required=True)
+    metadata.add_argument("--expected-publication-archive", type=Path, required=True)
+    metadata.add_argument("--expected-archive-bytes", type=int, required=True)
+    metadata.add_argument("--expected-receipt-bytes", type=int, required=True)
+    metadata.add_argument("--expected-ready-marker-bytes", type=int, required=True)
+    metadata.add_argument("--expected-regular-files", type=int, required=True)
+    metadata.add_argument("--expected-directories", type=int, required=True)
+    metadata.add_argument("--expected-symlinks", type=int, required=True)
+    metadata.add_argument("--expected-regular-file-bytes", type=int, required=True)
+    metadata.add_argument("--expected-source-commit", required=True)
+    metadata.add_argument("--stage", type=Path, required=True)
     return parser
 
 
@@ -490,7 +717,7 @@ def main(argv: list[str] | None = None) -> int:
                 materialization_receipt=FORMAL_MATERIALIZATION_RECEIPT,
                 publisher_source=Path(__file__),
             )
-        else:
+        elif args.command == "verify-extract":
             verify_and_extract(
                 archive=args.archive,
                 receipt=args.receipt,
@@ -499,6 +726,21 @@ def main(argv: list[str] | None = None) -> int:
                 expected_ready_marker_sha256=args.expected_ready_marker_sha256,
                 stage=args.stage,
                 verifier_source=Path(__file__),
+            )
+        else:
+            verify_metadata_and_extract(
+                archive=args.archive,
+                receipt=args.receipt,
+                expected_publication_archive=args.expected_publication_archive,
+                expected_archive_bytes=args.expected_archive_bytes,
+                expected_receipt_bytes=args.expected_receipt_bytes,
+                expected_ready_marker_bytes=args.expected_ready_marker_bytes,
+                expected_regular_files=args.expected_regular_files,
+                expected_directories=args.expected_directories,
+                expected_symlinks=args.expected_symlinks,
+                expected_regular_file_bytes=args.expected_regular_file_bytes,
+                expected_source_commit=args.expected_source_commit,
+                stage=args.stage,
             )
     except (EnvironmentArchiveError, OSError, subprocess.CalledProcessError, tarfile.TarError) as error:
         print(f"ERROR: {error}", file=os.sys.stderr)

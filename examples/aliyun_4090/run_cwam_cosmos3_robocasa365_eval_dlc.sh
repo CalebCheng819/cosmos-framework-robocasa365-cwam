@@ -65,8 +65,6 @@ export PYTHONNOUSERSITE=1
 : "${EXPECTED_WAN2PT2_VAE_SHA256:?Set EXPECTED_WAN2PT2_VAE_SHA256}"
 : "${EXPECTED_QWEN_TOKENIZER_MANIFEST_SHA256:?Set EXPECTED_QWEN_TOKENIZER_MANIFEST_SHA256}"
 : "${EXPECTED_COSMOS_ENV_READY_MARKER_SHA256:?Set the DLC-native Cosmos ready-marker SHA256}"
-: "${EXPECTED_COSMOS_ENV_ARCHIVE_SHA256:?Set the complete Cosmos environment archive SHA256}"
-: "${EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256:?Set the environment archive receipt SHA256}"
 : "${EXPECTED_ROBOCASA_ENV_READY_MARKER_SHA256:?Set the DLC-native RoboCasa ready-marker SHA256}"
 : "${EXPECTED_ROBOCASA_TORCHCODEC_RELAY_RECEIPT_SHA256:?Set the plain torchcodec relay receipt SHA256}"
 : "${EGL_MAPPING_RECEIPT:?Set the verified eight-GPU EGL mapping receipt}"
@@ -89,6 +87,12 @@ readonly LOGICAL_NUM_SHARDS=8
 readonly S1_R14_MATCHED_MODE="${S1_R14_MATCHED_MODE:-0}"
 case "$S1_R14_MATCHED_MODE" in
     0)
+        : "${EXPECTED_COSMOS_ENV_ARCHIVE_SHA256:?Set the complete Cosmos environment archive SHA256}"
+        : "${EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256:?Set the environment archive receipt SHA256}"
+        [[ -z "${COSMOS_ENV_ARCHIVE_METADATA_HELPER:-}" ]] || {
+            printf 'ERROR COSMOS_ENV_ARCHIVE_METADATA_HELPER is reserved for S1/R14 matched mode\n' >&2
+            exit 2
+        }
         [[ -z "${FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE:-}" ]] || {
             printf 'ERROR FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE is reserved for S1/R14 matched mode\n' >&2
             exit 2
@@ -118,6 +122,7 @@ case "$S1_R14_MATCHED_MODE" in
         : "${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:?Set the local checkpoint parent in S1/R14 matched mode}"
         : "${S1_R14_MATCHED_HELPER:?Set the immutable matched-comparison helper}"
         : "${EVAL_CONTROL_COMMIT:?Set the immutable evaluation-control commit}"
+        : "${COSMOS_ENV_ARCHIVE_METADATA_HELPER:?Set the metadata-only environment archive helper}"
         [[ "$FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE" == /tmp/cwam_s1_r14_matched_assets ]] || {
             printf 'ERROR matched local asset root must be /tmp/cwam_s1_r14_matched_assets\n' >&2
             exit 2
@@ -174,6 +179,7 @@ readonly SETSID=/usr/bin/setsid
 readonly FORMAL_INPUT_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs"
 readonly FORMAL_NVME_INPUT_ROOT="/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs"
 readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"
+readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_SOURCE="$FORMAL_INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
 readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
 readonly FORMAL_CHECKPOINTS_ROOT="${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:-$FORMAL_INPUT_ROOT/checkpoints}"
 readonly FORMAL_RUNTIME_CLOSURE_ROOT="$FORMAL_INPUT_ROOT/runtime/cosmos-r21-dlc-runtime-v1"
@@ -195,6 +201,13 @@ else
 fi
 readonly FORMAL_ROBOCASA_REPO_SOURCE="$FORMAL_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
 readonly PINNED_COSMOS_ENV_SOURCE_COMMIT="09f23119ea92c707207bba55565e7a09d16896a2"
+readonly PINNED_COSMOS_ENV_ARCHIVE_BYTES=14736947200
+readonly PINNED_COSMOS_ENV_RECEIPT_BYTES=2124
+readonly PINNED_COSMOS_ENV_READY_MARKER_BYTES=973
+readonly PINNED_COSMOS_ENV_REGULAR_FILES=72662
+readonly PINNED_COSMOS_ENV_DIRECTORIES=11389
+readonly PINNED_COSMOS_ENV_SYMLINKS=4
+readonly PINNED_COSMOS_ENV_REGULAR_FILE_BYTES=14660695665
 readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
 readonly PINNED_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"
 readonly PINNED_ROBOSUITE_COMMIT="232ce7d4a6ed89c949a9aba024a05c8c32fdd08b"
@@ -331,7 +344,13 @@ DLC_LOCAL_SCRATCH_PARENT="$(canonical_existing_dir "$DLC_LOCAL_SCRATCH_PARENT")"
 
 readonly FORMAL_NVME_STAGING_ROOT="${FORMAL_NVME_INPUT_ROOT%/inputs}/staging"
 readonly RUNTIME_CLOSURE_HELPER="$COSMOS_SOURCE/$RUNTIME_CLOSURE_HELPER_REL"
-readonly COSMOS_ENV_ARCHIVE_HELPER="$COSMOS_SOURCE/$COSMOS_ENV_ARCHIVE_HELPER_REL"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    readonly COSMOS_ENV_ARCHIVE_HELPER="$(
+        canonical_existing_file "$COSMOS_ENV_ARCHIVE_METADATA_HELPER"
+    )"
+else
+    readonly COSMOS_ENV_ARCHIVE_HELPER="$COSMOS_SOURCE/$COSMOS_ENV_ARCHIVE_HELPER_REL"
+fi
 [[ -f "$RUNTIME_CLOSURE_HELPER" && ! -L "$RUNTIME_CLOSURE_HELPER" ]] ||
     die "immutable DLC runtime closure helper is missing"
 [[ -f "$COSMOS_ENV_ARCHIVE_HELPER" && ! -L "$COSMOS_ENV_ARCHIVE_HELPER" ]] ||
@@ -350,14 +369,25 @@ require_exact_value \
     cosmos_environment_archive_publication_receipt_path \
     "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
     "$FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT"
-verify_sha256 \
-    cosmos_environment_archive \
-    "$COSMOS_ENV_ARCHIVE" \
-    "$EXPECTED_COSMOS_ENV_ARCHIVE_SHA256"
-verify_sha256 \
-    cosmos_environment_archive_publication_receipt \
-    "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
-    "$EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    require_exact_value \
+        cosmos_environment_archive_bytes \
+        "$(stat -c %s -- "$COSMOS_ENV_ARCHIVE")" \
+        "$PINNED_COSMOS_ENV_ARCHIVE_BYTES"
+    require_exact_value \
+        cosmos_environment_archive_publication_receipt_bytes \
+        "$(stat -c %s -- "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT")" \
+        "$PINNED_COSMOS_ENV_RECEIPT_BYTES"
+else
+    verify_sha256 \
+        cosmos_environment_archive \
+        "$COSMOS_ENV_ARCHIVE" \
+        "$EXPECTED_COSMOS_ENV_ARCHIVE_SHA256"
+    verify_sha256 \
+        cosmos_environment_archive_publication_receipt \
+        "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
+        "$EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256"
+fi
 [[ "$(stat -c %a -- "$COSMOS_ENV_ARCHIVE")" == 444 ]] ||
     die "Cosmos environment archive must have mode 0444"
 [[ "$(stat -c %a -- "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT")" == 444 ]] ||
@@ -469,13 +499,29 @@ stage_cosmos_environment_archive() {
         die "Cosmos environment stage already exists: $stage"
     mkdir --parents --mode=0755 -- "$parent"
     mkdir --mode=0755 -- "$stage"
-    python3 "$COSMOS_ENV_ARCHIVE_HELPER" verify-extract \
-        --archive "$COSMOS_ENV_ARCHIVE" \
-        --receipt "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
-        --expected-archive-sha256 "$EXPECTED_COSMOS_ENV_ARCHIVE_SHA256" \
-        --expected-receipt-sha256 "$EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256" \
-        --expected-ready-marker-sha256 "$EXPECTED_COSMOS_ENV_READY_MARKER_SHA256" \
-        --stage "$stage"
+    if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+        python3 "$COSMOS_ENV_ARCHIVE_HELPER" verify-extract-metadata \
+            --archive "$COSMOS_ENV_ARCHIVE" \
+            --receipt "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
+            --expected-publication-archive "$FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_SOURCE" \
+            --expected-archive-bytes "$PINNED_COSMOS_ENV_ARCHIVE_BYTES" \
+            --expected-receipt-bytes "$PINNED_COSMOS_ENV_RECEIPT_BYTES" \
+            --expected-ready-marker-bytes "$PINNED_COSMOS_ENV_READY_MARKER_BYTES" \
+            --expected-regular-files "$PINNED_COSMOS_ENV_REGULAR_FILES" \
+            --expected-directories "$PINNED_COSMOS_ENV_DIRECTORIES" \
+            --expected-symlinks "$PINNED_COSMOS_ENV_SYMLINKS" \
+            --expected-regular-file-bytes "$PINNED_COSMOS_ENV_REGULAR_FILE_BYTES" \
+            --expected-source-commit "$PINNED_COSMOS_ENV_SOURCE_COMMIT" \
+            --stage "$stage"
+    else
+        python3 "$COSMOS_ENV_ARCHIVE_HELPER" verify-extract \
+            --archive "$COSMOS_ENV_ARCHIVE" \
+            --receipt "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT" \
+            --expected-archive-sha256 "$EXPECTED_COSMOS_ENV_ARCHIVE_SHA256" \
+            --expected-receipt-sha256 "$EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256" \
+            --expected-ready-marker-sha256 "$EXPECTED_COSMOS_ENV_READY_MARKER_SHA256" \
+            --stage "$stage"
+    fi
     sync -f -- "$stage"
     mv -T -- "$stage" "$destination"
     [[ -d "$destination" && ! -L "$destination" ]] ||

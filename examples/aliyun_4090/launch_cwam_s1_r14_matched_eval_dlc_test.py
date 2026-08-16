@@ -24,8 +24,8 @@ def _script() -> str:
 def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R7-20260817" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R7-20260817" in script
+    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R8-20260817" in script
+    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R8-20260817" in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script
@@ -164,6 +164,9 @@ def test_bootstrap_uses_immutable_external_control_files() -> None:
     assert 'readonly EGL_MATRIX_OVERRIDE="$CONTROL_DEPLOY_ROOT/run_mujoco_egl_mapping_matrix_dlc.sh"' in script
     assert 'export EGL_MATRIX_OVERRIDE' in script
     assert 'export S1_R14_MATCHED_HELPER' in script
+    assert 'export COSMOS_ENV_ARCHIVE_METADATA_HELPER' in script
+    assert 'export EXPECTED_COSMOS_ENV_ARCHIVE_SHA256' not in script
+    assert 'export EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256' not in script
     assert 'export EVAL_CONTROL_COMMIT' in script
     assert 'export S1_R14_MATCHED_MODE=1' in script
     assert 'exec bash "$FORMAL_LAUNCHER"' in script
