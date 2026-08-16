@@ -295,6 +295,10 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_visual_latent_width=self.config.strong_action_visual_latent_width,
                 strong_action_visual_memory_layers=self.config.strong_action_visual_memory_layers,
                 strong_action_visual_memory_tokens=self.config.strong_action_visual_memory_tokens,
+                strong_action_visual_memory_initial_gate=self.config.strong_action_visual_memory_initial_gate,
+                strong_action_visual_memory_diversity_loss_weight=(
+                    self.config.strong_action_visual_memory_diversity_loss_weight
+                ),
                 strong_action_visual_memory_intervention=self.config.strong_action_visual_memory_intervention,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
@@ -1411,12 +1415,21 @@ class OmniMoTModel(ImaginaireModel):
                     "strong_action_visual_memory_rms",
                     "strong_action_visual_memory_slot_cosine",
                     "strong_action_visual_memory_slot_abs_cosine",
+                    "strong_action_visual_memory_diversity_loss",
                     "strong_action_visual_memory_history_fraction",
                 )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
                 raise ValueError(f"Strong action expert output is missing metrics: {missing_metrics}")
             losses_dict.update({name: out_net[name] for name in required_metrics})
+            if self.config.strong_action_visual_memory_enabled:
+                diversity_loss = out_net["strong_action_visual_memory_diversity_loss"]
+                diversity_weight = float(self.config.strong_action_visual_memory_diversity_loss_weight)
+                total_loss += diversity_loss * diversity_weight
+                losses_dict["strong_action_visual_memory_diversity_loss_weight"] = torch.tensor(
+                    diversity_weight,
+                    **self.tensor_kwargs_fp32,
+                )
 
         if self.config.sound_gen:
             if data_batch_packed.sound is not None:

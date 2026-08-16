@@ -90,6 +90,8 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_visual_latent_width=26,
         strong_action_visual_memory_layers=2,
         strong_action_visual_memory_tokens=8,
+        strong_action_visual_memory_initial_gate=0.1,
+        strong_action_visual_memory_diversity_loss_weight=0.05,
         strong_action_visual_memory_intervention="none",
         natten_parameter_list=None,
         video_temporal_causal=False,
@@ -166,6 +168,8 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_visual_latent_width = strong_action_visual_latent_width
         self.strong_action_visual_memory_layers = strong_action_visual_memory_layers
         self.strong_action_visual_memory_tokens = strong_action_visual_memory_tokens
+        self.strong_action_visual_memory_initial_gate = strong_action_visual_memory_initial_gate
+        self.strong_action_visual_memory_diversity_loss_weight = strong_action_visual_memory_diversity_loss_weight
         self.strong_action_visual_memory_intervention = strong_action_visual_memory_intervention
         if self.action_gen:
             assert self.vision_gen, (
@@ -212,6 +216,10 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError("Strong action expert model_dim must be divisible by num_heads")
             if not 0.0 < float(self.strong_action_initial_gate) < 1.0:
                 raise ValueError("Strong action expert initial gate must be strictly between zero and one")
+            if not 0.0 < float(self.strong_action_visual_memory_initial_gate) < 1.0:
+                raise ValueError("Strong action visual memory initial gate must be strictly between zero and one")
+            if float(self.strong_action_visual_memory_diversity_loss_weight) < 0.0:
+                raise ValueError("Strong action visual memory diversity loss weight must be non-negative")
             if self.strong_action_visual_memory_intervention not in {"none", "zero", "shuffle"}:
                 raise ValueError(
                     "strong_action_visual_memory_intervention must be none, zero, or shuffle"
@@ -329,6 +337,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     visual_latent_width=config.strong_action_visual_latent_width,
                     visual_memory_layers=config.strong_action_visual_memory_layers,
                     visual_memory_tokens=config.strong_action_visual_memory_tokens,
+                    visual_memory_initial_gate=config.strong_action_visual_memory_initial_gate,
                     visual_memory_intervention=config.strong_action_visual_memory_intervention,
                 )
 

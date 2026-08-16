@@ -24,6 +24,7 @@
 #   ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT  complete first-frame latent sidecar
 #   CWAM_B5_RUN_CHECKPOINT_MODE            disabled (formal, default), b4 (probe
 #                                          initialization), or b5 (probe eval)
+#   CWAM_B5_PROBE_TRAIN_SCOPE              memory (default) or strong_action_expert
 #   RESUME_EXISTING_RUN      0 for a new run (default), 1 for functional
 #                            model/optim/scheduler/trainer resume
 #   ALLOW_DATA_STREAM_REPLAY must be 1 with RESUME_EXISTING_RUN=1, acknowledging
@@ -38,6 +39,7 @@ EXPERIMENT_SLUG="$(basename "$TOML_FILE" .toml)"
 : "${RESUME_EXISTING_RUN:=0}"
 : "${ALLOW_DATA_STREAM_REPLAY:=0}"
 : "${CWAM_B5_RUN_CHECKPOINT_MODE:=disabled}"
+: "${CWAM_B5_PROBE_TRAIN_SCOPE:=memory}"
 if [[ -z "${MASTER_PORT:-}" ]]; then
     CWAM_PORT_HASH="$(printf '%s' "$RUN_NAME" | cksum)"
     CWAM_PORT_HASH="${CWAM_PORT_HASH%% *}"
@@ -75,6 +77,8 @@ export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
     { echo "ERROR: ALLOW_DATA_STREAM_REPLAY must be 0 or 1" >&2; exit 1; }
 [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" =~ ^(disabled|b4|b5)$ ]] ||
     { echo "ERROR: CWAM_B5_RUN_CHECKPOINT_MODE must be disabled, b4, or b5" >&2; exit 1; }
+[[ "$CWAM_B5_PROBE_TRAIN_SCOPE" =~ ^(memory|strong_action_expert)$ ]] ||
+    { echo "ERROR: CWAM_B5_PROBE_TRAIN_SCOPE must be memory or strong_action_expert" >&2; exit 1; }
 if [[ "$RESUME_EXISTING_RUN" == 1 && "$ALLOW_DATA_STREAM_REPLAY" != 1 ]]; then
     echo "ERROR: packed-loader state is not checkpointed; functional resume restarts the data stream." >&2
     echo "Set ALLOW_DATA_STREAM_REPLAY=1 only for a documented smoke/restart attempt." >&2
@@ -197,12 +201,17 @@ if [[ "$RESUME_EXISTING_RUN" == 1 ]]; then
     TAIL_OVERRIDES+=("checkpoint.strict_resume=true")
 fi
 if [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b4 ]]; then
+    if [[ "$CWAM_B5_PROBE_TRAIN_SCOPE" == strong_action_expert ]]; then
+        B5_PROBE_SELECTORS="[strong_action_expert]"
+    else
+        B5_PROBE_SELECTORS="[visual_object_memory,visual_memory_]"
+    fi
     TAIL_OVERRIDES+=(
         "checkpoint.strict_resume=true"
         "checkpoint.load_training_state=false"
         "checkpoint.keys_to_skip_loading=[visual_object_memory,visual_memory_]"
-        "optimizer.keys_to_select=[visual_object_memory,visual_memory_]"
-        "trainer.callbacks.action_gradient_evidence.families=[visual_object_memory,visual_memory_]"
+        "optimizer.keys_to_select=${B5_PROBE_SELECTORS}"
+        "trainer.callbacks.action_gradient_evidence.families=${B5_PROBE_SELECTORS}"
     )
 elif [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b5 ]]; then
     TAIL_OVERRIDES+=(

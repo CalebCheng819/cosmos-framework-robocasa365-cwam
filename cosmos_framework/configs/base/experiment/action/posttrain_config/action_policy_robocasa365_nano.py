@@ -613,6 +613,8 @@ def _action_policy_robocasa365_b5_visual_object_memory_nano_model_config() -> di
         strong_action_visual_latent_width=26,
         strong_action_visual_memory_layers=2,
         strong_action_visual_memory_tokens=8,
+        strong_action_visual_memory_initial_gate=0.1,
+        strong_action_visual_memory_diversity_loss_weight=0.05,
         strong_action_visual_memory_intervention=intervention,
     )
     return cfg

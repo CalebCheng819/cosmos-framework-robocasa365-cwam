@@ -171,6 +171,8 @@ def test_b5_adds_visual_object_memory_without_changing_b4_router() -> None:
     assert b5.model.config.strong_action_visual_history_stride == 12
     assert b5.model.config.strong_action_visual_memory_tokens == 8
     assert b5.model.config.strong_action_visual_memory_layers == 2
+    assert b5.model.config.strong_action_visual_memory_initial_gate == 0.1
+    assert b5.model.config.strong_action_visual_memory_diversity_loss_weight == 0.05
     assert b5.model.config.strong_action_visual_memory_intervention == "none"
     assert b5.dataloader_train.max_samples_per_batch == b4.dataloader_train.max_samples_per_batch
     assert b5.trainer.grad_accum_iter == b4.trainer.grad_accum_iter

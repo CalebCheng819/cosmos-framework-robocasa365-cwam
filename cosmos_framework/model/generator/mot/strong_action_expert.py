@@ -183,7 +183,7 @@ class TemporalControlMemory(nn.Module):
 
 
 class VisualObjectMemory(nn.Module):
-    """Pool sparse historical Wan latents into persistent object slots."""
+    """Pool sparse historical Wan latents into competitive persistent object slots."""
 
     def __init__(
         self,
@@ -220,6 +220,9 @@ class VisualObjectMemory(nn.Module):
         self.history_length = history_length
         self.latent_height = latent_height
         self.latent_width = latent_width
+        self.model_dim = model_dim
+        self.num_heads = num_heads
+        self.head_dim = model_dim // num_heads
         self.num_slots = num_slots
         self.intervention = intervention
 
@@ -230,7 +233,17 @@ class VisualObjectMemory(nn.Module):
         self.view_embed = nn.Embedding(num_views, model_dim)
         self.object_queries = nn.Parameter(torch.empty(num_slots, model_dim))
         self.null_history_token = nn.Parameter(torch.empty(1, model_dim))
-        self.object_pool = nn.MultiheadAttention(model_dim, num_heads, dropout=0.0, batch_first=True)
+        self.slot_q = nn.Linear(model_dim, model_dim, bias=False)
+        self.token_k = nn.Linear(model_dim, model_dim, bias=False)
+        self.token_v = nn.Linear(model_dim, model_dim, bias=False)
+        self.slot_out = nn.Linear(model_dim, model_dim, bias=False)
+        rows = 2 if num_slots >= 4 else 1
+        columns = math.ceil(num_slots / rows)
+        anchor_y = torch.linspace(-0.5, 0.5, rows)
+        anchor_x = torch.linspace(-0.75, 0.75, columns)
+        anchors = torch.stack(torch.meshgrid(anchor_y, anchor_x, indexing="ij"), dim=-1)
+        self.register_buffer("slot_anchors", anchors.reshape(-1, 2)[:num_slots], persistent=True)
+        self.anchor_bias_strength = 4.0
         relation_layer = nn.TransformerEncoderLayer(
             d_model=model_dim,
             nhead=num_heads,
@@ -259,10 +272,6 @@ class VisualObjectMemory(nn.Module):
                 nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            elif isinstance(module, nn.MultiheadAttention):
-                nn.init.xavier_uniform_(module.in_proj_weight)
-                if module.in_proj_bias is not None:
-                    nn.init.zeros_(module.in_proj_bias)
         nn.init.normal_(self.spatial_embed, mean=0.0, std=0.02)
         nn.init.normal_(self.object_queries, mean=0.0, std=0.02)
         nn.init.normal_(self.null_history_token, mean=0.0, std=0.02)
@@ -315,30 +324,55 @@ class VisualObjectMemory(nn.Module):
 
         null_token = self.null_history_token.to(dtype).unsqueeze(0).expand(batch_size, -1, -1)
         tokens = torch.cat((tokens.masked_fill(~token_valid[:, :, None], 0.0), null_token), dim=1)
+        null_valid = ~slot_valid
         token_valid = torch.cat(
-            (token_valid, torch.ones(batch_size, 1, device=tokens.device, dtype=torch.bool)),
+            (token_valid, null_valid[:, None]),
             dim=1,
         )
         queries = self.object_queries.to(dtype).unsqueeze(0).expand(batch_size, -1, -1)
-        pooled, _ = self.object_pool(
-            queries,
-            tokens,
-            tokens,
-            key_padding_mask=~token_valid,
-            need_weights=False,
-        )
-        slots = self.output_norm(self.relation_encoder(queries + pooled))
+        query = self.slot_q(queries).reshape(batch_size, self.num_slots, self.num_heads, self.head_dim)
+        query = query.permute(0, 2, 1, 3)
+        key = self.token_k(tokens).reshape(batch_size, tokens.shape[1], self.num_heads, self.head_dim)
+        key = key.permute(0, 2, 1, 3)
+        value = self.token_v(tokens).reshape(batch_size, tokens.shape[1], self.num_heads, self.head_dim)
+        value = value.permute(0, 2, 1, 3)
+        assignment_logits = torch.einsum("bhnd,bhkd->bhnk", key, query) / math.sqrt(self.head_dim)
+
+        y_coord = torch.linspace(-1.0, 1.0, self.latent_height, device=tokens.device)
+        x_coord = torch.linspace(-1.0, 1.0, self.latent_width, device=tokens.device)
+        spatial_coordinates = torch.stack(torch.meshgrid(y_coord, x_coord, indexing="ij"), dim=-1)
+        spatial_coordinates = spatial_coordinates.reshape(-1, 2).repeat(self.history_length, 1)
+        spatial_coordinates = torch.cat((spatial_coordinates, spatial_coordinates.new_zeros(1, 2)), dim=0)
+        anchor_distance = (
+            spatial_coordinates[:, None, :] - self.slot_anchors.to(spatial_coordinates.dtype)[None]
+        ).square().sum(dim=-1)
+        anchor_distance[-1] = 0.0
+        assignment_logits = assignment_logits - self.anchor_bias_strength * anchor_distance[None, None]
+
+        # Each token first chooses among slots. Slot-wise normalization keeps the
+        # pooled feature scale stable when historical frames are missing.
+        competitive_assignment = assignment_logits.float().softmax(dim=-1).to(dtype)
+        competitive_assignment = competitive_assignment * token_valid[:, None, :, None]
+        slot_weights = competitive_assignment / competitive_assignment.sum(dim=2, keepdim=True).clamp_min(1.0e-6)
+        pooled = torch.einsum("bhnk,bhnd->bhkd", slot_weights, value)
+        pooled = pooled.permute(0, 2, 1, 3).reshape(batch_size, self.num_slots, self.model_dim)
+        slots = self.output_norm(self.relation_encoder(queries + self.slot_out(pooled)))
 
         normalized_slots = F.normalize(slots.float(), dim=-1)
         similarity = torch.matmul(normalized_slots, normalized_slots.transpose(-1, -2))
         off_diagonal = ~torch.eye(self.num_slots, device=slots.device, dtype=torch.bool)[None]
         off_diagonal = off_diagonal.expand(batch_size, -1, -1)
-        slot_cosine = similarity.masked_select(off_diagonal).mean()
-        slot_abs_cosine = similarity.abs().masked_select(off_diagonal).mean()
+        per_sample_similarity = similarity.masked_select(off_diagonal).reshape(batch_size, -1)
+        valid_weight = slot_valid.float()
+        valid_denominator = valid_weight.sum().clamp_min(1.0)
+        slot_cosine = (per_sample_similarity.mean(dim=1) * valid_weight).sum() / valid_denominator
+        slot_abs_cosine = (per_sample_similarity.abs().mean(dim=1) * valid_weight).sum() / valid_denominator
+        diversity_loss = (per_sample_similarity.square().mean(dim=1) * valid_weight).sum() / valid_denominator
         metrics = {
             "visual_memory_rms": slots.float().square().mean().sqrt(),
             "visual_memory_slot_cosine": slot_cosine,
             "visual_memory_slot_abs_cosine": slot_abs_cosine,
+            "visual_memory_diversity_loss": diversity_loss,
             "visual_memory_history_fraction": history_mask.float().mean(),
         }
         return slots, slot_valid, metrics
@@ -511,6 +545,7 @@ class StrongActionContextExpert(nn.Module):
         visual_latent_width: int = 26,
         visual_memory_layers: int = 2,
         visual_memory_tokens: int = 8,
+        visual_memory_initial_gate: float = 0.1,
         visual_memory_intervention: str = "none",
     ) -> None:
         super().__init__()
@@ -540,6 +575,9 @@ class StrongActionContextExpert(nn.Module):
         self.visual_memory_enabled = bool(visual_memory_enabled)
         self.visual_history_length = int(visual_history_length)
         self.visual_memory_tokens = int(visual_memory_tokens)
+        self.visual_memory_initial_gate = float(visual_memory_initial_gate)
+        if self.visual_memory_enabled and not 0.0 < self.visual_memory_initial_gate < 1.0:
+            raise ValueError("visual_memory_initial_gate must be strictly between zero and one")
 
         self.action_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -563,7 +601,10 @@ class StrongActionContextExpert(nn.Module):
         )
         if self.visual_memory_enabled:
             self.visual_memory_context_embed = nn.Parameter(torch.empty(model_dim))
-            self.visual_memory_gate_logit = nn.Parameter(torch.tensor([-4.59511985013459]))
+            visual_memory_initial_logit = math.log(
+                self.visual_memory_initial_gate / (1.0 - self.visual_memory_initial_gate)
+            )
+            self.visual_memory_gate_logit = nn.Parameter(torch.tensor([visual_memory_initial_logit]))
             self.visual_object_memory = VisualObjectMemory(
                 latent_channels=visual_latent_channels,
                 history_length=visual_history_length,
@@ -612,7 +653,10 @@ class StrongActionContextExpert(nn.Module):
         self.control_memory.init_weights()
         if self.visual_memory_enabled:
             nn.init.normal_(self.visual_memory_context_embed, mean=0.0, std=0.02)
-            nn.init.constant_(self.visual_memory_gate_logit, -4.59511985013459)
+            visual_memory_initial_logit = math.log(
+                self.visual_memory_initial_gate / (1.0 - self.visual_memory_initial_gate)
+            )
+            nn.init.constant_(self.visual_memory_gate_logit, visual_memory_initial_logit)
             self.visual_object_memory.init_weights()
         for layer in self.layers:
             layer.init_weights()

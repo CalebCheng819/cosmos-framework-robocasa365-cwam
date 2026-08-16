@@ -38,6 +38,7 @@ def _expert(
         visual_latent_width=6,
         visual_memory_layers=1,
         visual_memory_tokens=3,
+        visual_memory_initial_gate=0.1,
         visual_memory_intervention=visual_memory_intervention,
     )
     module.init_weights()
@@ -202,13 +203,49 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     output, metrics = visual(**inputs)
 
     assert torch.isfinite(output).all()
-    assert 0.0 < metrics["visual_memory_gate"].item() < 0.02
+    assert metrics["visual_memory_gate"].item() == pytest.approx(0.1)
     assert metrics["visual_memory_history_fraction"].item() == pytest.approx(5.0 / 6.0)
     assert 0.0 <= metrics["visual_memory_slot_abs_cosine"].item() <= 1.0
+    assert 0.0 <= metrics["visual_memory_diversity_loss"].item() <= 1.0
+    assert visual.visual_object_memory.slot_anchors.shape == (3, 2)
     output[inputs["action_indexes"]].square().mean().backward()
     assert visual.visual_memory_gate_logit.grad is not None
     assert torch.count_nonzero(visual.visual_memory_gate_logit.grad) > 0
     assert all(value.grad is not None and torch.count_nonzero(value.grad) > 0 for value in visual_latents)
+
+
+def test_visual_object_memory_uses_two_by_four_anchors_for_eight_slots() -> None:
+    visual = StrongActionContextExpert(
+        hidden_size=32,
+        model_dim=16,
+        num_heads=4,
+        num_layers=1,
+        ffn_multiplier=2,
+        state_dim=6,
+        action_dim=4,
+        proprio_history_length=3,
+        proprio_history_stride=2,
+        action_history_length=5,
+        memory_layers=1,
+        memory_tokens=2,
+        num_views=3,
+        view_token_width=2,
+        initial_residual_gate=0.1,
+        visual_memory_enabled=True,
+        visual_history_length=3,
+        visual_latent_channels=8,
+        visual_latent_height=3,
+        visual_latent_width=6,
+        visual_memory_layers=1,
+        visual_memory_tokens=8,
+        visual_memory_initial_gate=0.1,
+    )
+
+    anchors = visual.visual_object_memory.slot_anchors
+
+    assert anchors.shape == (8, 2)
+    assert torch.unique(anchors[:, 0]).numel() == 2
+    assert torch.unique(anchors[:, 1]).numel() == 4
 
 
 def test_visual_memory_zero_intervention_masks_history_from_action_context() -> None:

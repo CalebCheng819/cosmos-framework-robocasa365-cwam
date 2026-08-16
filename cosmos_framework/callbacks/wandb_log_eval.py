@@ -23,6 +23,7 @@ _PROBE_METRIC_KEYS = (
     "strong_action_visual_memory_rms",
     "strong_action_visual_memory_slot_cosine",
     "strong_action_visual_memory_slot_abs_cosine",
+    "strong_action_visual_memory_diversity_loss",
     "strong_action_visual_memory_history_fraction",
 )
 
