@@ -547,8 +547,23 @@ class GradClipCallback(BaseModel):
     )
 
 
+class ProductionBatchMemoryGateCallback(BaseModel):
+    """Typed overrides for the first-step production memory contract."""
+
+    model_config = _PYDANTIC_MODEL_CONFIG
+
+    max_peak_reserved_fraction: float = Field(default=0.94, gt=0.0, le=1.0)
+    max_driver_used_fraction: float = Field(default=0.94, gt=0.0, le=1.0)
+    expected_samples_per_microbatch: int = Field(default=128, ge=1)
+    expected_grad_accum_iter: int = Field(default=2, ge=1)
+    expected_action_tokens_per_sample: int = Field(default=16, ge=1)
+    allowed_world_sizes: list[int] = Field(default_factory=lambda: [6, 8])
+    required: bool = True
+    output_subdir: str = Field(default="production_batch_memory_gate", min_length=1)
+
+
 class TrainerCallbacksConfig(BaseModel):
-    """Only the two callbacks the schema currently surfaces. The full
+    """Callbacks whose launch-time parameters are exposed through TOML. The full
     callbacks dict (norm_monitor, mfu, heart_beat, …) stays in the
     experiment Python.
     """
@@ -557,6 +572,9 @@ class TrainerCallbacksConfig(BaseModel):
 
     compile_tokenizer: CompileTokenizerCallback = Field(default_factory=CompileTokenizerCallback)
     grad_clip: GradClipCallback = Field(default_factory=GradClipCallback)
+    production_batch_memory_gate: ProductionBatchMemoryGateCallback = Field(
+        default_factory=ProductionBatchMemoryGateCallback
+    )
 
 
 class TrainerConfig(BaseModel):

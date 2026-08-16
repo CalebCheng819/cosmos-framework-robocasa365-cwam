@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,23 @@ class TestSchemaValidation:
                     "trainer": {"max_iter": 10, "typo_here": True},
                 }
             )
+
+    def test_b5_production_memory_gate_is_a_typed_callback(self) -> None:
+        toml_path = (
+            Path(__file__).parents[3]
+            / "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml"
+        )
+        with toml_path.open("rb") as fh:
+            raw = tomllib.load(fh)
+
+        cfg = SFTExperimentConfig.model_validate(raw)
+        memory_gate = cfg.trainer.callbacks.production_batch_memory_gate
+
+        assert memory_gate.expected_samples_per_microbatch == 64
+        assert memory_gate.expected_grad_accum_iter == 1
+        overrides = build_hydra_overrides(raw)
+        assert "trainer.callbacks.production_batch_memory_gate.expected_samples_per_microbatch=64" in overrides
+        assert "trainer.callbacks.production_batch_memory_gate.expected_grad_accum_iter=1" in overrides
 
 
 # --------------------------------------------------------------------------- #
