@@ -202,6 +202,7 @@ if [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b4 ]]; then
         "checkpoint.load_training_state=false"
         "checkpoint.keys_to_skip_loading=[visual_object_memory,visual_memory_]"
         "optimizer.keys_to_select=[visual_object_memory,visual_memory_]"
+        "trainer.callbacks.action_gradient_evidence.families=[visual_object_memory,visual_memory_]"
     )
 elif [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b5 ]]; then
     TAIL_OVERRIDES+=(

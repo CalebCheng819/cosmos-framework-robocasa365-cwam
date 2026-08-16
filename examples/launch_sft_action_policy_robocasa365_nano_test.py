@@ -118,6 +118,10 @@ def test_b5_b4_probe_warm_start_is_explicit_and_skips_only_new_memory(tmp_path: 
     assert result.returncode == 0, result.stdout
     assert "TORCHRUN_ARG=checkpoint.keys_to_skip_loading=[visual_object_memory,visual_memory_]" in result.stdout
     assert "TORCHRUN_ARG=optimizer.keys_to_select=[visual_object_memory,visual_memory_]" in result.stdout
+    assert (
+        "TORCHRUN_ARG=trainer.callbacks.action_gradient_evidence.families="
+        "[visual_object_memory,visual_memory_]"
+    ) in result.stdout
     assert "TORCHRUN_ARG=checkpoint.load_training_state=false" in result.stdout
 
 
