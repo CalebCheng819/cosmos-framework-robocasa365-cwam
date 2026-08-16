@@ -1405,6 +1405,14 @@ class OmniMoTModel(ImaginaireModel):
                 "strong_action_valid_context_tokens",
                 "strong_action_memory_rms",
             )
+            if self.config.strong_action_visual_memory_enabled:
+                required_metrics += (
+                    "strong_action_visual_memory_gate",
+                    "strong_action_visual_memory_rms",
+                    "strong_action_visual_memory_slot_cosine",
+                    "strong_action_visual_memory_slot_abs_cosine",
+                    "strong_action_visual_memory_history_fraction",
+                )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
                 raise ValueError(f"Strong action expert output is missing metrics: {missing_metrics}")

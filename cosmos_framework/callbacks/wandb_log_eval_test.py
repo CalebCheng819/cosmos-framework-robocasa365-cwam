@@ -70,3 +70,23 @@ def test_format_validation_summary_exposes_unstable_count() -> None:
         unstable_count=0,
         iteration=500,
     ) == ("[val] number of unique url and key: 1024 / 1024; avg_final_loss: 1.25; unstable_count: 0; iteration: 500")
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_format_validation_summary_exposes_probe_metrics_in_stable_order() -> None:
+    assert _format_validation_summary(
+        unique_count=64,
+        total_count=64,
+        average_loss=0.8,
+        unstable_count=0,
+        iteration=500,
+        probe_metrics={
+            "strong_action_visual_memory_slot_abs_cosine": 0.25,
+            "flow_matching_loss_action": 0.5,
+        },
+    ) == (
+        "[val] number of unique url and key: 64 / 64; avg_final_loss: 0.8; "
+        "unstable_count: 0; iteration: 500; avg_flow_matching_loss_action: 0.5; "
+        "avg_strong_action_visual_memory_slot_abs_cosine: 0.25"
+    )

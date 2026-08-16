@@ -17,6 +17,16 @@ from cosmos_framework.utils.callback import Callback
 from cosmos_framework.utils.easy_io import easy_io
 
 
+_PROBE_METRIC_KEYS = (
+    "flow_matching_loss_action",
+    "strong_action_visual_memory_gate",
+    "strong_action_visual_memory_rms",
+    "strong_action_visual_memory_slot_cosine",
+    "strong_action_visual_memory_slot_abs_cosine",
+    "strong_action_visual_memory_history_fraction",
+)
+
+
 def _normalize_dataset_name(dataset_name: object) -> object:
     """Collapse a packed batch's homogeneous dataset-name list to one key."""
     if not isinstance(dataset_name, list):
@@ -49,12 +59,17 @@ def _format_validation_summary(
     average_loss: float,
     unstable_count: int,
     iteration: int,
+    probe_metrics: dict[str, float] | None = None,
 ) -> str:
     """Build the machine-parseable validation health record used by formal gates."""
-    return (
+    summary = (
         f"[val] number of unique url and key: {unique_count} / {total_count}; "
         f"avg_final_loss: {average_loss}; unstable_count: {unstable_count}; iteration: {iteration}"
     )
+    if probe_metrics:
+        suffix = "; ".join(f"avg_{key}: {probe_metrics[key]}" for key in sorted(probe_metrics))
+        summary = f"{summary}; {suffix}"
+    return summary
 
 
 @dataclass
@@ -108,6 +123,7 @@ class WandbCallback(Callback):
         self.name = "wandb_loss_val_log"
         self.unstable_count = torch.zeros(1, device="cuda")
         self.url_key_list = []
+        self.probe_metric_logs = {key: _LossRecord() for key in _PROBE_METRIC_KEYS}
 
     def on_validation_step_end(
         self,
@@ -134,10 +150,24 @@ class WandbCallback(Callback):
         self.final_loss_log.loss += loss.detach().float()
         self.final_loss_log.iter_count += 1
 
+        for key, record in self.probe_metric_logs.items():
+            value = output_batch.get(key)
+            if value is None:
+                continue
+            if value.numel() != 1:
+                raise ValueError(f"Validation probe metric {key!r} must be scalar, got {tuple(value.shape)}")
+            record.loss += value.detach().float()
+            record.iter_count += 1
+
         self.url_key_list.extend(_extract_url_keys(data_batch))
 
     def on_validation_end(self, model: ImaginaireModel, iteration: int = 0) -> None:
         avg_final_loss = self.final_loss_log.get_stat()
+        probe_metrics = {
+            key: average
+            for key, record in self.probe_metric_logs.items()
+            if record.iter_count > 0 and (average := record.get_stat()) is not None
+        }
 
         log.info(f"avg_final_loss: {avg_final_loss}")
         dist.all_reduce(self.unstable_count, op=dist.ReduceOp.SUM)
@@ -157,6 +187,7 @@ class WandbCallback(Callback):
                     average_loss=avg_final_loss,
                     unstable_count=unstable_count,
                     iteration=iteration,
+                    probe_metrics=probe_metrics,
                 )
             )
             info.update(
@@ -168,6 +199,7 @@ class WandbCallback(Callback):
                     f"val{self.wandb_extra_tag}/total_url_key": len(url_key_list),
                 }
             )
+            info.update({f"val{self.wandb_extra_tag}/{key}": value for key, value in probe_metrics.items()})
             if self.save_s3:
                 easy_io.dump(
                     info,
