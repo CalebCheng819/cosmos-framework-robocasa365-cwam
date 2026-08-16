@@ -52,6 +52,8 @@ class GenerationDataClean:
     control_proprio_history_mask: list[torch.Tensor] | None = None  # per sample [P]
     control_action_history: list[torch.Tensor] | None = None  # per sample [H,action_dim]
     control_action_history_mask: list[torch.Tensor] | None = None  # per sample [H]
+    control_visual_history_latent: list[torch.Tensor] | None = None  # per sample [R,C,H,W]
+    control_visual_history_mask: list[torch.Tensor] | None = None  # per sample [R]
 
     # Multi-control transfer: per-sample list of per-control weights.
     # Shape: [num_samples], each element is a list of floats (one per control stream).

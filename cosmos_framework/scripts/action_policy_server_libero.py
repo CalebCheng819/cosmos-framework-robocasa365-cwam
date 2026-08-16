@@ -87,8 +87,8 @@ from cosmos_framework.scripts.action_policy_server_utils import (
     maybe_init_distributed,
 )
 from cosmos_framework.utils import log
-from cosmos_framework.utils.lazy_config import instantiate
 from cosmos_framework.utils.generator.data_utils import get_vision_data_resolution
+from cosmos_framework.utils.lazy_config import instantiate
 
 _DEFAULT_ACTION_CHUNK_SIZE = 16
 _CONTROL_CONTEXT_KEYS = (
@@ -96,6 +96,14 @@ _CONTROL_CONTEXT_KEYS = (
     "control_proprio_history_mask",
     "control_action_history",
     "control_action_history_mask",
+)
+_VISUAL_MEMORY_REQUEST_KEYS = (
+    "control_visual_history_images",
+    "control_visual_history_mask",
+)
+_VISUAL_MEMORY_BATCH_KEYS = (
+    "control_visual_history_video",
+    "control_visual_history_mask",
 )
 ActionNormalization = Literal["auto", "meanstd", "minmax", "quantile", "quantile_rot"]
 ResolvedActionNormalization = Literal["meanstd", "minmax", "quantile", "quantile_rot"]
@@ -964,6 +972,49 @@ class ActionModelService:
                 control_action_history=action_history.masked_fill(~action_mask[:, None], 0.0),
                 control_action_history_mask=action_mask,
             )
+        present_visual_keys = {key for key in _VISUAL_MEMORY_REQUEST_KEYS if key in req}
+        if present_visual_keys:
+            if present_visual_keys != set(_VISUAL_MEMORY_REQUEST_KEYS):
+                missing = sorted(set(_VISUAL_MEMORY_REQUEST_KEYS) - present_visual_keys)
+                raise ValueError(f"Policy visual memory is incomplete; missing keys={missing}")
+            visual_images = req["control_visual_history_images"]
+            visual_mask = torch.as_tensor(req["control_visual_history_mask"], dtype=torch.bool)
+            if not isinstance(visual_images, list) or visual_mask.ndim != 1:
+                raise ValueError("Policy visual memory requires image list and one-dimensional mask")
+            if len(visual_images) != visual_mask.numel() or not visual_images:
+                raise ValueError("Policy visual history images and mask must have the same non-zero length")
+            if torch.any(visual_mask[:-1] & ~visual_mask[1:]):
+                raise ValueError("Policy visual history mask must be a right-aligned contiguous suffix")
+            history_videos: list[torch.Tensor] = []
+            for history_image, valid in zip(visual_images, visual_mask.tolist(), strict=True):
+                if not isinstance(history_image, str) or bool(history_image) != valid:
+                    raise ValueError("Valid visual history rows require base64 images; padding rows must be empty")
+                if not valid:
+                    history_videos.append(torch.zeros((3, 1, target_h, target_w), dtype=torch.uint8))
+                    continue
+                history_chw = _decode_base64_png_to_rgb_uint8(history_image)
+                history_h, history_w = history_chw.shape[-2:]
+                if history_h != image_size:
+                    scale = image_size / history_h
+                    resized_w = int(round(history_w * scale))
+                    history_hwc = history_chw.permute(1, 2, 0).cpu().numpy()
+                    resized = Image.fromarray(history_hwc).resize(
+                        (resized_w, image_size),
+                        resample=Image.Resampling.BILINEAR,
+                    )
+                    history_chw = torch.from_numpy(np.asarray(resized, dtype=np.uint8).copy()).permute(2, 0, 1)
+                if history_chw.shape != img_chw_uint8.shape:
+                    raise ValueError(
+                        "Policy visual history geometry must match the current observation, "
+                        f"got {tuple(history_chw.shape)} and {tuple(img_chw_uint8.shape)}"
+                    )
+                history_pad: dict[str, Any] = {"video": history_chw.contiguous().unsqueeze(1)}
+                reflection_pad_to_target(history_pad, ["video"], True, target_w, target_h)
+                history_videos.append(history_pad["video"])
+            prepared.update(
+                control_visual_history_video=torch.stack(history_videos),
+                control_visual_history_mask=visual_mask,
+            )
         return prepared
 
     def predict_policy_batch(self, reqs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -996,6 +1047,11 @@ class ActionModelService:
             if not all(all(key in prep for key in _CONTROL_CONTEXT_KEYS) for prep in preps):
                 raise ValueError("Every item in a policy batch must use the same control-context contract")
             for key in _CONTROL_CONTEXT_KEYS:
+                batch[key] = [prep[key] for prep in preps]
+        if any(key in prep for prep in preps for key in _VISUAL_MEMORY_BATCH_KEYS):
+            if not all(all(key in prep for key in _VISUAL_MEMORY_BATCH_KEYS) for prep in preps):
+                raise ValueError("Every item in a policy batch must use the same visual-memory contract")
+            for key in _VISUAL_MEMORY_BATCH_KEYS:
                 batch[key] = [prep[key] for prep in preps]
         t_inf0 = time.monotonic()
         with self._lock:
@@ -1089,6 +1145,9 @@ class ActionModelService:
             "sequence_plan": [sequence_plan],
         }
         for key in _CONTROL_CONTEXT_KEYS:
+            if key in prep:
+                batch[key] = [prep[key]]
+        for key in _VISUAL_MEMORY_BATCH_KEYS:
             if key in prep:
                 batch[key] = [prep[key]]
 

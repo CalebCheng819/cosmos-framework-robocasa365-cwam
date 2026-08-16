@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from einops import rearrange
 from torch.distributed._composable.fsdp import FSDPModule
 from torch.nn.modules.module import _IncompatibleKeys
@@ -287,6 +288,14 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_num_views=self.config.strong_action_num_views,
                 strong_action_view_token_width=self.config.strong_action_view_token_width,
                 strong_action_initial_gate=self.config.strong_action_initial_gate,
+                strong_action_visual_memory_enabled=self.config.strong_action_visual_memory_enabled,
+                strong_action_visual_history_length=self.config.strong_action_visual_history_length,
+                strong_action_visual_latent_channels=self.config.strong_action_visual_latent_channels,
+                strong_action_visual_latent_height=self.config.strong_action_visual_latent_height,
+                strong_action_visual_latent_width=self.config.strong_action_visual_latent_width,
+                strong_action_visual_memory_layers=self.config.strong_action_visual_memory_layers,
+                strong_action_visual_memory_tokens=self.config.strong_action_visual_memory_tokens,
+                strong_action_visual_memory_intervention=self.config.strong_action_visual_memory_intervention,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -2390,6 +2399,8 @@ class OmniMoTModel(ImaginaireModel):
             control_proprio_history_mask=gen_data_clean.control_proprio_history_mask,
             control_action_history=gen_data_clean.control_action_history,
             control_action_history_mask=gen_data_clean.control_action_history_mask,
+            control_visual_history_latent=gen_data_clean.control_visual_history_latent,
+            control_visual_history_mask=gen_data_clean.control_visual_history_mask,
         )
 
         if packed_sequence_template is None:
@@ -3364,6 +3375,16 @@ class OmniMoTModel(ImaginaireModel):
                 if gen_data_clean.control_action_history_mask is not None
                 else None
             ),
+            control_visual_history_latent=(
+                gen_data_clean.control_visual_history_latent[start:limit]
+                if gen_data_clean.control_visual_history_latent is not None
+                else None
+            ),
+            control_visual_history_mask=(
+                gen_data_clean.control_visual_history_mask[start:limit]
+                if gen_data_clean.control_visual_history_mask is not None
+                else None
+            ),
         )
 
     @torch.no_grad()
@@ -3796,6 +3817,32 @@ class OmniMoTModel(ImaginaireModel):
             data_batch.get("control_action_history_mask"),
             mask_to_kwargs,
         )
+        control_visual_history_mask = unwrap_and_densify(
+            data_batch.get("control_visual_history_mask"),
+            mask_to_kwargs,
+        )
+        raw_visual_history = data_batch.get("control_visual_history_video")
+        cached_visual_history = data_batch.get("control_visual_history_latent")
+        if raw_visual_history is not None and cached_visual_history is not None:
+            raise ValueError("Raw and cached visual policy memory are mutually exclusive")
+        if raw_visual_history is not None:
+            raw_visual_history = unwrap_and_densify(
+                raw_visual_history,
+                {"device": self.tensor_kwargs_fp32["device"]},
+            )
+            if control_visual_history_mask is None:
+                raise ValueError("Online visual policy memory requires a history mask")
+            if raw_visual_history is None or len(raw_visual_history) != batch_size:
+                raise ValueError("Online visual policy memory must provide one tensor per sample")
+            control_visual_history_latent = self._encode_control_visual_history(
+                raw_visual_history,
+                control_visual_history_mask,
+            )
+        else:
+            control_visual_history_latent = unwrap_and_densify(
+                cached_visual_history,
+                self.tensor_kwargs_fp32,
+            )
         control_fields = (
             control_proprio_history,
             control_proprio_history_mask,
@@ -3807,6 +3854,12 @@ class OmniMoTModel(ImaginaireModel):
                 raise ValueError("Strong policy control context is incomplete in the data batch")
             if any(len(value) != batch_size for value in control_fields if value is not None):
                 raise ValueError("Strong policy control context must provide one tensor per sample")
+        visual_control_fields = (control_visual_history_latent, control_visual_history_mask)
+        if any(value is not None for value in visual_control_fields):
+            if any(value is None for value in visual_control_fields):
+                raise ValueError("Visual policy memory is incomplete in the data batch")
+            if any(len(value) != batch_size for value in visual_control_fields if value is not None):
+                raise ValueError("Visual policy memory must provide one tensor per sample")
 
         # Sound/audio - normalize, encode if present and sound_gen is enabled
         self._normalize_sound_databatch_inplace(data_batch)
@@ -3890,7 +3943,52 @@ class OmniMoTModel(ImaginaireModel):
             control_proprio_history_mask=control_proprio_history_mask,
             control_action_history=control_action_history,
             control_action_history_mask=control_action_history_mask,
+            control_visual_history_latent=control_visual_history_latent,
+            control_visual_history_mask=control_visual_history_mask,
         )
+
+    def _encode_control_visual_history(
+        self,
+        raw_history: list[torch.Tensor],
+        history_masks: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
+        """Encode prior replan images into the same pooled Wan sidecar layout used in training."""
+        if len(raw_history) != len(history_masks):
+            raise ValueError("Online visual history tensors and masks must align")
+        expected_length = int(self.config.strong_action_visual_history_length)
+        expected_channels = int(self.config.strong_action_visual_latent_channels)
+        expected_height = int(self.config.strong_action_visual_latent_height)
+        expected_width = int(self.config.strong_action_visual_latent_width)
+        encoded_history: list[torch.Tensor] = []
+        for pixels, mask in zip(raw_history, history_masks, strict=True):
+            if pixels.ndim == 6 and pixels.shape[0] == 1:
+                pixels = pixels[0]
+            if pixels.ndim != 5 or pixels.shape[:3] != (expected_length, 3, 1):
+                raise ValueError(
+                    "Online visual history must have shape "
+                    f"[{expected_length},3,1,H,W], got {tuple(pixels.shape)}"
+                )
+            mask = mask.bool()
+            if mask.shape != (expected_length,):
+                raise ValueError(
+                    f"Online visual history mask must have shape [{expected_length}], got {tuple(mask.shape)}"
+                )
+            if pixels.dtype != torch.uint8:
+                raise TypeError(f"Online visual history must be uint8, got {pixels.dtype}")
+            normalized = pixels.to(**self.tensor_kwargs_fp32) / 127.5 - 1.0
+            latent = self.encode(normalized)
+            if latent.ndim != 5 or latent.shape[0] != expected_length or latent.shape[1] != expected_channels:
+                raise RuntimeError(f"Online visual history VAE returned invalid shape {tuple(latent.shape)}")
+            if latent.shape[2] < 1 or latent.shape[-2:] != (2 * expected_height, 2 * expected_width):
+                raise RuntimeError(
+                    "Online visual history VAE geometry drifted: "
+                    f"expected [R,{expected_channels},T,{2 * expected_height},{2 * expected_width}], "
+                    f"got {tuple(latent.shape)}"
+                )
+            pooled = F.avg_pool2d(latent[:, :, 0].float(), kernel_size=2, stride=2)
+            pooled = pooled.masked_fill(~mask[:, None, None, None], 0.0)
+            encoded_history.append(pooled.contiguous())
+        return encoded_history
 
     def _normalize_video_databatch_inplace(
         self, data_batch: dict[str, torch.Tensor], input_key: str | None = None

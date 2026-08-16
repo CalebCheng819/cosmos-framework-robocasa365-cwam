@@ -91,6 +91,30 @@ def test_cached_latent_real_collate_split_and_pack_nesting_reaches_model_fast_pa
     assert all(value.dtype == torch.float32 for value in clean.x0_tokens_vision)
 
 
+def test_online_visual_history_encoding_matches_sidecar_geometry_and_masks_padding() -> None:
+    model = _model_without_initialization()
+    model.tensor_kwargs_fp32 = {"device": "cpu", "dtype": torch.float32}
+    model.config = SimpleNamespace(
+        strong_action_visual_history_length=3,
+        strong_action_visual_latent_channels=48,
+        strong_action_visual_latent_height=15,
+        strong_action_visual_latent_width=26,
+    )
+    latent = torch.arange(3 * 48 * 1 * 30 * 52, dtype=torch.float32).reshape(3, 48, 1, 30, 52)
+    model.tokenizer_vision_gen = SimpleNamespace(encode=lambda _: latent)
+    pixels = torch.randint(0, 256, (3, 3, 1, 480, 832), dtype=torch.uint8)
+    mask = torch.tensor([False, True, True])
+
+    encoded = model._encode_control_visual_history([pixels], [mask])
+
+    assert len(encoded) == 1
+    assert encoded[0].shape == (3, 48, 15, 26)
+    assert encoded[0].dtype == torch.float32
+    assert torch.count_nonzero(encoded[0][0]) == 0
+    expected = torch.nn.functional.avg_pool2d(latent[1:, :, 0], kernel_size=2, stride=2)
+    torch.testing.assert_close(encoded[0][1:], expected)
+
+
 @pytest.mark.parametrize(
     ("batch", "expected"),
     [

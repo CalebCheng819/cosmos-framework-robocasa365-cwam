@@ -9,7 +9,12 @@ import torch
 from cosmos_framework.model.generator.mot.strong_action_expert import StrongActionContextExpert
 
 
-def _expert(*, view_token_width: int = 2) -> StrongActionContextExpert:
+def _expert(
+    *,
+    view_token_width: int = 2,
+    visual_memory_enabled: bool = False,
+    visual_memory_intervention: str = "none",
+) -> StrongActionContextExpert:
     module = StrongActionContextExpert(
         hidden_size=32,
         model_dim=16,
@@ -26,6 +31,14 @@ def _expert(*, view_token_width: int = 2) -> StrongActionContextExpert:
         num_views=3,
         view_token_width=view_token_width,
         initial_residual_gate=0.1,
+        visual_memory_enabled=visual_memory_enabled,
+        visual_history_length=3,
+        visual_latent_channels=8,
+        visual_latent_height=3,
+        visual_latent_width=6,
+        visual_memory_layers=1,
+        visual_memory_tokens=3,
+        visual_memory_intervention=visual_memory_intervention,
     )
     module.init_weights()
     return module
@@ -162,3 +175,59 @@ def test_vision_view_ids_match_triple480_fullpad_production_grid() -> None:
     view_ids = expert._vision_view_ids(positions)
 
     assert view_ids.tolist() == [0] * 8 + [1] * 8 + [2] * 10
+
+
+def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> None:
+    torch.manual_seed(11)
+    baseline = _expert()
+    visual = _expert(visual_memory_enabled=True)
+    incompatible = visual.load_state_dict(baseline.state_dict(), strict=False)
+
+    assert not incompatible.unexpected_keys
+    assert incompatible.missing_keys
+    assert all(
+        key.startswith(("visual_memory_", "visual_object_memory."))
+        for key in incompatible.missing_keys
+    )
+
+    inputs = _inputs()
+    visual_latents = [torch.randn(3, 8, 3, 6, requires_grad=True) for _ in range(2)]
+    inputs.update(
+        visual_history_latent=visual_latents,
+        visual_history_mask=[
+            torch.tensor([False, True, True]),
+            torch.tensor([True, True, True]),
+        ],
+    )
+    output, metrics = visual(**inputs)
+
+    assert torch.isfinite(output).all()
+    assert 0.0 < metrics["visual_memory_gate"].item() < 0.02
+    assert metrics["visual_memory_history_fraction"].item() == pytest.approx(5.0 / 6.0)
+    assert 0.0 <= metrics["visual_memory_slot_abs_cosine"].item() <= 1.0
+    output[inputs["action_indexes"]].square().mean().backward()
+    assert visual.visual_memory_gate_logit.grad is not None
+    assert torch.count_nonzero(visual.visual_memory_gate_logit.grad) > 0
+    assert all(value.grad is not None and torch.count_nonzero(value.grad) > 0 for value in visual_latents)
+
+
+def test_visual_memory_zero_intervention_masks_history_from_action_context() -> None:
+    torch.manual_seed(13)
+    visual = _expert(visual_memory_enabled=True, visual_memory_intervention="zero")
+    inputs_a = _inputs()
+    inputs_b = dict(inputs_a)
+    inputs_a.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6) for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+    )
+    inputs_b.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6) * 100 for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+    )
+
+    output_a, metrics_a = visual(**inputs_a)
+    output_b, metrics_b = visual(**inputs_b)
+
+    torch.testing.assert_close(output_a, output_b)
+    assert metrics_a["visual_memory_history_fraction"].item() == 0.0
+    assert metrics_b["visual_memory_history_fraction"].item() == 0.0

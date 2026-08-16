@@ -15,11 +15,15 @@
 #   OUTPUT_ROOT              default: outputs/train
 #   RUN_NAME                 unique run name; defaults to a UTC timestamp
 #   NPROC_PER_NODE           local GPU count; default: 8
-# Strong-v1, B2, B3, and B4 only:
+# Strong-v1, B2, B3, B4, and B5 only:
 #   ROBOCASA365_CONTROL_CACHE_ROOT        immutable state/action cache
 #   ROBOCASA365_STRONG_LATENT_CACHE_ROOT  triple-view 480 Wan latent cache
 #   ROBOCASA365_STRONG_LATENT_CACHE_MODE  must be required for formal training
 #   CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER must be 1 with that cache
+# B5 only:
+#   ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT  complete first-frame latent sidecar
+#   CWAM_B5_RUN_CHECKPOINT_MODE            disabled (formal, default), b4 (probe
+#                                          initialization), or b5 (probe eval)
 #   RESUME_EXISTING_RUN      0 for a new run (default), 1 for functional
 #                            model/optim/scheduler/trainer resume
 #   ALLOW_DATA_STREAM_REPLAY must be 1 with RESUME_EXISTING_RUN=1, acknowledging
@@ -33,6 +37,7 @@ EXPERIMENT_SLUG="$(basename "$TOML_FILE" .toml)"
 : "${RUN_NAME:=${EXPERIMENT_SLUG}_$(date -u +%Y%m%dT%H%M%SZ)}"
 : "${RESUME_EXISTING_RUN:=0}"
 : "${ALLOW_DATA_STREAM_REPLAY:=0}"
+: "${CWAM_B5_RUN_CHECKPOINT_MODE:=disabled}"
 if [[ -z "${MASTER_PORT:-}" ]]; then
     CWAM_PORT_HASH="$(printf '%s' "$RUN_NAME" | cksum)"
     CWAM_PORT_HASH="${CWAM_PORT_HASH%% *}"
@@ -46,6 +51,7 @@ export QWEN3_VL_TOKENIZER_PATH="${QWEN3_VL_TOKENIZER_PATH:-}"
 export ROBOCASA365_CONTROL_CACHE_ROOT="${ROBOCASA365_CONTROL_CACHE_ROOT:-}"
 export ROBOCASA365_STRONG_LATENT_CACHE_ROOT="${ROBOCASA365_STRONG_LATENT_CACHE_ROOT:-}"
 export ROBOCASA365_STRONG_LATENT_CACHE_MODE="${ROBOCASA365_STRONG_LATENT_CACHE_MODE:-disabled}"
+export ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT="${ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT:-}"
 export CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER="${CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER:-0}"
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
@@ -67,6 +73,8 @@ export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
     { echo "ERROR: RESUME_EXISTING_RUN must be 0 or 1" >&2; exit 1; }
 [[ "$ALLOW_DATA_STREAM_REPLAY" =~ ^[01]$ ]] ||
     { echo "ERROR: ALLOW_DATA_STREAM_REPLAY must be 0 or 1" >&2; exit 1; }
+[[ "$CWAM_B5_RUN_CHECKPOINT_MODE" =~ ^(disabled|b4|b5)$ ]] ||
+    { echo "ERROR: CWAM_B5_RUN_CHECKPOINT_MODE must be disabled, b4, or b5" >&2; exit 1; }
 if [[ "$RESUME_EXISTING_RUN" == 1 && "$ALLOW_DATA_STREAM_REPLAY" != 1 ]]; then
     echo "ERROR: packed-loader state is not checkpointed; functional resume restarts the data stream." >&2
     echo "Set ALLOW_DATA_STREAM_REPLAY=1 only for a documented smoke/restart attempt." >&2
@@ -118,10 +126,19 @@ EXTRA_DATASET_CHECK='
     { echo "ERROR: ROBOCASA365_SOURCE_ROOT must contain the source videos tree" >&2; exit 1; }
 [[ -f "$BASE_CHECKPOINT_PATH/model/.metadata" ]] ||
     { echo "ERROR: BASE_CHECKPOINT_PATH is not a Cosmos DCP (missing model/.metadata)" >&2; exit 1; }
-[[ -f "$BASE_CHECKPOINT_PATH/checkpoint.json" ]] ||
-    { echo "ERROR: BASE_CHECKPOINT_PATH is missing checkpoint.json" >&2; exit 1; }
-[[ "$(find "$BASE_CHECKPOINT_PATH/model" -maxdepth 1 -type f -name "*.distcp" | wc -l)" -eq 6 ]] ||
-    { echo "ERROR: BASE_CHECKPOINT_PATH must contain the audited six Nano DCP shards" >&2; exit 1; }
+if [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == disabled ]]; then
+    [[ -f "$BASE_CHECKPOINT_PATH/checkpoint.json" ]] ||
+        { echo "ERROR: formal BASE_CHECKPOINT_PATH is missing checkpoint.json" >&2; exit 1; }
+    [[ "$(find "$BASE_CHECKPOINT_PATH/model" -maxdepth 1 -type f -name "*.distcp" | wc -l)" -eq 6 ]] ||
+        { echo "ERROR: formal BASE_CHECKPOINT_PATH must contain the audited six Nano DCP shards" >&2; exit 1; }
+else
+    [[ "$(basename "$TOML_FILE")" == action_policy_robocasa365_b5_visual_object_memory_nano.toml ]] ||
+        { echo "ERROR: run-checkpoint warm start is restricted to the B5 recipe" >&2; exit 1; }
+    [[ "$RUN_NAME" == *PROBE* ]] ||
+        { echo "ERROR: run-checkpoint warm start is probe-only; RUN_NAME must contain PROBE" >&2; exit 1; }
+    [[ "$(find "$BASE_CHECKPOINT_PATH/model" -maxdepth 1 -type f -name "*.distcp" | wc -l)" -eq 8 ]] ||
+        { echo "ERROR: B5 probe run checkpoint must contain eight model DCP shards" >&2; exit 1; }
+fi
 [[ -d "$QWEN3_VL_TOKENIZER_PATH" ]] ||
     { echo "ERROR: QWEN3_VL_TOKENIZER_PATH must be a local directory" >&2; exit 1; }
 [[ -f "$QWEN3_VL_TOKENIZER_PATH/tokenizer_config.json" ]] ||
@@ -144,22 +161,31 @@ action_policy_robocasa365_b4_adaptive_dselect_nano.toml)
     [[ "$NPROC_PER_NODE" -eq 8 ]] ||
         { echo "ERROR: B4 formal training requires exactly 8 ranks" >&2; exit 1; }
     ;;
+action_policy_robocasa365_b5_visual_object_memory_nano.toml)
+    [[ "$NPROC_PER_NODE" -eq 8 ]] ||
+        { echo "ERROR: B5 training and matched probes require exactly 8 ranks" >&2; exit 1; }
+    ;;
 esac
 case "$(basename "$TOML_FILE")" in
 action_policy_robocasa365_strong_nano.toml|\
 action_policy_robocasa365_b2_nano.toml|\
 action_policy_robocasa365_b3_dselect_nano.toml|\
-action_policy_robocasa365_b4_adaptive_dselect_nano.toml)
+action_policy_robocasa365_b4_adaptive_dselect_nano.toml|\
+action_policy_robocasa365_b5_visual_object_memory_nano.toml)
     [[ "$ROBOCASA365_STRONG_LATENT_CACHE_MODE" == required ]] ||
-        { echo "ERROR: Strong-v1/B2/B3/B4 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4/B5 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
     [[ "$CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER" == 1 ]] ||
-        { echo "ERROR: Strong-v1/B2/B3/B4 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4/B5 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
     [[ -f "$ROBOCASA365_CONTROL_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_CONTROL_CACHE_ROOT/_SUCCESS.json" ]] ||
-        { echo "ERROR: Strong-v1/B2/B3/B4 control cache is incomplete" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4/B5 control cache is incomplete" >&2; exit 1; }
     [[ -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/_SUCCESS.json" ]] ||
-        { echo "ERROR: Strong-v1/B2/B3/B4 triple-view 480 latent cache is incomplete" >&2; exit 1; }
+        { echo "ERROR: Strong-v1/B2/B3/B4/B5 triple-view 480 latent cache is incomplete" >&2; exit 1; }
     ;;
 esac
+if [[ "$(basename "$TOML_FILE")" == action_policy_robocasa365_b5_visual_object_memory_nano.toml ]]; then
+    [[ -f "$ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT/_SUCCESS.json" ]] ||
+        { echo "ERROR: B5 visual history sidecar is incomplete" >&2; exit 1; }
+fi
 '
 
 TAIL_OVERRIDES=(
@@ -169,6 +195,20 @@ TAIL_OVERRIDES=(
 )
 if [[ "$RESUME_EXISTING_RUN" == 1 ]]; then
     TAIL_OVERRIDES+=("checkpoint.strict_resume=true")
+fi
+if [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b4 ]]; then
+    TAIL_OVERRIDES+=(
+        "checkpoint.strict_resume=true"
+        "checkpoint.load_training_state=false"
+        "checkpoint.keys_to_skip_loading=[visual_object_memory,visual_memory_]"
+        "optimizer.keys_to_select=[visual_object_memory,visual_memory_]"
+    )
+elif [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b5 ]]; then
+    TAIL_OVERRIDES+=(
+        "checkpoint.strict_resume=true"
+        "checkpoint.load_training_state=false"
+        "checkpoint.keys_to_skip_loading=[]"
+    )
 fi
 
 source "$(dirname "${BASH_SOURCE[0]}")/_sft_launcher_common.sh"

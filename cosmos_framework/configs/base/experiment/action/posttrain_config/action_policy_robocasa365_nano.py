@@ -14,6 +14,9 @@ from cosmos_framework.configs.base.experiment.sft.models.nano_model_config impor
 from cosmos_framework.data.generator.action.datasets.action_sft_dataset import (
     get_action_robocasa365_sft_dataset,
 )
+from cosmos_framework.data.generator.action.datasets.action_sft_visual_memory_dataset import (
+    get_action_robocasa365_visual_memory_sft_dataset,
+)
 from cosmos_framework.data.generator.joint_dataloader import PackingDataLoader, RankPartitionedDataLoader
 from cosmos_framework.model.generator.tokenizers.precomputed_wan2pt2 import PrecomputedWan2pt2LatentTokenizer
 from cosmos_framework.utils.lazy_config import LazyCall as L
@@ -106,6 +109,9 @@ def _robocasa365_packing_dataloader(
     proprio_history_length: int = 0,
     proprio_history_stride: int = 1,
     action_history_length: int = 0,
+    visual_history_cache_root: str | None = None,
+    visual_history_length: int = 3,
+    visual_history_stride: int = 12,
 ):
     """Build a train/validation loader with one shared causal data contract."""
     latent_cache_root, latent_cache_mode = _latent_cache_settings(
@@ -115,6 +121,48 @@ def _robocasa365_packing_dataloader(
     fixed_index_trace_path = (
         (os.environ.get("ROBOCASA365_FIXED_INDEX_TRACE_PATH") or None) if split == "train" else None
     )
+    dataset_factory = (
+        get_action_robocasa365_visual_memory_sft_dataset
+        if visual_history_cache_root is not None
+        else get_action_robocasa365_sft_dataset
+    )
+    dataset_kwargs = dict(
+        root="${oc.env:ROBOCASA365_ROOT}",
+        source_root="${oc.env:ROBOCASA365_SOURCE_ROOT}",
+        split=split,
+        fps=20,
+        chunk_length=16,
+        image_size=256,
+        mode="policy",
+        camera_mode=camera_mode,
+        caption_mode="policy",
+        action_normalization="quantile_rot",
+        embodiment_type="robocasa365",
+        video_backend="lerobot",
+        latent_cache_root=latent_cache_root,
+        latent_cache_mode=latent_cache_mode,
+        latent_cache_expected_stage=latent_cache_expected_stage,
+        control_cache_root=control_cache_root,
+        control_cache_verify_checksums=False,
+        proprio_history_length=proprio_history_length,
+        proprio_history_stride=proprio_history_stride,
+        action_history_length=action_history_length,
+        iterable_shuffle=iterable_shuffle,
+        episode_shuffle_seed=episode_shuffle_seed,
+        fixed_index_trace_path=fixed_index_trace_path,
+        resolution=resolution,
+        max_action_dim="${model.config.max_action_dim}",
+        cfg_dropout_rate=cfg_dropout_rate,
+        append_idle_frames=False,
+        format_prompt_as_json=True,
+        tokenizer_config="${model.config.vlm_config.tokenizer}",
+    )
+    if visual_history_cache_root is not None:
+        dataset_kwargs.update(
+            visual_history_cache_root=visual_history_cache_root,
+            visual_history_length=visual_history_length,
+            visual_history_stride=visual_history_stride,
+        )
     return L(PackingDataLoader)(
         audio_sample_rate=48000,
         dataset_name=f"action_robocasa365_{split}",
@@ -136,40 +184,7 @@ def _robocasa365_packing_dataloader(
             datasets=dict(
                 robocasa365=dict(
                     ratio=1,
-                    dataset=L(get_action_robocasa365_sft_dataset)(
-                        root="${oc.env:ROBOCASA365_ROOT}",
-                        source_root="${oc.env:ROBOCASA365_SOURCE_ROOT}",
-                        split=split,
-                        fps=20,
-                        chunk_length=16,
-                        image_size=256,
-                        mode="policy",
-                        camera_mode=camera_mode,
-                        caption_mode="policy",
-                        action_normalization="quantile_rot",
-                        embodiment_type="robocasa365",
-                        video_backend="lerobot",
-                        latent_cache_root=latent_cache_root,
-                        latent_cache_mode=latent_cache_mode,
-                        latent_cache_expected_stage=latent_cache_expected_stage,
-                        control_cache_root=control_cache_root,
-                        control_cache_verify_checksums=False,
-                        proprio_history_length=proprio_history_length,
-                        proprio_history_stride=proprio_history_stride,
-                        action_history_length=action_history_length,
-                        iterable_shuffle=iterable_shuffle,
-                        episode_shuffle_seed=episode_shuffle_seed,
-                        fixed_index_trace_path=fixed_index_trace_path,
-                        resolution=resolution,
-                        max_action_dim="${model.config.max_action_dim}",
-                        cfg_dropout_rate=cfg_dropout_rate,
-                        # idle_frames is computed from the future action target.
-                        # It is valid diagnostic metadata but must not condition
-                        # a causal policy.
-                        append_idle_frames=False,
-                        format_prompt_as_json=True,
-                        tokenizer_config="${model.config.vlm_config.tokenizer}",
-                    ),
+                    dataset=L(dataset_factory)(**dataset_kwargs),
                 ),
             ),
         ),
@@ -423,6 +438,9 @@ def _strong_robocasa365_packing_dataloader(
     num_workers: int,
     in_order: bool,
     restart_on_iter: bool = False,
+    visual_history_cache_root: str | None = None,
+    visual_history_length: int = 3,
+    visual_history_stride: int = 12,
 ):
     return _robocasa365_packing_dataloader(
         split=split,
@@ -442,6 +460,9 @@ def _strong_robocasa365_packing_dataloader(
         proprio_history_length=4,
         proprio_history_stride=12,
         action_history_length=16,
+        visual_history_cache_root=visual_history_cache_root,
+        visual_history_length=visual_history_length,
+        visual_history_stride=visual_history_stride,
     )
 
 
@@ -573,4 +594,70 @@ cs.store(
     package="_global_",
     name="action_policy_robocasa365_b4_adaptive_dselect_nano",
     node=action_policy_robocasa365_b4_adaptive_dselect_nano,
+)
+
+
+def _action_policy_robocasa365_b5_visual_object_memory_nano_model_config() -> dict:
+    """Add persistent cross-replan visual object slots to B4."""
+
+    cfg = _action_policy_robocasa365_b4_adaptive_dselect_nano_model_config()
+    intervention = os.environ.get("CWAM_VISUAL_MEMORY_INTERVENTION", "none")
+    if intervention not in {"none", "zero", "shuffle"}:
+        raise ValueError("CWAM_VISUAL_MEMORY_INTERVENTION must be none, zero, or shuffle")
+    cfg.update(
+        strong_action_visual_memory_enabled=True,
+        strong_action_visual_history_length=3,
+        strong_action_visual_history_stride=12,
+        strong_action_visual_latent_channels=48,
+        strong_action_visual_latent_height=15,
+        strong_action_visual_latent_width=26,
+        strong_action_visual_memory_layers=2,
+        strong_action_visual_memory_tokens=8,
+        strong_action_visual_memory_intervention=intervention,
+    )
+    return cfg
+
+
+action_policy_robocasa365_b5_visual_object_memory_nano = copy.deepcopy(
+    action_policy_robocasa365_b4_adaptive_dselect_nano
+)
+action_policy_robocasa365_b5_visual_object_memory_nano.job.name = (
+    "action_policy_robocasa365_b5_visual_object_memory_nano"
+)
+action_policy_robocasa365_b5_visual_object_memory_nano.model.config = (
+    _action_policy_robocasa365_b5_visual_object_memory_nano_model_config()
+)
+action_policy_robocasa365_b5_visual_object_memory_nano.dataloader_train = (
+    _strong_robocasa365_packing_dataloader(
+        split="train",
+        cfg_dropout_rate=0.1,
+        iterable_shuffle=True,
+        episode_shuffle_seed=42,
+        num_workers=int(os.environ.get("ROBOCASA365_TRAIN_NUM_WORKERS", "4")),
+        in_order=True,
+        visual_history_cache_root="${oc.env:ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT}",
+        visual_history_length=3,
+        visual_history_stride=12,
+    )
+)
+action_policy_robocasa365_b5_visual_object_memory_nano.dataloader_val = (
+    _strong_robocasa365_packing_dataloader(
+        split="val",
+        cfg_dropout_rate=0.0,
+        iterable_shuffle=True,
+        episode_shuffle_seed=4242,
+        num_workers=int(os.environ.get("ROBOCASA365_VAL_NUM_WORKERS", "2")),
+        in_order=True,
+        restart_on_iter=True,
+        visual_history_cache_root="${oc.env:ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT}",
+        visual_history_length=3,
+        visual_history_stride=12,
+    )
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_b5_visual_object_memory_nano",
+    node=action_policy_robocasa365_b5_visual_object_memory_nano,
 )

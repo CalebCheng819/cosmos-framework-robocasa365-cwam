@@ -7,6 +7,7 @@ from cosmos_framework.configs.base.experiment.action.posttrain_config.action_pol
     action_policy_robocasa365_b2_nano,
     action_policy_robocasa365_b3_dselect_nano,
     action_policy_robocasa365_b4_adaptive_dselect_nano,
+    action_policy_robocasa365_b5_visual_object_memory_nano,
     action_policy_robocasa365_nano,
     action_policy_robocasa365_s1_nano,
     action_policy_robocasa365_strong_nano,
@@ -155,3 +156,26 @@ def test_b4_changes_only_b3_selector_budget_control() -> None:
     assert b4.trainer.grad_accum_iter == b3.trainer.grad_accum_iter
     assert b4.optimizer == b3.optimizer
     assert b4.checkpoint == b3.checkpoint
+
+
+def test_b5_adds_visual_object_memory_without_changing_b4_router() -> None:
+    b4 = action_policy_robocasa365_b4_adaptive_dselect_nano
+    b5 = action_policy_robocasa365_b5_visual_object_memory_nano
+
+    assert b5.model.config.action_relevance_routing_mode == b4.model.config.action_relevance_routing_mode
+    assert list(b5.model.config.action_relevance_dselect_adaptive_counts) == list(
+        b4.model.config.action_relevance_dselect_adaptive_counts
+    )
+    assert b5.model.config.strong_action_visual_memory_enabled is True
+    assert b5.model.config.strong_action_visual_history_length == 3
+    assert b5.model.config.strong_action_visual_history_stride == 12
+    assert b5.model.config.strong_action_visual_memory_tokens == 8
+    assert b5.model.config.strong_action_visual_memory_layers == 2
+    assert b5.model.config.strong_action_visual_memory_intervention == "none"
+    assert b5.dataloader_train.max_samples_per_batch == b4.dataloader_train.max_samples_per_batch
+    assert b5.trainer.grad_accum_iter == b4.trainer.grad_accum_iter
+    dataset = b5.dataloader_train.dataloader.datasets.robocasa365.dataset
+    unresolved = OmegaConf.to_container(dataset, resolve=False)
+    assert unresolved["visual_history_cache_root"] == "${oc.env:ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT}"
+    assert dataset.visual_history_length == 3
+    assert dataset.visual_history_stride == 12

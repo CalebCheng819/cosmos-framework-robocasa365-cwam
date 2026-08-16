@@ -857,6 +857,8 @@ class PackedSequenceBuilder:
             control_proprio_history_mask=gen_data_clean.control_proprio_history_mask,
             control_action_history=gen_data_clean.control_action_history,
             control_action_history_mask=gen_data_clean.control_action_history_mask,
+            control_visual_history_latent=gen_data_clean.control_visual_history_latent,
+            control_visual_history_mask=gen_data_clean.control_visual_history_mask,
         )
 
 
@@ -948,6 +950,8 @@ class PackedSequence:
     control_proprio_history_mask: list[torch.Tensor] | None = None
     control_action_history: list[torch.Tensor] | None = None
     control_action_history_mask: list[torch.Tensor] | None = None
+    control_visual_history_latent: list[torch.Tensor] | None = None
+    control_visual_history_mask: list[torch.Tensor] | None = None
 
     def __post_init__(self) -> None:
         assert isinstance(self.text_ids, torch.Tensor), "PackedSequence.text_ids must be finalized"
@@ -986,6 +990,8 @@ class PackedSequence:
             "control_proprio_history_mask",
             "control_action_history",
             "control_action_history_mask",
+            "control_visual_history_latent",
+            "control_visual_history_mask",
         ):
             values = getattr(self, field_name)
             if values is not None:

@@ -83,6 +83,14 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_num_views=3,
         strong_action_view_token_width=8,
         strong_action_initial_gate=0.01,
+        strong_action_visual_memory_enabled=False,
+        strong_action_visual_history_length=3,
+        strong_action_visual_latent_channels=48,
+        strong_action_visual_latent_height=15,
+        strong_action_visual_latent_width=26,
+        strong_action_visual_memory_layers=2,
+        strong_action_visual_memory_tokens=8,
+        strong_action_visual_memory_intervention="none",
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -151,6 +159,14 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_num_views = strong_action_num_views
         self.strong_action_view_token_width = strong_action_view_token_width
         self.strong_action_initial_gate = strong_action_initial_gate
+        self.strong_action_visual_memory_enabled = strong_action_visual_memory_enabled
+        self.strong_action_visual_history_length = strong_action_visual_history_length
+        self.strong_action_visual_latent_channels = strong_action_visual_latent_channels
+        self.strong_action_visual_latent_height = strong_action_visual_latent_height
+        self.strong_action_visual_latent_width = strong_action_visual_latent_width
+        self.strong_action_visual_memory_layers = strong_action_visual_memory_layers
+        self.strong_action_visual_memory_tokens = strong_action_visual_memory_tokens
+        self.strong_action_visual_memory_intervention = strong_action_visual_memory_intervention
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
@@ -182,6 +198,12 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 "memory_tokens": self.strong_action_memory_tokens,
                 "num_views": self.strong_action_num_views,
                 "view_token_width": self.strong_action_view_token_width,
+                "visual_history_length": self.strong_action_visual_history_length,
+                "visual_latent_channels": self.strong_action_visual_latent_channels,
+                "visual_latent_height": self.strong_action_visual_latent_height,
+                "visual_latent_width": self.strong_action_visual_latent_width,
+                "visual_memory_layers": self.strong_action_visual_memory_layers,
+                "visual_memory_tokens": self.strong_action_visual_memory_tokens,
             }
             invalid = {name: value for name, value in strong_positive_values.items() if int(value) < 1}
             if invalid:
@@ -190,6 +212,10 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError("Strong action expert model_dim must be divisible by num_heads")
             if not 0.0 < float(self.strong_action_initial_gate) < 1.0:
                 raise ValueError("Strong action expert initial gate must be strictly between zero and one")
+            if self.strong_action_visual_memory_intervention not in {"none", "zero", "shuffle"}:
+                raise ValueError(
+                    "strong_action_visual_memory_intervention must be none, zero, or shuffle"
+                )
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -296,6 +322,14 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     num_views=config.strong_action_num_views,
                     view_token_width=config.strong_action_view_token_width,
                     initial_residual_gate=config.strong_action_initial_gate,
+                    visual_memory_enabled=config.strong_action_visual_memory_enabled,
+                    visual_history_length=config.strong_action_visual_history_length,
+                    visual_latent_channels=config.strong_action_visual_latent_channels,
+                    visual_latent_height=config.strong_action_visual_latent_height,
+                    visual_latent_width=config.strong_action_visual_latent_width,
+                    visual_memory_layers=config.strong_action_visual_memory_layers,
+                    visual_memory_tokens=config.strong_action_visual_memory_tokens,
+                    visual_memory_intervention=config.strong_action_visual_memory_intervention,
                 )
 
         if config.sound_gen:
@@ -1302,6 +1336,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                 proprio_history_mask=packed_seq.control_proprio_history_mask,
                 action_history=packed_seq.control_action_history,
                 action_history_mask=packed_seq.control_action_history_mask,
+                visual_history_latent=packed_seq.control_visual_history_latent,
+                visual_history_mask=packed_seq.control_visual_history_mask,
             )
             output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})
 

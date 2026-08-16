@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: OpenMDW-1.1
+
+# B5: B4 adaptive DSelect-k plus eight compact object slots derived from three
+# episode-safe historical observations (t-36, t-24, t-12). Current visual tokens
+# remain unchanged; the object memory persists information across replans.
+
+[job]
+task         = "vfm"
+experiment   = "action_policy_robocasa365_b5_visual_object_memory_nano"
+project      = "cosmos3_action_robocasa365"
+group        = "action_sft"
+name         = "action_policy_robocasa365_b5_visual_object_memory_nano"
+wandb_mode   = "offline"
+
+[model]
+precision = "bfloat16"
+# Proven B4 B200 production envelope: 64 samples/rank at one optimizer step.
+max_num_tokens_after_packing = 148000
+
+[model.parallelism]
+data_parallel_shard_degree     = 8
+data_parallel_replicate_degree = 1
+
+[model.activation_checkpointing]
+mode           = "${oc.env:CWAM_ACTIVATION_CHECKPOINTING_MODE,selective}"
+save_ops_regex = ["fmha"]
+
+[model.tokenizer]
+vae_path = "${oc.env:WAN_VAE_PATH}"
+
+[optimizer]
+lr = 5.0e-05
+
+[scheduler]
+cycle_lengths = [20000]
+warm_up_steps = [500]
+
+[trainer]
+max_iter        = 20000
+logging_iter    = 1
+grad_accum_iter = 1
+
+[trainer.callbacks.production_batch_memory_gate]
+expected_samples_per_microbatch = 64
+expected_grad_accum_iter         = 1
+
+[dataloader_train]
+max_samples_per_batch = 64
+
+[checkpoint]
+load_path = "${oc.env:BASE_CHECKPOINT_PATH}"
+save_iter = 1000

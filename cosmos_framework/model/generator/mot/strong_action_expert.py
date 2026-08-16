@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
-
 _TEXT_CONTEXT = 0
 _VISION_CONTEXT = 1
 _PROPRIO_CONTEXT = 2
@@ -183,6 +182,168 @@ class TemporalControlMemory(nn.Module):
         return state_tokens[:, -1], action_tokens, memory, action_age
 
 
+class VisualObjectMemory(nn.Module):
+    """Pool sparse historical Wan latents into persistent object slots."""
+
+    def __init__(
+        self,
+        *,
+        latent_channels: int,
+        history_length: int,
+        latent_height: int,
+        latent_width: int,
+        model_dim: int,
+        num_heads: int,
+        num_layers: int,
+        num_slots: int,
+        num_views: int,
+        intervention: str,
+    ) -> None:
+        super().__init__()
+        if min(
+            latent_channels,
+            history_length,
+            latent_height,
+            latent_width,
+            model_dim,
+            num_heads,
+            num_layers,
+            num_slots,
+            num_views,
+        ) < 1:
+            raise ValueError("Visual object memory dimensions must be positive")
+        if model_dim % num_heads:
+            raise ValueError("Visual object memory model_dim must be divisible by num_heads")
+        if intervention not in {"none", "zero", "shuffle"}:
+            raise ValueError(f"Unsupported visual memory intervention={intervention!r}")
+        self.latent_channels = latent_channels
+        self.history_length = history_length
+        self.latent_height = latent_height
+        self.latent_width = latent_width
+        self.num_slots = num_slots
+        self.intervention = intervention
+
+        self.latent_norm = nn.LayerNorm(latent_channels)
+        self.latent_proj = nn.Linear(latent_channels, model_dim)
+        self.history_embed = nn.Embedding(history_length, model_dim)
+        self.spatial_embed = nn.Parameter(torch.empty(latent_height * latent_width, model_dim))
+        self.view_embed = nn.Embedding(num_views, model_dim)
+        self.object_queries = nn.Parameter(torch.empty(num_slots, model_dim))
+        self.null_history_token = nn.Parameter(torch.empty(1, model_dim))
+        self.object_pool = nn.MultiheadAttention(model_dim, num_heads, dropout=0.0, batch_first=True)
+        relation_layer = nn.TransformerEncoderLayer(
+            d_model=model_dim,
+            nhead=num_heads,
+            dim_feedforward=4 * model_dim,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.relation_encoder = nn.TransformerEncoder(
+            relation_layer,
+            num_layers=num_layers,
+            enable_nested_tensor=False,
+        )
+        self.output_norm = nn.LayerNorm(model_dim)
+
+    def init_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                std = 1.0 / math.sqrt(max(module.in_features, 1))
+                nn.init.trunc_normal_(module.weight, std=std, a=-3 * std, b=3 * std)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            elif isinstance(module, nn.MultiheadAttention):
+                nn.init.xavier_uniform_(module.in_proj_weight)
+                if module.in_proj_bias is not None:
+                    nn.init.zeros_(module.in_proj_bias)
+        nn.init.normal_(self.spatial_embed, mean=0.0, std=0.02)
+        nn.init.normal_(self.object_queries, mean=0.0, std=0.02)
+        nn.init.normal_(self.null_history_token, mean=0.0, std=0.02)
+
+    def forward(
+        self,
+        history_latent: torch.Tensor,
+        history_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        expected = (
+            self.history_length,
+            self.latent_channels,
+            self.latent_height,
+            self.latent_width,
+        )
+        if history_latent.ndim != 5 or tuple(history_latent.shape[1:]) != expected:
+            raise ValueError(
+                f"Visual history latent must be [B,{','.join(map(str, expected))}], "
+                f"got {tuple(history_latent.shape)}."
+            )
+        if history_mask.shape != history_latent.shape[:2]:
+            raise ValueError("Visual history mask must align with [B,R]")
+        history_mask = history_mask.bool()
+        if self.intervention == "zero":
+            history_mask = torch.zeros_like(history_mask)
+        elif self.intervention == "shuffle" and history_latent.shape[0] > 1:
+            history_latent = torch.roll(history_latent, shifts=1, dims=0)
+            history_mask = torch.roll(history_mask, shifts=1, dims=0)
+        slot_valid = history_mask.any(dim=1)
+
+        batch_size = history_latent.shape[0]
+        dtype = self.latent_proj.weight.dtype
+        tokens = history_latent.permute(0, 1, 3, 4, 2).reshape(
+            batch_size,
+            self.history_length,
+            self.latent_height * self.latent_width,
+            self.latent_channels,
+        )
+        tokens = self.latent_proj(self.latent_norm(tokens.to(dtype)))
+        tokens = tokens + self.history_embed.weight[None, :, None, :].to(dtype)
+        tokens = tokens + self.spatial_embed[None, None].to(dtype)
+
+        horizontal = torch.arange(self.latent_width, device=tokens.device)
+        view_ids = torch.div(horizontal * self.view_embed.num_embeddings, self.latent_width, rounding_mode="floor")
+        view_ids = view_ids.clamp_max(self.view_embed.num_embeddings - 1)
+        view_ids = view_ids[None, :].expand(self.latent_height, -1).reshape(-1)
+        tokens = tokens + self.view_embed(view_ids)[None, None].to(dtype)
+        tokens = tokens.flatten(1, 2)
+        token_valid = history_mask[:, :, None].expand(-1, -1, self.latent_height * self.latent_width).flatten(1)
+
+        null_token = self.null_history_token.to(dtype).unsqueeze(0).expand(batch_size, -1, -1)
+        tokens = torch.cat((tokens.masked_fill(~token_valid[:, :, None], 0.0), null_token), dim=1)
+        token_valid = torch.cat(
+            (token_valid, torch.ones(batch_size, 1, device=tokens.device, dtype=torch.bool)),
+            dim=1,
+        )
+        queries = self.object_queries.to(dtype).unsqueeze(0).expand(batch_size, -1, -1)
+        pooled, _ = self.object_pool(
+            queries,
+            tokens,
+            tokens,
+            key_padding_mask=~token_valid,
+            need_weights=False,
+        )
+        slots = self.output_norm(self.relation_encoder(queries + pooled))
+
+        normalized_slots = F.normalize(slots.float(), dim=-1)
+        similarity = torch.matmul(normalized_slots, normalized_slots.transpose(-1, -2))
+        off_diagonal = ~torch.eye(self.num_slots, device=slots.device, dtype=torch.bool)[None]
+        off_diagonal = off_diagonal.expand(batch_size, -1, -1)
+        slot_cosine = similarity.masked_select(off_diagonal).mean()
+        slot_abs_cosine = similarity.abs().masked_select(off_diagonal).mean()
+        metrics = {
+            "visual_memory_rms": slots.float().square().mean().sqrt(),
+            "visual_memory_slot_cosine": slot_cosine,
+            "visual_memory_slot_abs_cosine": slot_abs_cosine,
+            "visual_memory_history_fraction": history_mask.float().mean(),
+        }
+        return slots, slot_valid, metrics
+
+
 class RelationAwareCrossAttention(nn.Module):
     """Cross-attention with per-head context-type, camera, age, and progress bias."""
 
@@ -343,6 +504,14 @@ class StrongActionContextExpert(nn.Module):
         num_views: int,
         view_token_width: int,
         initial_residual_gate: float,
+        visual_memory_enabled: bool = False,
+        visual_history_length: int = 3,
+        visual_latent_channels: int = 48,
+        visual_latent_height: int = 15,
+        visual_latent_width: int = 26,
+        visual_memory_layers: int = 2,
+        visual_memory_tokens: int = 8,
+        visual_memory_intervention: str = "none",
     ) -> None:
         super().__init__()
         if not 0.0 < initial_residual_gate < 1.0:
@@ -368,6 +537,9 @@ class StrongActionContextExpert(nn.Module):
         self.num_views = num_views
         self.view_token_width = view_token_width
         self.initial_residual_gate = initial_residual_gate
+        self.visual_memory_enabled = bool(visual_memory_enabled)
+        self.visual_history_length = int(visual_history_length)
+        self.visual_memory_tokens = int(visual_memory_tokens)
 
         self.action_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -389,6 +561,21 @@ class StrongActionContextExpert(nn.Module):
             num_memory_tokens=memory_tokens,
             proprio_stride=proprio_history_stride,
         )
+        if self.visual_memory_enabled:
+            self.visual_memory_context_embed = nn.Parameter(torch.empty(model_dim))
+            self.visual_memory_gate_logit = nn.Parameter(torch.tensor([-4.59511985013459]))
+            self.visual_object_memory = VisualObjectMemory(
+                latent_channels=visual_latent_channels,
+                history_length=visual_history_length,
+                latent_height=visual_latent_height,
+                latent_width=visual_latent_width,
+                model_dim=model_dim,
+                num_heads=num_heads,
+                num_layers=visual_memory_layers,
+                num_slots=visual_memory_tokens,
+                num_views=num_views,
+                intervention=visual_memory_intervention,
+            )
         self.layers = nn.ModuleList(
             ActionExpertBlock(
                 model_dim=model_dim,
@@ -423,6 +610,10 @@ class StrongActionContextExpert(nn.Module):
         nn.init.normal_(self.context_type_embed.weight, mean=0.0, std=0.02)
         nn.init.normal_(self.view_embed.weight, mean=0.0, std=0.02)
         self.control_memory.init_weights()
+        if self.visual_memory_enabled:
+            nn.init.normal_(self.visual_memory_context_embed, mean=0.0, std=0.02)
+            nn.init.constant_(self.visual_memory_gate_logit, -4.59511985013459)
+            self.visual_object_memory.init_weights()
         for layer in self.layers:
             layer.init_weights()
         initial_logit = math.log(self.initial_residual_gate / (1.0 - self.initial_residual_gate))
@@ -462,6 +653,8 @@ class StrongActionContextExpert(nn.Module):
         proprio_history_mask: list[torch.Tensor] | None,
         action_history: list[torch.Tensor] | None,
         action_history_mask: list[torch.Tensor] | None,
+        visual_history_latent: list[torch.Tensor] | None = None,
+        visual_history_mask: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         control_fields = (proprio_history, proprio_history_mask, action_history, action_history_mask)
         if any(value is None for value in control_fields):
@@ -500,6 +693,24 @@ class StrongActionContextExpert(nn.Module):
             history_action,
             history_action_valid,
         )
+        visual_memory_tokens: torch.Tensor | None = None
+        visual_memory_valid: torch.Tensor | None = None
+        visual_memory_metrics: dict[str, torch.Tensor] = {}
+        if self.visual_memory_enabled:
+            if visual_history_latent is None or visual_history_mask is None:
+                raise ValueError("Visual object memory requires visual history latents and masks")
+            if len(visual_history_latent) != num_samples or len(visual_history_mask) != num_samples:
+                raise ValueError("Visual history fields must align with packed samples")
+            visual_latent = torch.stack(
+                _strip_optional_collator_axis(visual_history_latent, expected_ndim=4)
+            )
+            visual_valid = torch.stack(
+                _strip_optional_collator_axis(visual_history_mask, expected_ndim=1)
+            ).bool()
+            visual_memory_tokens, visual_memory_valid, visual_memory_metrics = self.visual_object_memory(
+                visual_latent,
+                visual_valid,
+            )
 
         action_sample_ids = _sample_ids(action_indexes, sample_lens)
         text_sample_ids = _sample_ids(text_indexes, sample_lens)
@@ -554,7 +765,15 @@ class StrongActionContextExpert(nn.Module):
             memory_types = torch.full(
                 (self.memory_tokens,), _MEMORY_CONTEXT, device=hidden_states.device, dtype=torch.long
             )
-            context_types = torch.cat((text_types, vision_types, state_types, history_types, memory_types))
+            visual_memory_types = torch.full(
+                (self.visual_memory_tokens if self.visual_memory_enabled else 0,),
+                _MEMORY_CONTEXT,
+                device=hidden_states.device,
+                dtype=torch.long,
+            )
+            context_types = torch.cat(
+                (text_types, vision_types, state_types, history_types, memory_types, visual_memory_types)
+            )
             context_views = torch.cat(
                 (
                     torch.full_like(text_types, nonvisual_view),
@@ -562,7 +781,13 @@ class StrongActionContextExpert(nn.Module):
                     torch.full_like(state_types, nonvisual_view),
                     torch.full_like(history_types, nonvisual_view),
                     torch.full_like(memory_types, nonvisual_view),
+                    torch.full_like(visual_memory_types, nonvisual_view),
                 )
+            )
+            sample_visual_memory = (
+                visual_memory_tokens[sample_id]
+                if visual_memory_tokens is not None
+                else memory_tokens.new_empty((0, self.model_dim))
             )
             sample_context = torch.cat(
                 (
@@ -571,6 +796,7 @@ class StrongActionContextExpert(nn.Module):
                     current_state[sample_id : sample_id + 1],
                     action_memory_input[sample_id],
                     memory_tokens[sample_id],
+                    sample_visual_memory,
                 ),
                 dim=0,
             )
@@ -578,6 +804,23 @@ class StrongActionContextExpert(nn.Module):
                 sample_context
                 + self.context_type_embed(context_types)
                 + self.view_embed(context_views)
+            )
+            if sample_visual_memory.shape[0]:
+                visual_gate = self.visual_memory_gate_logit.sigmoid()
+                visual_start = sample_context.shape[0] - sample_visual_memory.shape[0]
+                visual_scale = torch.ones(
+                    sample_context.shape[0],
+                    device=sample_context.device,
+                    dtype=sample_context.dtype,
+                )
+                visual_scale[visual_start:] = visual_gate.to(sample_context.dtype)
+                visual_identity = torch.zeros_like(sample_context)
+                visual_identity[visual_start:] = self.visual_memory_context_embed.to(sample_context.dtype)
+                sample_context = (sample_context + visual_identity) * visual_scale[:, None]
+            sample_visual_valid = (
+                visual_memory_valid[sample_id].expand(sample_visual_memory.shape[0])
+                if visual_memory_valid is not None
+                else torch.empty(0, device=hidden_states.device, dtype=torch.bool)
             )
             context_valid = torch.cat(
                 (
@@ -587,7 +830,12 @@ class StrongActionContextExpert(nn.Module):
                         dtype=torch.bool,
                     ),
                     history_action_valid[sample_id],
-                    torch.ones(self.memory_tokens, device=hidden_states.device, dtype=torch.bool),
+                    torch.ones(
+                        self.memory_tokens,
+                        device=hidden_states.device,
+                        dtype=torch.bool,
+                    ),
+                    sample_visual_valid,
                 )
             )
             context_age = torch.cat(
@@ -595,6 +843,11 @@ class StrongActionContextExpert(nn.Module):
                     torch.zeros(sample_text.shape[0] + sample_vision.shape[0] + 1, device=hidden_states.device),
                     action_ages,
                     torch.full((self.memory_tokens,), -1.0 / max_age, device=hidden_states.device),
+                    torch.full(
+                        (sample_visual_memory.shape[0],),
+                        -float(self.visual_history_length) / max(self.visual_history_length, 1),
+                        device=hidden_states.device,
+                    ),
                 )
             )
             context_groups.append(sample_context)
@@ -642,4 +895,7 @@ class StrongActionContextExpert(nn.Module):
             "valid_context_tokens": valid_context_count,
             "memory_rms": memory_tokens.float().square().mean().sqrt(),
         }
+        if self.visual_memory_enabled:
+            metrics["visual_memory_gate"] = self.visual_memory_gate_logit.sigmoid()
+        metrics.update(visual_memory_metrics)
         return updated, metrics

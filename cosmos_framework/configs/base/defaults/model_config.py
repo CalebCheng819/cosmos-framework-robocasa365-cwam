@@ -292,6 +292,15 @@ class OmniMoTModelConfig:
     strong_action_view_token_width: int = 8
     strong_action_initial_gate: float = 0.01
     strong_action_input_resolution: str = "480"
+    strong_action_visual_memory_enabled: bool = False
+    strong_action_visual_history_length: int = 3
+    strong_action_visual_history_stride: int = 12
+    strong_action_visual_latent_channels: int = 48
+    strong_action_visual_latent_height: int = 15
+    strong_action_visual_latent_width: int = 26
+    strong_action_visual_memory_layers: int = 2
+    strong_action_visual_memory_tokens: int = 8
+    strong_action_visual_memory_intervention: str = "none"
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

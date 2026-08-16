@@ -609,6 +609,73 @@ def test_strong_infer_does_not_commit_history_when_model_fails() -> None:
     assert not service._normalized_action_history
 
 
+def test_visual_memory_infer_commits_images_only_after_success_and_reset_clears_them() -> None:
+    service = object.__new__(server.RoboCasa365PolicyService)
+    service.camera_height = 256
+    service.camera_width = 256
+    service.domain_name = "robocasa365"
+    service.distributed_rank = 0
+    service.distributed_world_size = 1
+    service.strong_action_enabled = True
+    service.visual_memory_enabled = True
+    service.open_loop_horizon = 12
+    service._proprio_history = deque(maxlen=3)
+    service._normalized_action_history = deque(maxlen=16)
+    service._visual_history = deque(maxlen=3)
+    captured: list[dict] = []
+
+    def execute(request: dict) -> dict:
+        captured.append(request)
+        return {
+            "actions": np.zeros((16, 7), dtype=np.float32),
+            server._STRONG_ACTION_HISTORY_RESPONSE_KEY: np.zeros((12, 10), dtype=np.float32),
+        }
+
+    service._execute_canonical_request = execute
+    service.infer(_observation())
+    service.infer(_observation())
+
+    assert captured[0]["control_visual_history_mask"] == [False, False, False]
+    assert captured[0]["control_visual_history_images"] == ["", "", ""]
+    assert captured[1]["control_visual_history_mask"] == [False, False, True]
+    history_image = np.asarray(
+        Image.open(io.BytesIO(base64.b64decode(captured[1]["control_visual_history_images"][-1]))).convert("RGB")
+    )
+    assert history_image.shape == (256, 768, 3)
+    assert np.all(history_image[:, :256] == 11)
+    assert np.all(history_image[:, 256:512] == 22)
+    assert np.all(history_image[:, 512:] == 33)
+    assert len(service._visual_history) == 2
+
+    service.reset()
+
+    assert not service._visual_history
+
+
+def test_visual_memory_infer_does_not_commit_image_when_model_fails() -> None:
+    service = object.__new__(server.RoboCasa365PolicyService)
+    service.camera_height = 256
+    service.camera_width = 256
+    service.domain_name = "robocasa365"
+    service.distributed_rank = 0
+    service.distributed_world_size = 1
+    service.strong_action_enabled = True
+    service.visual_memory_enabled = True
+    service.open_loop_horizon = 12
+    service._proprio_history = deque(maxlen=3)
+    service._normalized_action_history = deque(maxlen=16)
+    service._visual_history = deque(maxlen=3)
+
+    def fail(_request: dict) -> dict:
+        raise RuntimeError("model failed")
+
+    service._execute_canonical_request = fail
+    with pytest.raises(RuntimeError, match="model failed"):
+        service.infer(_observation())
+
+    assert not service._visual_history
+
+
 def test_generic_policy_preparation_honors_strong_resolution_and_control_context() -> None:
     service = object.__new__(server.ActionModelService)
     service.cfg = SimpleNamespace(action_chunk_size=16, fps=20)
@@ -641,6 +708,39 @@ def test_generic_policy_preparation_honors_strong_resolution_and_control_context
     assert prepared["control_proprio_history"].shape == (4, 16)
     assert prepared["control_action_history"].shape == (16, 10)
     assert prepared["control_proprio_history_mask"].tolist() == [False, False, False, True]
+
+
+def test_generic_policy_preparation_builds_online_visual_history_video() -> None:
+    service = object.__new__(server.ActionModelService)
+    service.cfg = SimpleNamespace(action_chunk_size=16, fps=20)
+    service._prompt_json_formatter = None
+    service.append_duration_fps = False
+    service.append_resolution_info = False
+    image = np.concatenate(
+        [np.full((256, 256, 3), value, dtype=np.uint8) for value in (11, 22, 33)],
+        axis=1,
+    )
+    encoded = server._encode_png_base64(image)
+    request = {
+        "image": encoded,
+        "prompt": "open the drawer",
+        "domain_name": "robocasa365",
+        "image_size": 256,
+        "resolution": "480",
+        "control_proprio_history": np.zeros((4, 16), dtype=np.float32).tolist(),
+        "control_proprio_history_mask": [False, False, False, True],
+        "control_action_history": np.zeros((16, 10), dtype=np.float32).tolist(),
+        "control_action_history_mask": [False] * 16,
+        "control_visual_history_images": ["", encoded, encoded],
+        "control_visual_history_mask": [False, True, True],
+    }
+
+    prepared = service._prep_policy_item(request)
+
+    assert prepared["control_visual_history_video"].shape == (3, 3, 1, 480, 832)
+    assert prepared["control_visual_history_video"].dtype == torch.uint8
+    assert prepared["control_visual_history_mask"].tolist() == [False, True, True]
+    assert torch.count_nonzero(prepared["control_visual_history_video"][0]) == 0
 
 
 def _distributed_test_service(*, rank: int) -> server.RoboCasa365PolicyService:

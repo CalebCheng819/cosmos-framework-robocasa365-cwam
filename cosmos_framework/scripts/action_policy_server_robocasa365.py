@@ -86,6 +86,13 @@ _STRONG_CANONICAL_REQUEST_KEYS = frozenset(
         "control_action_history_mask",
     )
 )
+_VISUAL_MEMORY_CANONICAL_REQUEST_KEYS = frozenset(
+    (
+        *_STRONG_CANONICAL_REQUEST_KEYS,
+        "control_visual_history_images",
+        "control_visual_history_mask",
+    )
+)
 _CONTROL_REQUEST_KEYS = frozenset(("__cwam_control__", "launch_nonce"))
 _STRONG_ACTION_HISTORY_RESPONSE_KEY = "_cwam_normalized_executed_actions"
 
@@ -312,10 +319,14 @@ def _validate_canonical_policy_request(request: Any) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise TypeError(f"Canonical RoboCasa365 request must be a dict, got {type(request).__name__}")
     keys = frozenset(request)
-    if keys not in {_CANONICAL_REQUEST_KEYS, _STRONG_CANONICAL_REQUEST_KEYS}:
+    if keys not in {
+        _CANONICAL_REQUEST_KEYS,
+        _STRONG_CANONICAL_REQUEST_KEYS,
+        _VISUAL_MEMORY_CANONICAL_REQUEST_KEYS,
+    }:
         raise ValueError(
             "Canonical RoboCasa365 request keys drifted: "
-            f"expected one of {[sorted(_CANONICAL_REQUEST_KEYS), sorted(_STRONG_CANONICAL_REQUEST_KEYS)]}, "
+            "expected baseline, Strong-v1, or visual-memory Strong-v1 contract, "
             f"got={sorted(request)}"
         )
     if not isinstance(request["image"], str) or not request["image"]:
@@ -328,7 +339,7 @@ def _validate_canonical_policy_request(request: Any) -> dict[str, Any]:
         )
     if request["image_size"] != 256:
         raise ValueError(f"Canonical RoboCasa365 request requires image_size=256, got {request['image_size']!r}")
-    if keys == _STRONG_CANONICAL_REQUEST_KEYS:
+    if keys in {_STRONG_CANONICAL_REQUEST_KEYS, _VISUAL_MEMORY_CANONICAL_REQUEST_KEYS}:
         if request["resolution"] != "480":
             raise ValueError("Strong-v1 canonical requests require resolution='480'")
         proprio = np.asarray(request["control_proprio_history"])
@@ -352,6 +363,17 @@ def _validate_canonical_policy_request(request: Any) -> dict[str, Any]:
             raise ValueError("Strong-v1 valid control history contains non-finite values")
         if np.any(proprio[~proprio_mask] != 0.0) or np.any(action_history[~action_mask] != 0.0):
             raise ValueError("Strong-v1 invalid history rows must be zero padded")
+        if keys == _VISUAL_MEMORY_CANONICAL_REQUEST_KEYS:
+            visual_images = request["control_visual_history_images"]
+            visual_mask = np.asarray(request["control_visual_history_mask"])
+            if not isinstance(visual_images, list) or len(visual_images) != 3:
+                raise ValueError("Visual-memory requests require exactly three historical images")
+            if visual_mask.shape != (3,) or visual_mask.dtype != np.bool_:
+                raise TypeError("Visual-memory history mask must contain exactly three booleans")
+            if np.any(visual_mask[:-1] & ~visual_mask[1:]):
+                raise ValueError("Visual-memory history mask must be a right-aligned contiguous suffix")
+            if any(not isinstance(value, str) or bool(value) != bool(valid) for value, valid in zip(visual_images, visual_mask)):
+                raise ValueError("Valid visual history rows require images; padded rows must be empty")
     return request
 
 
@@ -632,6 +654,9 @@ class RoboCasa365PolicyService(ActionModelService):
         super().__init__(args)
 
         self.strong_action_enabled = bool(getattr(self.model.config, "strong_action_expert_enabled", False))
+        self.visual_memory_enabled = bool(
+            getattr(self.model.config, "strong_action_visual_memory_enabled", False)
+        )
         if getattr(self, "strong_action_enabled", False):
             expected_strong_config = {
                 "strong_action_state_dim": 16,
@@ -655,10 +680,27 @@ class RoboCasa365PolicyService(ActionModelService):
                 raise RuntimeError(
                     "Strong-v1 serving requires open_loop_horizon=12 so online state history matches training"
                 )
+            if self.visual_memory_enabled:
+                expected_visual_config = {
+                    "strong_action_visual_history_length": 3,
+                    "strong_action_visual_history_stride": 12,
+                    "strong_action_visual_latent_channels": 48,
+                    "strong_action_visual_latent_height": 15,
+                    "strong_action_visual_latent_width": 26,
+                }
+                actual_visual_config = {
+                    key: getattr(self.model.config, key, None) for key in expected_visual_config
+                }
+                if actual_visual_config != expected_visual_config:
+                    raise RuntimeError(
+                        "Loaded B5 visual-memory config does not match the serving contract: "
+                        f"expected={expected_visual_config}, actual={actual_visual_config}"
+                    )
         # Three committed replans plus the current observation produce the
         # training-time [t-36, t-24, t-12, t] state window.
         self._proprio_history: deque[np.ndarray] = deque(maxlen=3)
         self._normalized_action_history: deque[np.ndarray] = deque(maxlen=16)
+        self._visual_history: deque[np.ndarray] = deque(maxlen=3)
 
         self.distributed_rank, self.distributed_world_size = _distributed_rank_and_world_size()
         _validate_fsdp_topology(
@@ -760,8 +802,7 @@ class RoboCasa365PolicyService(ActionModelService):
                 observed_actions = np.asarray(self._normalized_action_history, dtype=np.float32)
                 action_history[-len(observed_actions) :] = observed_actions
                 action_mask[-len(observed_actions) :] = True
-            return _validate_canonical_policy_request(
-                {
+            request = {
                     "image": _encode_png_base64(image),
                     "prompt": prompt,
                     "domain_name": self.domain_name,
@@ -771,8 +812,18 @@ class RoboCasa365PolicyService(ActionModelService):
                     "control_proprio_history_mask": proprio_mask.tolist(),
                     "control_action_history": action_history.tolist(),
                     "control_action_history_mask": action_mask.tolist(),
-                }
-            )
+            }
+            if getattr(self, "visual_memory_enabled", False):
+                visual_images = [""] * 3
+                visual_mask = [False] * 3
+                for position, history_image in enumerate(self._visual_history, start=3 - len(self._visual_history)):
+                    visual_images[position] = _encode_png_base64(history_image)
+                    visual_mask[position] = True
+                request.update(
+                    control_visual_history_images=visual_images,
+                    control_visual_history_mask=visual_mask,
+                )
+            return _validate_canonical_policy_request(request)
 
         image, prompt = _extract_training_observation(
             obs,
@@ -832,6 +883,19 @@ class RoboCasa365PolicyService(ActionModelService):
             raise RuntimeError("Strong-v1 response action history does not match open_loop_horizon")
         self._proprio_history.append(proprio[-1].copy())
         self._normalized_action_history.extend(row.copy() for row in normalized_actions)
+        if getattr(self, "visual_memory_enabled", False):
+            try:
+                payload = base64.b64decode(request["image"], validate=True)
+                with Image.open(io.BytesIO(payload)) as encoded:
+                    image = np.asarray(encoded.convert("RGB"), dtype=np.uint8).copy()
+            except Exception as exc:
+                raise RuntimeError("Visual-memory canonical request lost its current image") from exc
+            expected_shape = (self.camera_height, 3 * self.camera_width, 3)
+            if image.shape != expected_shape:
+                raise RuntimeError(
+                    f"Visual-memory current image must have shape {expected_shape}, got {image.shape}"
+                )
+            self._visual_history.append(image)
 
     def _run_synchronized_stage(self, stage: str, operation: Callable[[], Any]) -> Any:
         """Run one stage and make every rank fail when any participant fails."""
@@ -1024,6 +1088,9 @@ class RoboCasa365PolicyService(ActionModelService):
         if getattr(self, "strong_action_enabled", False):
             self._proprio_history.clear()
             self._normalized_action_history.clear()
+            visual_history = getattr(self, "_visual_history", None)
+            if visual_history is not None:
+                visual_history.clear()
 
     def reset(self, reset_info: dict[str, Any] | None = None) -> None:
         if reset_info is not None and not isinstance(reset_info, dict):
