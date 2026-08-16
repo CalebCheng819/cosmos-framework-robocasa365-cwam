@@ -13,8 +13,8 @@ export PYTHONNOUSERSITE=1
     exit 2
 }
 
-readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R10-20260817
-readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R10-20260817
+readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R11-20260817
+readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R11-20260817
 readonly R14_BASELINE_RUN_ID=CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809
 readonly PROJECT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval
 readonly INPUTS_ROOT="$PROJECT_ROOT/inputs"
@@ -48,6 +48,7 @@ readonly S1_R14_MATCHED_HELPER="$CONTROL_DEPLOY_ROOT/cwam_s1_r14_matched_eval.py
 readonly COSMOS_ENV_ARCHIVE_METADATA_HELPER="$CONTROL_DEPLOY_ROOT/cwam_cosmos_env_archive.py"
 readonly CHECKPOINT_PUBLISHER="$CONTROL_DEPLOY_ROOT/publish_cwam_ema_checkpoint_dsw.py"
 readonly CHECKPOINT_CONTRACT="$CONTROL_DEPLOY_ROOT/cwam_s1_local_checkpoint_publication_contract.json"
+readonly PERSIST_OUTPUT_HELPER="$CONTROL_DEPLOY_ROOT/cwam_dlc_persist_eval_output.py"
 readonly EGL_SMOKE_PROBE="$SOURCE_SNAPSHOT_ROOT/examples/aliyun_4090/probe_mujoco_egl_mapping.py"
 readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"
 readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"
@@ -57,6 +58,10 @@ readonly EGL_GLVD_FRONTEND="$EGL_GLVD_RUNTIME_ROOT/libEGL.so.1.1.0"
 readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly EGL_VENDOR_DOCUMENT='{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}'
 readonly REQUIRED_LOCAL_BYTES=161061273600
+readonly DLC_LOCAL_SCRATCH_ROOT=/tmp/cwam_cosmos3_robocasa365_eval
+readonly DLC_LOCAL_FORMAL_PARENT="$DLC_LOCAL_SCRATCH_ROOT/formal-runs"
+readonly EVAL_LOCAL_OUTPUT_ROOT="$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+readonly EVAL_PERSISTENT_OUTPUT_ROOT="$OSS_PROJECT_ROOT/runs/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -239,6 +244,32 @@ copy_checkpoint_closure() {
     done
 }
 
+persist_formal_output() {
+    local formal_exit_code=$?
+    local persistence_exit_code
+    trap - EXIT
+    set +e
+    python3 "$PERSIST_OUTPUT_HELPER" \
+        --local-output-parent "$DLC_LOCAL_FORMAL_PARENT" \
+        --local-output-root "$EVAL_LOCAL_OUTPUT_ROOT" \
+        --persistent-output-parent "$OSS_PROJECT_ROOT/runs" \
+        --persistent-output-root "$EVAL_PERSISTENT_OUTPUT_ROOT" \
+        --experiment-id "$EVAL_EXPERIMENT_ID" \
+        --run-id "$EVAL_LOGICAL_RUN_ID" \
+        --control-commit "$EVAL_CONTROL_COMMIT" \
+        --launcher-exit-code "$formal_exit_code" \
+        --job-id "${DLC_JOB_ID:-${PAI_JOB_ID:-unknown-at-runtime}}"
+    persistence_exit_code=$?
+    if [[ "$persistence_exit_code" -ne 0 ]]; then
+        printf 'ERROR S1_MATCHED_PERSISTENCE_FAILED formal_exit_code=%s persistence_exit_code=%s\n' \
+            "$formal_exit_code" "$persistence_exit_code" >&2
+        exit 90
+    fi
+    printf 'S1_MATCHED_PERSISTENCE_COMPLETE formal_exit_code=%s root=%s\n' \
+        "$formal_exit_code" "$EVAL_PERSISTENT_OUTPUT_ROOT"
+    exit "$formal_exit_code"
+}
+
 for control_file in \
     "$FORMAL_RUNNER_OVERRIDE" \
     "$FORMAL_LAUNCHER" \
@@ -247,6 +278,7 @@ for control_file in \
     "$COSMOS_ENV_ARCHIVE_METADATA_HELPER" \
     "$CHECKPOINT_PUBLISHER" \
     "$CHECKPOINT_CONTRACT" \
+    "$PERSIST_OUTPUT_HELPER" \
     "$R14_BASELINE_ARGS" \
     "$R14_BASELINE_RESULTS"; do
     require_control_file "$control_file"
@@ -267,6 +299,13 @@ prepare_nvidia_egl_runtime
     die "persistent runs root is not on the /oss-chengjuntao mount"
 [[ -w "$OSS_PROJECT_ROOT/runs" ]] ||
     die "persistent runs root is not writable"
+[[ ! -e "$EVAL_PERSISTENT_OUTPUT_ROOT" && ! -L "$EVAL_PERSISTENT_OUTPUT_ROOT" ]] ||
+    die "refusing to replace persistent run root: $EVAL_PERSISTENT_OUTPUT_ROOT"
+mkdir --parents --mode=0700 -- "$DLC_LOCAL_FORMAL_PARENT"
+[[ ! -e "$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID" && \
+    ! -L "$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID" ]] ||
+    die "refusing to reuse local experiment output root"
+trap persist_formal_output EXIT
 preflight_mujoco_egl_runtime
 available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { print $1 }')"
 [[ "$available_local_bytes" =~ ^[0-9]+$ && "$available_local_bytes" -ge "$REQUIRED_LOCAL_BYTES" ]] ||
@@ -409,12 +448,13 @@ export EXPECTED_RUNTIME_CLOSURE_PUBLICATION_RECEIPT_SHA256=b2212009c6dde171f5c99
 
 export DLC_CPFS_MOUNT=/mnt/workspace
 export DLC_CPFS_OUTPUT_PARENT="$PROJECT_ROOT/runs"
-export DLC_LOCAL_SCRATCH_PARENT=/tmp/cwam_cosmos3_robocasa365_eval
+export DLC_LOCAL_SCRATCH_PARENT="$DLC_LOCAL_SCRATCH_ROOT"
+export DLC_LOCAL_OUTPUT_PARENT="$DLC_LOCAL_FORMAL_PARENT"
 export EVAL_EXPERIMENT_ID
 export EVAL_LOGICAL_RUN_ID
 export EVAL_RUN_NAME="$EVAL_LOGICAL_RUN_ID"
-export EVAL_OUTPUT_ROOT="$DLC_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+export EVAL_OUTPUT_ROOT="$EVAL_LOCAL_OUTPUT_ROOT"
 
 printf 'S1_MATCHED_DLC_BOOTSTRAP_READY experiment_id=%s logical_run_id=%s control_commit=%s\n' \
     "$EVAL_EXPERIMENT_ID" "$EVAL_LOGICAL_RUN_ID" "$EVAL_CONTROL_COMMIT"
-exec bash "$FORMAL_LAUNCHER"
+bash "$FORMAL_LAUNCHER"

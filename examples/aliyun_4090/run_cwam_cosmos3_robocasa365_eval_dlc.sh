@@ -41,10 +41,11 @@ export PYTHONNOUSERSITE=1
 : "${RUNTIME_CLOSURE_MANIFEST:?Set the immutable DLC runtime closure manifest}"
 : "${RUNTIME_CLOSURE_PUBLICATION_RECEIPT:?Set the runtime closure publication receipt}"
 : "${ROBOCASA_ASSET_ROOT:?Set the installed RoboCasa root carrying .cwam_provenance}"
-: "${EVAL_OUTPUT_ROOT:?Set EVAL_OUTPUT_ROOT to the exact new persistent run directory}"
+: "${EVAL_OUTPUT_ROOT:?Set EVAL_OUTPUT_ROOT to the exact new local formal run directory}"
 : "${DLC_CPFS_MOUNT:?Set DLC_CPFS_MOUNT to the exact CPFS mount target}"
 : "${DLC_CPFS_OUTPUT_PARENT:?Set DLC_CPFS_OUTPUT_PARENT to the allowed OSS-backed runs parent}"
 : "${DLC_LOCAL_SCRATCH_PARENT:?Set DLC_LOCAL_SCRATCH_PARENT to an existing local scratch directory}"
+: "${DLC_LOCAL_OUTPUT_PARENT:?Set DLC_LOCAL_OUTPUT_PARENT to the local formal-runs parent}"
 : "${EVAL_EXPERIMENT_ID:?Set EVAL_EXPERIMENT_ID}"
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
 : "${EVAL_RUN_NAME:?Set EVAL_RUN_NAME}"
@@ -341,6 +342,16 @@ require_exact_value \
     /tmp/cwam_cosmos3_robocasa365_eval
 mkdir --parents --mode=0700 -- "$DLC_LOCAL_SCRATCH_PARENT"
 DLC_LOCAL_SCRATCH_PARENT="$(canonical_existing_dir "$DLC_LOCAL_SCRATCH_PARENT")"
+require_exact_value \
+    dlc_local_output_parent \
+    "$(realpath -m -- "$DLC_LOCAL_OUTPUT_PARENT")" \
+    /tmp/cwam_cosmos3_robocasa365_eval/formal-runs
+mkdir --parents --mode=0700 -- "$DLC_LOCAL_OUTPUT_PARENT"
+DLC_LOCAL_OUTPUT_PARENT="$(canonical_existing_dir "$DLC_LOCAL_OUTPUT_PARENT")"
+case "$DLC_LOCAL_OUTPUT_PARENT/" in
+    "$DLC_LOCAL_SCRATCH_PARENT"/*/) ;;
+    *) die "DLC_LOCAL_OUTPUT_PARENT must be a strict child of DLC_LOCAL_SCRATCH_PARENT" ;;
+esac
 
 readonly FORMAL_NVME_STAGING_ROOT="${FORMAL_NVME_INPUT_ROOT%/inputs}/staging"
 readonly RUNTIME_CLOSURE_HELPER="$COSMOS_SOURCE/$RUNTIME_CLOSURE_HELPER_REL"
@@ -773,22 +784,22 @@ case "$DLC_CPFS_OUTPUT_PARENT/" in
 esac
 
 EVAL_OUTPUT_ROOT="$(realpath -ms -- "$EVAL_OUTPUT_ROOT")"
-readonly EXPECTED_OUTPUT_ROOT="$DLC_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+readonly EXPECTED_OUTPUT_ROOT="$DLC_LOCAL_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 [[ "$EVAL_OUTPUT_ROOT" == "$EXPECTED_OUTPUT_ROOT" ]] ||
     die "EVAL_OUTPUT_ROOT must be exactly $EXPECTED_OUTPUT_ROOT"
 case "$EVAL_OUTPUT_ROOT/" in
-    "$DLC_CPFS_OUTPUT_PARENT"/*/) ;;
-    *) die "EVAL_OUTPUT_ROOT must be a strict child of the allowed CPFS parent" ;;
+    "$DLC_LOCAL_OUTPUT_PARENT"/*/) ;;
+    *) die "EVAL_OUTPUT_ROOT must be a strict child of the local formal output parent" ;;
 esac
-readonly EXPERIMENT_OUTPUT_ROOT="$DLC_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID"
+readonly EXPERIMENT_OUTPUT_ROOT="$DLC_LOCAL_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID"
 [[ ! -e "$EXPERIMENT_OUTPUT_ROOT" && ! -L "$EXPERIMENT_OUTPUT_ROOT" ]] ||
     die "refusing to reuse experiment output root: $EXPERIMENT_OUTPUT_ROOT"
 mkdir -- "$EXPERIMENT_OUTPUT_ROOT"
 mkdir -- "$EVAL_OUTPUT_ROOT"
 readonly RESOLVED_EVAL_OUTPUT_ROOT="$(realpath -e -- "$EVAL_OUTPUT_ROOT")"
-readonly EXPECTED_RESOLVED_EVAL_OUTPUT_ROOT="$DLC_PERSISTENT_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+readonly EXPECTED_RESOLVED_EVAL_OUTPUT_ROOT="$DLC_LOCAL_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 [[ "$RESOLVED_EVAL_OUTPUT_ROOT" == "$EXPECTED_RESOLVED_EVAL_OUTPUT_ROOT" ]] ||
-    die "EVAL_OUTPUT_ROOT does not resolve to the fixed OSS namespace"
+    die "EVAL_OUTPUT_ROOT does not resolve to the fixed local formal namespace"
 write_probe="$EVAL_OUTPUT_ROOT/.write-probe-$$"
 mkdir -- "$write_probe"
 rmdir -- "$write_probe"
