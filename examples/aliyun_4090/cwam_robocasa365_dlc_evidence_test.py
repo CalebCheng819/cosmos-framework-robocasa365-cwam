@@ -187,6 +187,8 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         '[[ "$output_mount_target" == /oss-chengjuntao ]]',
         '[[ -w "$DLC_PERSISTENT_OUTPUT_PARENT" ]]',
         'RESOLVED_EVAL_OUTPUT_ROOT="$(realpath -e -- "$EVAL_OUTPUT_ROOT")"',
+        'readonly CONTROL_DIR="$RESOLVED_EVAL_OUTPUT_ROOT/control"',
+        'readonly RESULTS_ROOT="$RESOLVED_EVAL_OUTPUT_ROOT/results"',
         '[[ -s "$COMPARISON_JSON" ]]',
     ):
         assert required in script
