@@ -41,9 +41,9 @@ export PYTHONNOUSERSITE=1
 : "${RUNTIME_CLOSURE_MANIFEST:?Set the immutable DLC runtime closure manifest}"
 : "${RUNTIME_CLOSURE_PUBLICATION_RECEIPT:?Set the runtime closure publication receipt}"
 : "${ROBOCASA_ASSET_ROOT:?Set the installed RoboCasa root carrying .cwam_provenance}"
-: "${EVAL_OUTPUT_ROOT:?Set EVAL_OUTPUT_ROOT to the exact new CPFS run directory}"
+: "${EVAL_OUTPUT_ROOT:?Set EVAL_OUTPUT_ROOT to the exact new persistent run directory}"
 : "${DLC_CPFS_MOUNT:?Set DLC_CPFS_MOUNT to the exact CPFS mount target}"
-: "${DLC_CPFS_OUTPUT_PARENT:?Set DLC_CPFS_OUTPUT_PARENT to the allowed CPFS runs parent}"
+: "${DLC_CPFS_OUTPUT_PARENT:?Set DLC_CPFS_OUTPUT_PARENT to the allowed OSS-backed runs parent}"
 : "${DLC_LOCAL_SCRATCH_PARENT:?Set DLC_LOCAL_SCRATCH_PARENT to an existing local scratch directory}"
 : "${EVAL_EXPERIMENT_ID:?Set EVAL_EXPERIMENT_ID}"
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
@@ -283,12 +283,19 @@ for forbidden_loader_variable in \
 done
 
 DLC_CPFS_MOUNT="$(canonical_existing_dir "$DLC_CPFS_MOUNT")"
-DLC_CPFS_OUTPUT_PARENT="$(canonical_existing_dir "$DLC_CPFS_OUTPUT_PARENT")"
+DLC_CPFS_OUTPUT_PARENT="$(realpath -ms -- "$DLC_CPFS_OUTPUT_PARENT")"
+[[ -d "$DLC_CPFS_OUTPUT_PARENT" ]] ||
+    die "persistent output parent is not a directory: $DLC_CPFS_OUTPUT_PARENT"
 require_exact_value dlc_cpfs_mount "$DLC_CPFS_MOUNT" /mnt/workspace
 require_exact_value \
     dlc_cpfs_output_parent \
     "$DLC_CPFS_OUTPUT_PARENT" \
     /mnt/workspace/cwam_cosmos3_robocasa365_eval/runs
+readonly DLC_PERSISTENT_OUTPUT_PARENT="$(realpath -e -- "$DLC_CPFS_OUTPUT_PARENT")"
+require_exact_value \
+    dlc_persistent_output_parent \
+    "$DLC_PERSISTENT_OUTPUT_PARENT" \
+    /oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/runs
 
 mount_target="$(findmnt -n -T "$DLC_CPFS_MOUNT" -o TARGET)" ||
     die "could not resolve the CPFS mount target"
@@ -301,6 +308,19 @@ mount_fstype="$(findmnt -n -T "$DLC_CPFS_MOUNT" -o FSTYPE)" ||
 mount_identity="${mount_source,,}:${mount_fstype,,}"
 [[ "$mount_identity" == *cpfs* ]] ||
     die "declared CPFS mount does not identify CPFS: source=$mount_source fstype=$mount_fstype"
+output_mount_target="$(findmnt -n -T "$DLC_PERSISTENT_OUTPUT_PARENT" -o TARGET)" ||
+    die "could not resolve the persistent output mount target"
+output_mount_source="$(findmnt -n -T "$DLC_PERSISTENT_OUTPUT_PARENT" -o SOURCE)" ||
+    die "could not resolve the persistent output mount source"
+output_mount_fstype="$(findmnt -n -T "$DLC_PERSISTENT_OUTPUT_PARENT" -o FSTYPE)" ||
+    die "could not resolve the persistent output filesystem type"
+[[ "$output_mount_target" == /oss-chengjuntao ]] ||
+    die "persistent output does not resolve to the /oss-chengjuntao mount: observed=$output_mount_target"
+output_mount_identity="${output_mount_source,,}:${output_mount_fstype,,}"
+[[ "$output_mount_identity" == *oss* ]] ||
+    die "persistent output mount does not identify OSS: source=$output_mount_source fstype=$output_mount_fstype"
+[[ -w "$DLC_PERSISTENT_OUTPUT_PARENT" ]] ||
+    die "persistent OSS output parent is not writable"
 
 require_exact_value \
     dlc_local_scratch_parent \
@@ -706,7 +726,7 @@ case "$DLC_CPFS_OUTPUT_PARENT/" in
     *) die "DLC_CPFS_OUTPUT_PARENT must be a strict child of DLC_CPFS_MOUNT" ;;
 esac
 
-EVAL_OUTPUT_ROOT="$(realpath -m -- "$EVAL_OUTPUT_ROOT")"
+EVAL_OUTPUT_ROOT="$(realpath -ms -- "$EVAL_OUTPUT_ROOT")"
 readonly EXPECTED_OUTPUT_ROOT="$DLC_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 [[ "$EVAL_OUTPUT_ROOT" == "$EXPECTED_OUTPUT_ROOT" ]] ||
     die "EVAL_OUTPUT_ROOT must be exactly $EXPECTED_OUTPUT_ROOT"
@@ -719,6 +739,13 @@ readonly EXPERIMENT_OUTPUT_ROOT="$DLC_CPFS_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID"
     die "refusing to reuse experiment output root: $EXPERIMENT_OUTPUT_ROOT"
 mkdir -- "$EXPERIMENT_OUTPUT_ROOT"
 mkdir -- "$EVAL_OUTPUT_ROOT"
+readonly RESOLVED_EVAL_OUTPUT_ROOT="$(realpath -e -- "$EVAL_OUTPUT_ROOT")"
+readonly EXPECTED_RESOLVED_EVAL_OUTPUT_ROOT="$DLC_PERSISTENT_OUTPUT_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+[[ "$RESOLVED_EVAL_OUTPUT_ROOT" == "$EXPECTED_RESOLVED_EVAL_OUTPUT_ROOT" ]] ||
+    die "EVAL_OUTPUT_ROOT does not resolve to the fixed OSS namespace"
+write_probe="$EVAL_OUTPUT_ROOT/.write-probe-$$"
+mkdir -- "$write_probe"
+rmdir -- "$write_probe"
 readonly CONTROL_DIR="$EVAL_OUTPUT_ROOT/control"
 readonly RESULTS_ROOT="$EVAL_OUTPUT_ROOT/results"
 readonly RESULTS_DIR="$RESULTS_ROOT/$EVAL_RUN_NAME"

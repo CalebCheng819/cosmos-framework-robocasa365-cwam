@@ -24,8 +24,8 @@ def _script() -> str:
 def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R6-20260812" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R6-20260812" in script
+    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R7-20260817" in script
+    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R7-20260817" in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script
@@ -41,6 +41,16 @@ def test_bootstrap_requires_one_eight_gpu_worker_and_both_mounts() -> None:
     assert "findmnt -n -T /mnt/workspace -o TARGET" in script
     assert "findmnt -n -T /oss-chengjuntao -o TARGET" in script
     assert "readonly REQUIRED_LOCAL_BYTES=161061273600" in script
+
+
+def test_bootstrap_binds_persistent_runs_to_writable_oss() -> None:
+    script = _script()
+
+    assert '[[ -L "$PROJECT_ROOT/runs" ]]' in script
+    assert 'realpath -e -- "$PROJECT_ROOT/runs"' in script
+    assert '== "$OSS_PROJECT_ROOT/runs"' in script
+    assert 'findmnt -n -T "$OSS_PROJECT_ROOT/runs" -o TARGET' in script
+    assert '[[ -w "$OSS_PROJECT_ROOT/runs" ]]' in script
 
 
 def test_local_capacity_probe_executes_with_gnu_df() -> None:

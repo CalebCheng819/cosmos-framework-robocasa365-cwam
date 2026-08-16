@@ -13,8 +13,8 @@ export PYTHONNOUSERSITE=1
     exit 2
 }
 
-readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R6-20260812
-readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R6-20260812
+readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R7-20260817
+readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R7-20260817
 readonly R14_BASELINE_RUN_ID=CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809
 readonly PROJECT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval
 readonly INPUTS_ROOT="$PROJECT_ROOT/inputs"
@@ -257,6 +257,14 @@ prepare_nvidia_egl_runtime
     die "CPFS is not mounted at /mnt/workspace"
 [[ "$(findmnt -n -T /oss-chengjuntao -o TARGET)" == /oss-chengjuntao ]] ||
     die "OSS is not mounted at /oss-chengjuntao"
+[[ -L "$PROJECT_ROOT/runs" ]] ||
+    die "persistent runs root must be the controlled OSS symlink"
+[[ "$(realpath -e -- "$PROJECT_ROOT/runs")" == "$OSS_PROJECT_ROOT/runs" ]] ||
+    die "persistent runs root does not resolve to the fixed OSS namespace"
+[[ "$(findmnt -n -T "$OSS_PROJECT_ROOT/runs" -o TARGET)" == /oss-chengjuntao ]] ||
+    die "persistent runs root is not on the /oss-chengjuntao mount"
+[[ -w "$OSS_PROJECT_ROOT/runs" ]] ||
+    die "persistent runs root is not writable"
 preflight_mujoco_egl_runtime
 available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { print $1 }')"
 [[ "$available_local_bytes" =~ ^[0-9]+$ && "$available_local_bytes" -ge "$REQUIRED_LOCAL_BYTES" ]] ||

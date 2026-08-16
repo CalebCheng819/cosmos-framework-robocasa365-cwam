@@ -175,6 +175,12 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         '--control-commit "$EVAL_CONTROL_COMMIT"',
         "EVAL_TASK_ARGS=(--tasks CloseBlenderLid PickPlaceCounterToStove)",
         'R14_BASELINE_ARGS="$(canonical_existing_file "$R14_BASELINE_ARGS")"',
+        'DLC_PERSISTENT_OUTPUT_PARENT="$(realpath -e -- "$DLC_CPFS_OUTPUT_PARENT")"',
+        "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/runs",
+        'output_mount_target="$(findmnt -n -T "$DLC_PERSISTENT_OUTPUT_PARENT" -o TARGET)"',
+        '[[ "$output_mount_target" == /oss-chengjuntao ]]',
+        '[[ -w "$DLC_PERSISTENT_OUTPUT_PARENT" ]]',
+        'RESOLVED_EVAL_OUTPUT_ROOT="$(realpath -e -- "$EVAL_OUTPUT_ROOT")"',
         '[[ -s "$COMPARISON_JSON" ]]',
     ):
         assert required in script
