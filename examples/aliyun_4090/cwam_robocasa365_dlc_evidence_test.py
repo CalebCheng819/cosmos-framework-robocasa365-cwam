@@ -207,6 +207,10 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
     ):
         assert forbidden not in script
 
+    assert 'PYTHONPATH="$PROVENANCE_PYTHONPATH:$EVAL_PYTHONPATH"' not in script
+    assert script.count('PYTHONPATH="$EVAL_PYTHONPATH"') >= 2
+    assert script.count('PYTHONPATH="$PROVENANCE_PYTHONPATH"') >= 2
+
 
 def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     script = LAUNCHER.read_text(encoding="utf-8")

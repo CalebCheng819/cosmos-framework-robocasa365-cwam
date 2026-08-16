@@ -1117,7 +1117,8 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --output "$COSMOS_ENV_VERIFICATION_PRE" \
     >"$CONTROL_DIR/verify-cosmos-environment-pre.log"
 
-PYTHONPATH="$PROVENANCE_PYTHONPATH:$EVAL_PYTHONPATH" \
+# Verify the installed environment without checkout package metadata overlays.
+PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     "$ROBOCASA_PY" "$COSMOS_SOURCE/$SOURCE_PROVENANCE_HELPER_REL" \
     verify-environment \
     --phase pre \
@@ -1544,7 +1545,7 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --output "$COSMOS_ENV_VERIFICATION_POST" \
     >"$CONTROL_DIR/verify-cosmos-environment-post.log"
 
-PYTHONPATH="$PROVENANCE_PYTHONPATH:$EVAL_PYTHONPATH" \
+PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     "$ROBOCASA_PY" "$COSMOS_SOURCE/$SOURCE_PROVENANCE_HELPER_REL" \
     verify-environment \
     --phase post \

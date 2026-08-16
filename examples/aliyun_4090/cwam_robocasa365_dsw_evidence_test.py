@@ -827,6 +827,9 @@ def _terminal_fixture(
 
 def test_runner_keeps_eight_logical_shards_on_one_fsdp4_server() -> None:
     script = RUNNER.read_text(encoding="utf-8")
+    assert 'PYTHONPATH="$PROVENANCE_PYTHONPATH:$EVAL_PYTHONPATH"' not in script
+    assert script.count('PYTHONPATH="$EVAL_PYTHONPATH"') >= 2
+    assert script.count('PYTHONPATH="$PROVENANCE_PYTHONPATH"') >= 2
 
     for token in (
         "readonly PHYSICAL_GPU_COUNT=4",
