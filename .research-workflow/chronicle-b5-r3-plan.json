@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "ITER-2026-08-17-B5-VISUAL-OBJECT-MEMORY-R3 - planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Starting from c762c793b1fccd7f3d43dc2220d4b0f6685b8a44, make cross-replan visual memory structurally non-bypassable through fixed-scale per-layer cross-attention and FiLM, supervise a memory-only future-action decoder from the pre-transformer noisy-action seed, and add adjacent-history temporal correspondence prediction. Experiment CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817 keeps the R2 B4 warm start, frozen video expert, 500-step eight-B200 budget, and identical 2048-sample none/zero/shuffle gate. Formal training remains blocked unless aligned main action loss beats both interventions by at least 1 percent and all finite/checkpoint/slot-diversity gates pass."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

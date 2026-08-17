@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "planned",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-81d9-bc09-cbe844e6f9e5",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817-structurally-conditioned-visual-memory-probe-3bf21e7789cc81d9bc09cbe844e6f9e5"
+  },
+  "hypothesis": "Fixed-scale per-layer memory conditioning plus memory-only future-action and adjacent-frame correspondence supervision will make aligned cross-replan visual memory causally useful instead of merely diverse.",
+  "objective": "Complete 500 finite optimizer steps; keep slot mean absolute off-diagonal cosine below 0.95; keep temporal and memory-only future-action losses finite; make aligned-history held-out main action loss at least 1 percent lower than both zero-history and batch-shuffled-history interventions.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R2-20260817",
+    "run_ids": [
+      "CWAM-COSMOS3-B5-VOM-PROBE-R2-B4WARM-500S-20260817"
+    ]
+  },
+  "estimated_runtime_seconds": 13500,
+  "initial_eta": "2026-08-17T12:30:00+08:00",
+  "current_eta": "2026-08-17T12:30:00+08:00",
+  "experiment_window": {
+    "start": null,
+    "end": "2026-08-17T12:30:00+08:00"
+  },
+  "git": {
+    "commit": "1fa9d1c2b14f544f5b8e4e9ff4a968197ab7e8a4",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r3-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R3 fixed-scale 0.25 memory cross-attention plus FiLM after every action layer; eight competitive object slots; diversity weight 0.05; adjacent-history temporal correspondence weight 0.05; memory-only future-action auxiliary weight 0.25 with 50-step warmup; train strong_action_expert; 500 steps; batch 64 per rank; DP8; accumulation 1; max validation batches 8"
+  },
+  "data": {
+    "version": "RoboCasa365 B4 processed split plus Wan latent cache and visual-history sidecar",
+    "revision": "1143698 fixed records; 280 shards; same-physical-episode t-36/t-24/t-12 visual-history lookup; no future or cross-episode lookup"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130",
+    "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"
+  },
+  "command": "launch_b5_vom_probe_r3_8gpu.sh followed by launch_b5_vom_matched_val_r3.sh none, zero, and shuffle; formal 20k remains blocked unless every acceptance gate passes.",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; global batch 512",
+  "seeds": [
+    42,
+    4242
+  ],
+  "preflight": {
+    "focused_tests": "26 passed; repository-local pytest plugin assumptions bypassed with explicit confcutdir",
+    "gpu_smoke": "B200 BF16 production-dimension forward/backward finite; fixed conditioner, auxiliary head, and temporal predictor all received finite nonzero gradients; peak allocation 907.28 MiB",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R3-GIT-20260817",
+    "base_checkpoint": "/data1/wam/cwam-b4/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B4-ADAPTIVE-DSELECT-R1-20260814/checkpoints/iter_000020000"
+  },
+  "started_at": null,
+  "completed_at": null,
+  "actual_runtime_seconds": null,
+  "job_id": null,
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-PROBE-R3-B4WARM-500S-20260817"
+  ],
+  "primary_metrics": {},
+  "artifact_urls": [
+    "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/1fa9d1c2b14f544f5b8e4e9ff4a968197ab7e8a4"
+  ],
+  "conclusion": null,
+  "failure_reason": null
+}

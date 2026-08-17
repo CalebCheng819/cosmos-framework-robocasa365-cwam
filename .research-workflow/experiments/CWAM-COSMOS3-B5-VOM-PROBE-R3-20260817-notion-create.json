@@ -1,0 +1,80 @@
+{
+  "parent": {
+    "type": "data_source_id",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"
+  },
+  "properties": {
+    "Name": {
+      "type": "title",
+      "title": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817 - structurally conditioned visual memory probe"}}]
+    },
+    "Experiment ID": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817"}}]
+    },
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "exploratory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Test whether fixed-scale per-layer memory cross-attention and FiLM, a memory-only future-action objective, and adjacent-frame object-slot correspondence make aligned cross-replan memory causally useful to the B4-warm action expert."}}]
+    },
+    "Acceptance Criterion": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Focused tests and BF16 GPU smoke pass; eight-B200 training completes 500 finite optimizer steps and saves a complete checkpoint; slot mean absolute off-diagonal cosine is below 0.95; temporal and memory-only action auxiliary losses are finite; on the identical 2048-sample held-out stream and seed, aligned-history main action loss is at least 1% lower than both zero and shuffled interventions. Auxiliary loss alone cannot pass the gate."}}]
+    },
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R2-20260817-competitive-visual-object-memory-probe-3be21e7789cc813f849fcbebd899a03f"},
+    "Estimated Runtime": {"type": "number", "number": 3.75},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-17T12:30:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-17T12:30:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T08:36:23+08:00", "end": "2026-08-17T12:30:00+08:00"}},
+    "Git Commit": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "base c762c793b1fccd7f3d43dc2220d4b0f6685b8a44; implementation commit pending validation"}}]
+    },
+    "Config": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "R2 competitive 8-slot memory plus per-layer fixed-scale 0.25 memory cross-attention/FiLM; memory-only future-action loss weight 0.25 with 50-step warmup; adjacent-frame temporal correspondence weight 0.05; B4 warm start; train strong_action_expert; 500 steps; batch 64/rank; DP8; matched none/zero/shuffle validation."}}]
+    },
+    "Data Version": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and completed episode-safe three-frame visual-history sidecar."}}]
+    },
+    "Environment": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; offline model assets."}}]
+    },
+    "Command": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Eight-rank R3 B4-warm probe with strong_action_expert optimizer scope, followed by exact-checkpoint validation-only none, zero, and shuffle cells on the same 2048-sample stream."}}]
+    },
+    "Hardware": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; effective global batch 512."}}]
+    },
+    "Seeds": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "42 training; 4242 validation loader"}}]
+    },
+    "Run IDs": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R3-B4WARM-500S-20260817; validation suffixes VAL-NONE, VAL-ZERO, VAL-SHUFFLE"}}]
+    },
+    "Primary Metrics": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Aligned/zero/shuffle main action losses and relative gains; memory-only action loss; temporal correspondence loss; slot cosine and diversity; conditioning residual RMS; finite gradients; step time; GPU memory, utilization, and power."}}]
+    }
+  },
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_2",
+      "heading_2": {"rich_text": [{"type": "text", "text": {"content": "R2 diagnosis and R3 change"}}]}
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "R2 prevented slot collapse but the B4 action path could still ignore aligned memory. R3 injects memory after every action layer with a fixed residual scale, shares those conditioners with an auxiliary decoder that cannot read text/current-image/proprio context, and predicts adjacent object-slot state. The terminal decision still uses the main-policy none/zero/shuffle intervention gate rather than auxiliary metrics."}}]}
+    }
+  ]
+}
