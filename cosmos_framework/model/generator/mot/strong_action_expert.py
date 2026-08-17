@@ -1592,6 +1592,13 @@ class StrongActionContextExpert(nn.Module):
         )
         gate = self.residual_gate_logit.sigmoid().squeeze(0)
         updated = hidden_states.index_add(0, ordered_indexes, gate * ordered_residuals)
+        if self.visual_memory_exclusive_dynamic:
+            # Keep the legacy absolute-memory parameters in the R5-compatible
+            # FSDP/optimizer graph without allowing them to affect R6 outputs.
+            legacy_layout_anchor = (
+                self.visual_memory_context_embed.sum() + self.visual_memory_gate_logit.sum()
+            ) * 0.0
+            updated = updated + legacy_layout_anchor.to(updated.dtype)
         visual_memory_action_hidden: torch.Tensor | None = None
         if action_seed_batch is not None:
             auxiliary_hidden = self.visual_memory_aux_out(self.visual_memory_aux_norm(action_seed_batch))

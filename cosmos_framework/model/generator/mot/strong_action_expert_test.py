@@ -369,10 +369,10 @@ def test_exclusive_dynamic_memory_removes_absolute_main_path() -> None:
     assert r6a.visual_memory_gate_logit.requires_grad
     assert r6b.visual_memory_context_embed.requires_grad
     assert r6b.visual_memory_gate_logit.requires_grad
-    assert r6a.visual_memory_context_embed.grad is None
-    assert r6a.visual_memory_gate_logit.grad is None
-    assert r6b.visual_memory_context_embed.grad is None
-    assert r6b.visual_memory_gate_logit.grad is None
+    assert torch.count_nonzero(r6a.visual_memory_context_embed.grad) == 0
+    assert torch.count_nonzero(r6a.visual_memory_gate_logit.grad) == 0
+    assert torch.count_nonzero(r6b.visual_memory_context_embed.grad) == 0
+    assert torch.count_nonzero(r6b.visual_memory_gate_logit.grad) == 0
     assert metrics_a["visual_memory_main_context_tokens"].item() == 0.0
     assert metrics_a["visual_memory_conditioned_residual_rms"].item() == 0.0
     assert metrics_a["visual_memory_delta_conditioned_residual_rms"].item() == 0.0
@@ -385,6 +385,16 @@ def test_exclusive_dynamic_memory_removes_absolute_main_path() -> None:
     assert metrics_b["visual_memory_delta_conditioning_layers"].item() == 2.0
     assert metrics_b["visual_memory_delta_conditioned_residual_rms"].item() > 0.0
     assert torch.isfinite(output_b).all()
+
+    with torch.no_grad():
+        r6a.visual_memory_context_embed.fill_(123.0)
+        r6a.visual_memory_gate_logit.fill_(-123.0)
+        r6b.visual_memory_context_embed.fill_(-321.0)
+        r6b.visual_memory_gate_logit.fill_(321.0)
+        changed_output_a, _, _ = r6a(**inputs)
+        changed_output_b, _, _ = r6b(**inputs)
+    torch.testing.assert_close(changed_output_a, output_a, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(changed_output_b, output_b, rtol=0.0, atol=0.0)
 
 
 def test_visual_object_memory_uses_two_by_four_anchors_for_eight_slots() -> None:
