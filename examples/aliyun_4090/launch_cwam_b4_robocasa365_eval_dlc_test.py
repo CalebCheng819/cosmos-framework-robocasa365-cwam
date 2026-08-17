@@ -55,3 +55,18 @@ def test_launcher_validates_worker_local_robocasa_archives() -> None:
     assert '--overlay "$LOCAL_ROBOCASA_OVERLAY" --expected-overlay-bytes 2181120' in script
     assert 'readonly REQUIRED_LOCAL_BYTES=161061273600' in script
     assert 'worker-local /tmp has less than 150 GiB available' in script
+
+
+def test_launcher_prepares_exact_empty_extraction_stages() -> None:
+    script = _script()
+
+    assert 'prepare_empty_stage "$COSMOS_ENV"' in script
+    assert 'prepare_empty_stage "$ROBOCASA_REPO"' in script
+    assert '[[ -d "$stage" && ! -L "$stage" ]]' in script
+    assert 'find "$stage" -mindepth 1 -maxdepth 1 -print -quit' in script
+    assert script.index('prepare_empty_stage "$COSMOS_ENV"') < script.index(
+        'python3 "$ENV_HELPER" verify-extract-metadata'
+    )
+    assert script.index('prepare_empty_stage "$ROBOCASA_REPO"') < script.index(
+        'python3 "$ASSET_HELPER" verify-extract'
+    )

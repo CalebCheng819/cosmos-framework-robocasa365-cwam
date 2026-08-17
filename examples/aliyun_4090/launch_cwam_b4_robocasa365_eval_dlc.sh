@@ -90,6 +90,18 @@ copy_regular_file() {
     printf 'B4_LOCAL_FILE_READY bytes=%s destination=%s\n' "$expected_bytes" "$destination"
 }
 
+prepare_empty_stage() {
+    local stage="$1"
+    [[ ! -e "$stage" && ! -L "$stage" ]] ||
+        die "refusing to replace extraction stage: $stage"
+    mkdir --parents --mode=0755 -- "$stage"
+    [[ -d "$stage" && ! -L "$stage" ]] ||
+        die "extraction stage is not a real directory: $stage"
+    [[ -z "$(find "$stage" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+        die "extraction stage is not empty: $stage"
+    printf 'B4_EMPTY_STAGE_READY destination=%s\n' "$stage"
+}
+
 git_revision() {
     git -c safe.directory="$1" -C "$1" rev-parse HEAD
 }
@@ -180,6 +192,8 @@ available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { pr
     die "worker-local /tmp has less than 150 GiB available"
 mkdir -p "$SCRATCH_ROOT/inputs/repos" "$SCRATCH_ROOT/inputs/checkpoints" \
     "$(dirname "$WAN2PT2_VAE")" "$(dirname "$COSMOS_ENV")" "$EGL_ROOT"
+prepare_empty_stage "$COSMOS_ENV"
+prepare_empty_stage "$ROBOCASA_REPO"
 
 copy_regular_file "$SOURCE_ENV_ARCHIVE" "$LOCAL_ENV_ARCHIVE" 14736947200
 copy_regular_file "$SOURCE_ENV_RECEIPT" "$LOCAL_ENV_RECEIPT" 2124
