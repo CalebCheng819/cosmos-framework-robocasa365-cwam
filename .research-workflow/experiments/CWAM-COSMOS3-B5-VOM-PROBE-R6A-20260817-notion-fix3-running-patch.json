@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-17T18:16:23+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-17T18:55:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T18:16:23+08:00", "end": "2026-08-17T18:55:00+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r6a-fix3"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "formal CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-FIX3-20260817; W&B offline fkruu5jl; planned matched R6A-FIX3-{NONE,ZERO,SHUFFLE}"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Runtime gate passed: initial validation 2048/2048, unstable 0, action loss 0.00828946, temporal-pair fraction 0.70068, object-delta active fraction 0.75830, applied delta RMS 0.06663, main context tokens 0, delta conditioning layers 0, slot abs cosine 0.20916. Optimizer iteration 1 gradient evidence passed: 199,967,573 checked, 183,100,943 nonzero, 0 nonfinite. Eight B200s observed at 100% utilization."}}]}
+  }
+}
