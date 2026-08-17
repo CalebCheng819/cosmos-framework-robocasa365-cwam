@@ -30,7 +30,7 @@ readonly INPUTS_ROOT="$PROJECT_ROOT/inputs"
 readonly OSS_PROJECT_ROOT=/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval
 readonly CONTROL_DEPLOY_ROOT="$PROJECT_ROOT/control/scripts/$EVAL_EXPERIMENT_ID"
 readonly R14_BASELINE_ROOT="$PROJECT_ROOT/control/baselines/$R14_BASELINE_RUN_ID"
-readonly SOURCE_SNAPSHOT_ROOT="$INPUTS_ROOT/source/CWAM-DLC-ROB365-COSMOS3-NANO-S1-20260803-dddd8fd3f61a"
+readonly SOURCE_SNAPSHOT_INPUT_ROOT="$INPUTS_ROOT/source/CWAM-DLC-ROB365-COSMOS3-NANO-S1-20260803-dddd8fd3f61a"
 readonly ROBOCASA_ENV_ROOT="$INPUTS_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"
 readonly LOCAL_ASSET_ROOT=/tmp/cwam_s1_r14_matched_assets
 readonly LOCAL_BUILD_ROOT=/tmp/.cwam_s1_r14_matched_assets.incomplete
@@ -58,6 +58,10 @@ readonly COSMOS_ENV_ARCHIVE_METADATA_HELPER="$CONTROL_DEPLOY_ROOT/cwam_cosmos_en
 readonly CHECKPOINT_PUBLISHER="$CONTROL_DEPLOY_ROOT/publish_cwam_ema_checkpoint_dsw.py"
 readonly CHECKPOINT_CONTRACT="$CONTROL_DEPLOY_ROOT/cwam_s1_local_checkpoint_publication_contract.json"
 readonly PERSIST_OUTPUT_HELPER="$CONTROL_DEPLOY_ROOT/cwam_dlc_persist_eval_output.py"
+readonly SOURCE_STAGE_HELPER="$CONTROL_DEPLOY_ROOT/cwam_stage_source_snapshot.py"
+readonly DLC_LOCAL_SCRATCH_ROOT=/tmp/cwam_cosmos3_robocasa365_eval
+readonly DLC_LOCAL_SOURCE_PARENT="$DLC_LOCAL_SCRATCH_ROOT/inputs/source"
+readonly SOURCE_SNAPSHOT_ROOT="$DLC_LOCAL_SOURCE_PARENT/CWAM-DLC-ROB365-COSMOS3-NANO-S1-20260803-dddd8fd3f61a"
 readonly EGL_SMOKE_PROBE="$SOURCE_SNAPSHOT_ROOT/examples/aliyun_4090/probe_mujoco_egl_mapping.py"
 readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"
 readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"
@@ -67,7 +71,6 @@ readonly EGL_GLVD_FRONTEND="$EGL_GLVD_RUNTIME_ROOT/libEGL.so.1.1.0"
 readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly EGL_VENDOR_DOCUMENT='{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}'
 readonly REQUIRED_LOCAL_BYTES=161061273600
-readonly DLC_LOCAL_SCRATCH_ROOT=/tmp/cwam_cosmos3_robocasa365_eval
 readonly DLC_LOCAL_FORMAL_PARENT="$DLC_LOCAL_SCRATCH_ROOT/formal-runs"
 readonly EVAL_LOCAL_OUTPUT_ROOT="$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 readonly EVAL_PERSISTENT_OUTPUT_ROOT="$OSS_PROJECT_ROOT/runs/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
@@ -253,6 +256,19 @@ copy_checkpoint_closure() {
     done
 }
 
+stage_source_snapshot() {
+    python3 -B "$SOURCE_STAGE_HELPER" \
+        --source-root "$SOURCE_SNAPSHOT_INPUT_ROOT" \
+        --manifest-path "$SOURCE_SNAPSHOT_INPUT_ROOT/SNAPSHOT_MANIFEST.json" \
+        --destination-root "$SOURCE_SNAPSHOT_ROOT"
+    [[ -d "$SOURCE_SNAPSHOT_ROOT" && ! -L "$SOURCE_SNAPSHOT_ROOT" ]] ||
+        die "worker-local source snapshot publication failed"
+    [[ "$(stat -c %a -- "$SOURCE_SNAPSHOT_ROOT")" == 555 ]] ||
+        die "worker-local source snapshot root must be mode 0555"
+    printf 'S1_MATCHED_LOCAL_SOURCE_READY source=%s destination=%s\n' \
+        "$SOURCE_SNAPSHOT_INPUT_ROOT" "$SOURCE_SNAPSHOT_ROOT"
+}
+
 persist_formal_output() {
     local formal_exit_code=$?
     local persistence_exit_code
@@ -288,6 +304,7 @@ for control_file in \
     "$CHECKPOINT_PUBLISHER" \
     "$CHECKPOINT_CONTRACT" \
     "$PERSIST_OUTPUT_HELPER" \
+    "$SOURCE_STAGE_HELPER" \
     "$R14_BASELINE_ARGS" \
     "$R14_BASELINE_RESULTS"; do
     require_control_file "$control_file"
@@ -315,6 +332,7 @@ mkdir --parents --mode=0700 -- "$DLC_LOCAL_FORMAL_PARENT"
     ! -L "$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID" ]] ||
     die "refusing to reuse local experiment output root"
 trap persist_formal_output EXIT
+stage_source_snapshot
 preflight_mujoco_egl_runtime
 available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { print $1 }')"
 [[ "$available_local_bytes" =~ ^[0-9]+$ && "$available_local_bytes" -ge "$REQUIRED_LOCAL_BYTES" ]] ||
