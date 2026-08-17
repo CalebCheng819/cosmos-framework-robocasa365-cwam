@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R5 delta-gated main action residual planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Plan CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817 starts from the completed R4 checkpoint. Build same-slot deltas from the two latest valid visual-memory frames and inject action-local delta into the final main ActionDiT residual using a raw-delta multiplicative gate plus a learned directional residual. Keep R4 anti-collapse objectives and identical 2048-sample none/zero/shuffle validation. Gates: finite tests and BF16 smoke; zero produces exactly zero delta/gate deviation/directional residual; 500 finite 8-B200 steps and complete checkpoint; slot cosine below 0.95 and both contrastive margins above 0.05; aligned main-action loss at least 1% below both zero and shuffle. Do not launch 20k unless every gate passes."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

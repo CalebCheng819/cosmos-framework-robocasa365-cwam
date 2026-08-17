@@ -173,6 +173,9 @@ def test_b5_adds_visual_object_memory_without_changing_b4_router() -> None:
     assert b5.model.config.strong_action_visual_memory_layers == 2
     assert b5.model.config.strong_action_visual_memory_initial_gate == 0.1
     assert b5.model.config.strong_action_visual_memory_conditioning_scale == 0.25
+    assert b5.model.config.strong_action_visual_memory_delta_main_enabled is True
+    assert b5.model.config.strong_action_visual_memory_delta_gate_scale == 0.25
+    assert b5.model.config.strong_action_visual_memory_delta_residual_scale == 0.25
     assert b5.model.config.strong_action_visual_memory_diversity_loss_weight == 0.20
     assert b5.model.config.strong_action_visual_memory_assignment_entropy_loss_weight == 0.05
     assert b5.model.config.strong_action_visual_memory_assignment_balance_loss_weight == 0.05

@@ -23,7 +23,8 @@
 # B5 only:
 #   ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT  complete first-frame latent sidecar
 #   CWAM_B5_RUN_CHECKPOINT_MODE            disabled (formal, default), b4 (probe
-#                                          initialization), or b5 (probe eval)
+#                                          initialization), b5 (probe eval), or
+#                                          r4 (R5 probe from the B5-R4 run)
 #   CWAM_B5_PROBE_TRAIN_SCOPE              memory (default) or strong_action_expert
 #   RESUME_EXISTING_RUN      0 for a new run (default), 1 for functional
 #                            model/optim/scheduler/trainer resume
@@ -75,8 +76,8 @@ export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
     { echo "ERROR: RESUME_EXISTING_RUN must be 0 or 1" >&2; exit 1; }
 [[ "$ALLOW_DATA_STREAM_REPLAY" =~ ^[01]$ ]] ||
     { echo "ERROR: ALLOW_DATA_STREAM_REPLAY must be 0 or 1" >&2; exit 1; }
-[[ "$CWAM_B5_RUN_CHECKPOINT_MODE" =~ ^(disabled|b4|b5)$ ]] ||
-    { echo "ERROR: CWAM_B5_RUN_CHECKPOINT_MODE must be disabled, b4, or b5" >&2; exit 1; }
+[[ "$CWAM_B5_RUN_CHECKPOINT_MODE" =~ ^(disabled|b4|b5|r4)$ ]] ||
+    { echo "ERROR: CWAM_B5_RUN_CHECKPOINT_MODE must be disabled, b4, b5, or r4" >&2; exit 1; }
 [[ "$CWAM_B5_PROBE_TRAIN_SCOPE" =~ ^(memory|strong_action_expert)$ ]] ||
     { echo "ERROR: CWAM_B5_PROBE_TRAIN_SCOPE must be memory or strong_action_expert" >&2; exit 1; }
 if [[ "$RESUME_EXISTING_RUN" == 1 && "$ALLOW_DATA_STREAM_REPLAY" != 1 ]]; then
@@ -218,6 +219,14 @@ elif [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == b5 ]]; then
         "checkpoint.strict_resume=true"
         "checkpoint.load_training_state=false"
         "checkpoint.keys_to_skip_loading=[]"
+    )
+elif [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == r4 ]]; then
+    TAIL_OVERRIDES+=(
+        "checkpoint.strict_resume=true"
+        "checkpoint.load_training_state=false"
+        "checkpoint.keys_to_skip_loading=[visual_memory_delta_main]"
+        "optimizer.keys_to_select=[strong_action_expert]"
+        "trainer.callbacks.action_gradient_evidence.families=[strong_action_expert]"
     )
 fi
 

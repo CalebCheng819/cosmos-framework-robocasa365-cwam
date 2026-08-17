@@ -480,6 +480,33 @@ class VisualObjectMemory(nn.Module):
             self.model_dim,
         )
         frame_slots = self.output_norm(queries[:, None] + self.slot_out(frame_pooled))
+        frame_positions = torch.arange(self.history_length, device=history_mask.device)[None].expand(
+            batch_size,
+            -1,
+        )
+        latest_frame = frame_positions.masked_fill(~history_mask, -1).amax(dim=1)
+        previous_frame = frame_positions.masked_fill(
+            ~(history_mask & (frame_positions < latest_frame[:, None])),
+            -1,
+        ).amax(dim=1)
+        object_delta_valid = previous_frame >= 0
+        batch_indexes = torch.arange(batch_size, device=history_mask.device)
+        latest_slots = frame_slots[batch_indexes, latest_frame.clamp_min(0)]
+        previous_slots = frame_slots[batch_indexes, previous_frame.clamp_min(0)]
+        object_delta = (latest_slots - previous_slots).masked_fill(
+            ~object_delta_valid[:, None, None],
+            0.0,
+        )
+        delta_valid_weight = object_delta_valid[:, None, None].float()
+        object_delta_mean_square = (
+            (object_delta.float().square() * delta_valid_weight).sum()
+            / (delta_valid_weight.sum() * self.num_slots * self.model_dim).clamp_min(1.0)
+        )
+        object_delta_rms = torch.where(
+            object_delta_mean_square > 0.0,
+            object_delta_mean_square.clamp_min(1.0e-12).sqrt(),
+            torch.zeros_like(object_delta_mean_square),
+        )
         temporal_prediction = self.temporal_predictor(frame_slots[:, :-1])
         temporal_target = frame_slots[:, 1:].detach()
         temporal_distance = 1.0 - (
@@ -614,6 +641,10 @@ class VisualObjectMemory(nn.Module):
             "visual_memory_episode_negative_similarity": episode_negative_similarity,
             "visual_memory_episode_negative_fraction": episode_negative_fraction,
             "visual_memory_slots": slots,
+            "visual_memory_object_delta": object_delta,
+            "visual_memory_object_delta_valid": object_delta_valid,
+            "visual_memory_object_delta_rms": object_delta_rms,
+            "visual_memory_object_delta_active_fraction": object_delta_valid.float().mean(),
         }
         # Zero is represented by learned null slots, not by removing the branch.
         # This keeps the R4 conditioning path structurally active for matched
@@ -676,6 +707,124 @@ class MemoryConditioningBlock(nn.Module):
             action_valid.sum().clamp_min(1) * residual.shape[-1]
         )
         return action + residual, valid_residual.sqrt(), attention.mean(dim=1)
+
+
+class MemoryDeltaMainResidual(nn.Module):
+    """Make the final action residual depend directly on same-slot memory changes."""
+
+    def __init__(
+        self,
+        *,
+        model_dim: int,
+        hidden_size: int,
+        num_heads: int,
+        gate_scale: float,
+        residual_scale: float,
+    ) -> None:
+        super().__init__()
+        if not 0.0 < gate_scale <= 1.0:
+            raise ValueError("Memory delta gate_scale must be in (0, 1]")
+        if not 0.0 < residual_scale <= 1.0:
+            raise ValueError("Memory delta residual_scale must be in (0, 1]")
+        self.gate_scale = float(gate_scale)
+        self.residual_scale = float(residual_scale)
+        self.action_norm = nn.LayerNorm(model_dim)
+        self.delta_norm = nn.LayerNorm(model_dim)
+        self.cross_attention = nn.MultiheadAttention(
+            model_dim,
+            num_heads,
+            dropout=0.0,
+            batch_first=True,
+        )
+        self.delta_out = nn.Linear(model_dim, hidden_size, bias=False)
+
+    def init_weights(self) -> None:
+        for norm in (self.action_norm, self.delta_norm):
+            nn.init.ones_(norm.weight)
+            nn.init.zeros_(norm.bias)
+        nn.init.xavier_uniform_(self.cross_attention.in_proj_weight)
+        if self.cross_attention.in_proj_bias is not None:
+            nn.init.zeros_(self.cross_attention.in_proj_bias)
+        nn.init.xavier_uniform_(self.cross_attention.out_proj.weight)
+        if self.cross_attention.out_proj.bias is not None:
+            nn.init.zeros_(self.cross_attention.out_proj.bias)
+        std = 1.0 / math.sqrt(self.delta_out.in_features)
+        nn.init.trunc_normal_(self.delta_out.weight, std=std, a=-3 * std, b=3 * std)
+
+    def forward(
+        self,
+        action: torch.Tensor,
+        base_residual: torch.Tensor,
+        object_delta: torch.Tensor,
+        object_delta_valid: torch.Tensor,
+        *,
+        action_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if object_delta.ndim != 3 or object_delta.shape[0] != action.shape[0]:
+            raise ValueError("Object-local memory delta must align with the action batch")
+        if base_residual.shape[:2] != action.shape[:2]:
+            raise ValueError("Base residual must align with the padded action batch")
+        if base_residual.shape[-1] != self.delta_out.out_features:
+            raise ValueError("Base residual width must match the configured hidden size")
+        if object_delta.shape[-1] != action.shape[-1]:
+            raise ValueError("Object-local memory delta width must match the action model dimension")
+        if object_delta_valid.shape != action.shape[:1]:
+            raise ValueError("Object-local memory delta validity must align with the action batch")
+        if action_valid.shape != action.shape[:2]:
+            raise ValueError("Action validity must align with the padded action batch")
+
+        normalized_delta = self.delta_norm(object_delta)
+        attended, attention = self.cross_attention(
+            self.action_norm(action),
+            normalized_delta,
+            normalized_delta,
+            need_weights=True,
+            average_attn_weights=False,
+        )
+        attention = attention.mean(dim=1)
+        valid = object_delta_valid[:, None] & action_valid
+
+        slot_squared_rms = object_delta.float().square().mean(dim=-1)
+        slot_rms = torch.where(
+            slot_squared_rms > 0.0,
+            slot_squared_rms.clamp_min(1.0e-12).sqrt(),
+            torch.zeros_like(slot_squared_rms),
+        )
+        local_rms = (attention.float() * slot_rms[:, None]).sum(dim=-1, keepdim=True)
+        global_rms = slot_rms.mean(dim=-1, keepdim=True)[:, None]
+        gate_deviation = self.gate_scale * torch.tanh(0.5 * (local_rms + global_rms))
+        gate_deviation = gate_deviation.masked_fill(~valid[:, :, None], 0.0)
+
+        directional_residual = self.residual_scale * self.delta_out(attended)
+        directional_residual = directional_residual.masked_fill(~valid[:, :, None], 0.0)
+        residual = base_residual * (1.0 + gate_deviation.to(base_residual.dtype))
+        residual = residual + directional_residual
+
+        valid_weight = valid[:, :, None].float()
+        valid_denominator = (valid_weight.sum() * base_residual.shape[-1]).clamp_min(1.0)
+        directional_mean_square = directional_residual.float().square().sum() / valid_denominator
+        directional_rms = torch.where(
+            directional_mean_square > 0.0,
+            directional_mean_square.clamp_min(1.0e-12).sqrt(),
+            torch.zeros_like(directional_mean_square),
+        )
+        gate_denominator = valid_weight.sum().clamp_min(1.0)
+        metrics = {
+            "visual_memory_delta_main_gate_mean": (
+                1.0
+                + (gate_deviation.float() * valid_weight).sum() / gate_denominator
+            ),
+            "visual_memory_delta_main_gate_deviation": (
+                gate_deviation.float().abs() * valid_weight
+            ).sum()
+            / gate_denominator,
+            "visual_memory_delta_main_residual_rms": directional_rms,
+            "visual_memory_delta_main_attention": (
+                attention.float() * valid_weight
+            ).sum(dim=1)
+            / valid_weight.sum(dim=1).clamp_min(1.0),
+        }
+        return residual, metrics
 
 
 class RelationAwareCrossAttention(nn.Module):
@@ -847,6 +996,9 @@ class StrongActionContextExpert(nn.Module):
         visual_memory_tokens: int = 8,
         visual_memory_initial_gate: float = 0.1,
         visual_memory_conditioning_scale: float = 0.25,
+        visual_memory_delta_main_enabled: bool = False,
+        visual_memory_delta_gate_scale: float = 0.25,
+        visual_memory_delta_residual_scale: float = 0.25,
         visual_memory_contrastive_temperature: float = 0.07,
         visual_memory_intervention: str = "none",
     ) -> None:
@@ -883,6 +1035,11 @@ class StrongActionContextExpert(nn.Module):
         self.visual_memory_conditioning_scale = float(visual_memory_conditioning_scale)
         if self.visual_memory_enabled and not 0.0 < self.visual_memory_conditioning_scale <= 1.0:
             raise ValueError("visual_memory_conditioning_scale must be in (0, 1]")
+        self.visual_memory_delta_main_enabled = bool(visual_memory_delta_main_enabled)
+        if self.visual_memory_delta_main_enabled and not self.visual_memory_enabled:
+            raise ValueError("visual_memory_delta_main_enabled requires visual_memory_enabled")
+        self.visual_memory_delta_gate_scale = float(visual_memory_delta_gate_scale)
+        self.visual_memory_delta_residual_scale = float(visual_memory_delta_residual_scale)
 
         self.action_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -933,6 +1090,14 @@ class StrongActionContextExpert(nn.Module):
             )
             self.visual_memory_aux_norm = nn.LayerNorm(model_dim)
             self.visual_memory_aux_out = nn.Linear(model_dim, hidden_size, bias=False)
+            if self.visual_memory_delta_main_enabled:
+                self.visual_memory_delta_main = MemoryDeltaMainResidual(
+                    model_dim=model_dim,
+                    hidden_size=hidden_size,
+                    num_heads=num_heads,
+                    gate_scale=self.visual_memory_delta_gate_scale,
+                    residual_scale=self.visual_memory_delta_residual_scale,
+                )
         self.layers = nn.ModuleList(
             ActionExpertBlock(
                 model_dim=model_dim,
@@ -985,6 +1150,8 @@ class StrongActionContextExpert(nn.Module):
                 a=-3 * aux_output_std,
                 b=3 * aux_output_std,
             )
+            if self.visual_memory_delta_main_enabled:
+                self.visual_memory_delta_main.init_weights()
         for layer in self.layers:
             layer.init_weights()
         initial_logit = math.log(self.initial_residual_gate / (1.0 - self.initial_residual_gate))
@@ -1305,6 +1472,15 @@ class StrongActionContextExpert(nn.Module):
                 visual_memory_attentions.append(action_attention)
 
         residuals = self.action_out(self.output_norm(action_batch))
+        delta_main_metrics: dict[str, torch.Tensor] = {}
+        if self.visual_memory_delta_main_enabled:
+            residuals, delta_main_metrics = self.visual_memory_delta_main(
+                action_batch,
+                residuals,
+                visual_memory_metrics["visual_memory_object_delta"],
+                visual_memory_metrics["visual_memory_object_delta_valid"],
+                action_valid=action_valid,
+            )
         ordered_indexes = torch.cat(action_index_groups)
         ordered_residuals = torch.cat(
             [residuals[sample_id, :length] for sample_id, length in enumerate(action_lengths)],
@@ -1348,4 +1524,5 @@ class StrongActionContextExpert(nn.Module):
                 attention_weight.sum(dim=(0, 2)) * len(visual_memory_attentions)
             ).clamp_min(1.0)
         metrics.update(visual_memory_metrics)
+        metrics.update(delta_main_metrics)
         return updated, visual_memory_action_hidden, metrics

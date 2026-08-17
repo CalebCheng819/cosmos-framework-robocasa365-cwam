@@ -302,6 +302,9 @@ class OmniMoTModelConfig:
     strong_action_visual_memory_tokens: int = 8
     strong_action_visual_memory_initial_gate: float = 0.1
     strong_action_visual_memory_conditioning_scale: float = 0.25
+    strong_action_visual_memory_delta_main_enabled: bool = False
+    strong_action_visual_memory_delta_gate_scale: float = 0.25
+    strong_action_visual_memory_delta_residual_scale: float = 0.25
     strong_action_visual_memory_diversity_loss_weight: float = 0.05
     strong_action_visual_memory_assignment_entropy_loss_weight: float = 0.0
     strong_action_visual_memory_assignment_balance_loss_weight: float = 0.0

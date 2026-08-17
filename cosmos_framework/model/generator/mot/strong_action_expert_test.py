@@ -42,6 +42,9 @@ def _expert(
         visual_memory_layers=1,
         visual_memory_tokens=3,
         visual_memory_initial_gate=0.1,
+        visual_memory_delta_main_enabled=visual_memory_enabled,
+        visual_memory_delta_gate_scale=0.25,
+        visual_memory_delta_residual_scale=0.25,
         visual_memory_intervention=visual_memory_intervention,
     )
     module.init_weights()
@@ -227,6 +230,18 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     assert metrics["visual_memory_episode_negative_fraction"].item() == 0.0
     assert metrics["visual_memory_conditioning_scale"].item() == pytest.approx(0.25)
     assert metrics["visual_memory_conditioned_residual_rms"].item() > 0.0
+    assert metrics["visual_memory_object_delta"].shape == (2, 3, 16)
+    assert metrics["visual_memory_object_delta_valid"].tolist() == [True, True]
+    assert metrics["visual_memory_object_delta_rms"].item() > 0.0
+    assert metrics["visual_memory_object_delta_active_fraction"].item() == 1.0
+    assert metrics["visual_memory_delta_main_gate_mean"].item() > 1.0
+    assert metrics["visual_memory_delta_main_gate_deviation"].item() > 0.0
+    assert metrics["visual_memory_delta_main_residual_rms"].item() > 0.0
+    assert metrics["visual_memory_delta_main_attention"].shape == (2, 3)
+    torch.testing.assert_close(
+        metrics["visual_memory_delta_main_attention"].sum(dim=-1),
+        torch.ones(2),
+    )
     assert metrics["visual_memory_slots"].shape == (2, 3, 16)
     assert metrics["visual_memory_action_attention"].shape == (2, 3)
     torch.testing.assert_close(
@@ -237,6 +252,10 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     (output[inputs["action_indexes"]].square().mean() + auxiliary.square().mean()).backward()
     assert visual.visual_memory_gate_logit.grad is not None
     assert torch.count_nonzero(visual.visual_memory_gate_logit.grad) > 0
+    delta_out_grad = visual.visual_memory_delta_main.delta_out.weight.grad
+    assert delta_out_grad is not None
+    assert torch.isfinite(delta_out_grad).all()
+    assert torch.count_nonzero(delta_out_grad) > 0
     assert all(value.grad is not None and torch.count_nonzero(value.grad) > 0 for value in visual_latents)
 
 
@@ -300,6 +319,18 @@ def test_visual_memory_zero_intervention_masks_history_from_action_context() -> 
     assert metrics_b["visual_memory_history_fraction"].item() == 0.0
     assert metrics_a["visual_memory_temporal_pair_fraction"].item() == 0.0
     assert metrics_b["visual_memory_temporal_pair_fraction"].item() == 0.0
+    assert metrics_a["visual_memory_object_delta_rms"].item() == 0.0
+    assert metrics_b["visual_memory_object_delta_rms"].item() == 0.0
+    assert metrics_a["visual_memory_object_delta_active_fraction"].item() == 0.0
+    assert metrics_b["visual_memory_object_delta_active_fraction"].item() == 0.0
+    assert metrics_a["visual_memory_delta_main_gate_mean"].item() == 1.0
+    assert metrics_b["visual_memory_delta_main_gate_mean"].item() == 1.0
+    assert metrics_a["visual_memory_delta_main_gate_deviation"].item() == 0.0
+    assert metrics_b["visual_memory_delta_main_gate_deviation"].item() == 0.0
+    assert metrics_a["visual_memory_delta_main_residual_rms"].item() == 0.0
+    assert metrics_b["visual_memory_delta_main_residual_rms"].item() == 0.0
+    assert torch.count_nonzero(metrics_a["visual_memory_object_delta"]) == 0
+    assert torch.count_nonzero(metrics_b["visual_memory_object_delta"]) == 0
     for metric_name in (
         "visual_memory_assignment_entropy_loss",
         "visual_memory_assignment_balance_loss",

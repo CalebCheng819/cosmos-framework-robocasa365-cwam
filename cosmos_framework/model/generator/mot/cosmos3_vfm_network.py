@@ -92,6 +92,9 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_visual_memory_tokens=8,
         strong_action_visual_memory_initial_gate=0.1,
         strong_action_visual_memory_conditioning_scale=0.25,
+        strong_action_visual_memory_delta_main_enabled=False,
+        strong_action_visual_memory_delta_gate_scale=0.25,
+        strong_action_visual_memory_delta_residual_scale=0.25,
         strong_action_visual_memory_diversity_loss_weight=0.05,
         strong_action_visual_memory_assignment_entropy_loss_weight=0.0,
         strong_action_visual_memory_assignment_balance_loss_weight=0.0,
@@ -181,6 +184,9 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_visual_memory_tokens = strong_action_visual_memory_tokens
         self.strong_action_visual_memory_initial_gate = strong_action_visual_memory_initial_gate
         self.strong_action_visual_memory_conditioning_scale = strong_action_visual_memory_conditioning_scale
+        self.strong_action_visual_memory_delta_main_enabled = strong_action_visual_memory_delta_main_enabled
+        self.strong_action_visual_memory_delta_gate_scale = strong_action_visual_memory_delta_gate_scale
+        self.strong_action_visual_memory_delta_residual_scale = strong_action_visual_memory_delta_residual_scale
         self.strong_action_visual_memory_diversity_loss_weight = strong_action_visual_memory_diversity_loss_weight
         self.strong_action_visual_memory_assignment_entropy_loss_weight = (
             strong_action_visual_memory_assignment_entropy_loss_weight
@@ -256,6 +262,13 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError("Strong action visual memory initial gate must be strictly between zero and one")
             if not 0.0 < float(self.strong_action_visual_memory_conditioning_scale) <= 1.0:
                 raise ValueError("Strong action visual memory conditioning scale must be in (0, 1]")
+            if self.strong_action_visual_memory_delta_main_enabled:
+                if not self.strong_action_visual_memory_enabled:
+                    raise ValueError("Strong action memory-delta main residual requires visual memory")
+                if not 0.0 < float(self.strong_action_visual_memory_delta_gate_scale) <= 1.0:
+                    raise ValueError("Strong action memory-delta gate scale must be in (0, 1]")
+                if not 0.0 < float(self.strong_action_visual_memory_delta_residual_scale) <= 1.0:
+                    raise ValueError("Strong action memory-delta residual scale must be in (0, 1]")
             nonnegative_visual_memory_values = {
                 "diversity_loss_weight": self.strong_action_visual_memory_diversity_loss_weight,
                 "assignment_entropy_loss_weight": (
@@ -412,6 +425,15 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     visual_memory_initial_gate=config.strong_action_visual_memory_initial_gate,
                     visual_memory_conditioning_scale=(
                         config.strong_action_visual_memory_conditioning_scale
+                    ),
+                    visual_memory_delta_main_enabled=(
+                        config.strong_action_visual_memory_delta_main_enabled
+                    ),
+                    visual_memory_delta_gate_scale=(
+                        config.strong_action_visual_memory_delta_gate_scale
+                    ),
+                    visual_memory_delta_residual_scale=(
+                        config.strong_action_visual_memory_delta_residual_scale
                     ),
                     visual_memory_contrastive_temperature=(
                         config.strong_action_visual_memory_contrastive_temperature

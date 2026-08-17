@@ -300,6 +300,15 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_visual_memory_conditioning_scale=(
                     self.config.strong_action_visual_memory_conditioning_scale
                 ),
+                strong_action_visual_memory_delta_main_enabled=(
+                    self.config.strong_action_visual_memory_delta_main_enabled
+                ),
+                strong_action_visual_memory_delta_gate_scale=(
+                    self.config.strong_action_visual_memory_delta_gate_scale
+                ),
+                strong_action_visual_memory_delta_residual_scale=(
+                    self.config.strong_action_visual_memory_delta_residual_scale
+                ),
                 strong_action_visual_memory_diversity_loss_weight=(
                     self.config.strong_action_visual_memory_diversity_loss_weight
                 ),
@@ -1465,7 +1474,15 @@ class OmniMoTModel(ImaginaireModel):
                     "strong_action_visual_memory_conditioning_scale",
                     "strong_action_visual_memory_conditioned_residual_rms",
                     "strong_action_visual_memory_action_aux_hidden_rms",
+                    "strong_action_visual_memory_object_delta_rms",
+                    "strong_action_visual_memory_object_delta_active_fraction",
                 )
+                if self.config.strong_action_visual_memory_delta_main_enabled:
+                    required_metrics += (
+                        "strong_action_visual_memory_delta_main_gate_mean",
+                        "strong_action_visual_memory_delta_main_gate_deviation",
+                        "strong_action_visual_memory_delta_main_residual_rms",
+                    )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
                 raise ValueError(f"Strong action expert output is missing metrics: {missing_metrics}")

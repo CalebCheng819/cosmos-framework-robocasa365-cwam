@@ -141,6 +141,23 @@ def test_b5_b4_probe_can_train_the_complete_strong_action_expert(tmp_path: Path)
     )
 
 
+def test_b5_r5_probe_loads_r4_and_trains_complete_strong_action_expert(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, checkpoint_shards=8, checkpoint_json=False)
+    env["RUN_NAME"] = "CWAM-COSMOS3-B5-VOM-PROBE-R5"
+    env["CWAM_B5_RUN_CHECKPOINT_MODE"] = "r4"
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stdout
+    assert "TORCHRUN_ARG=checkpoint.keys_to_skip_loading=[visual_memory_delta_main]" in result.stdout
+    assert "TORCHRUN_ARG=optimizer.keys_to_select=[strong_action_expert]" in result.stdout
+    assert (
+        "TORCHRUN_ARG=trainer.callbacks.action_gradient_evidence.families=[strong_action_expert]"
+        in result.stdout
+    )
+    assert "TORCHRUN_ARG=checkpoint.load_training_state=false" in result.stdout
+
+
 def test_b5_run_checkpoint_mode_cannot_be_used_for_formal_name(tmp_path: Path) -> None:
     env = _base_env(tmp_path, checkpoint_shards=8, checkpoint_json=False)
     env["RUN_NAME"] = "CWAM-COSMOS3-B5-FORMAL"
