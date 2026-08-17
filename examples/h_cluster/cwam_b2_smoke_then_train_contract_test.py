@@ -13,3 +13,9 @@ def test_node_preflight_uses_scheduler_injected_physical_node() -> None:
     assert '[[ -n "$actual_node_name" ]]' in source
     assert '[[ "$actual_node_name" == "$EXPECTED_HOST" ]]' in source
     assert '[[ "$(hostname -f)" == "$EXPECTED_HOST" ]]' not in source
+
+
+def test_c1_submit_disables_python_bytecode_writes() -> None:
+    source = SCRIPT.with_name("submit_cwam_c1_formal_rjob.sh").read_text()
+
+    assert "export PYTHONDONTWRITEBYTECODE=1" in source

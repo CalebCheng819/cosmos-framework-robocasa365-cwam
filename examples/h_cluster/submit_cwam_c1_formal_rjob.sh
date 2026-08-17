@@ -62,6 +62,7 @@ export EXPECTED_HOST=$q_host
 export CONTROL_ROOT=$q_control
 export NCCL_IB_DISABLE=1
 export NCCL_NVLS_ENABLE=0
+export PYTHONDONTWRITEBYTECODE=1
 bash "\$COSMOS_SOURCE/examples/h_cluster/cwam_c1_prepare_assets.sh"
 bash "\$COSMOS_SOURCE/examples/h_cluster/cwam_c1_smoke_then_train.sh"
 EOF
