@@ -247,6 +247,20 @@ def _gpu_inventory() -> list[dict[str, str]]:
     return result
 
 
+def _process_environment(pid: int) -> dict[str, str]:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError as error:
+        raise ContractError(f"cannot read launcher environment: {error}") from error
+    result: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        result[key.decode("utf-8", "strict")] = value.decode("utf-8", "strict")
+    return result
+
+
 def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
     if args.launcher_pid <= 0:
         raise ContractError("launcher PID must be positive")
@@ -290,6 +304,9 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
     cpu_count = len(os.sched_getaffinity(0))
     if cpu_count != 126:
         raise ContractError(f"expected 126 effective CPUs, got {cpu_count}")
+    launcher_environment = _process_environment(args.launcher_pid)
+    if launcher_environment.get("CUDA_VISIBLE_DEVICES") != args.visible_devices:
+        raise ContractError("torchrun CUDA_VISIBLE_DEVICES differs from the declared server group")
     result = {
         "schema_version": "metadata_no_hash_v1",
         "kind": "cwam_b4_dlc_runtime_receipt",
@@ -300,6 +317,8 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
         "launcher_pid": args.launcher_pid,
         "server_pid": server_pid,
         "uri": args.uri,
+        "server_label": args.server_label,
+        "visible_devices": args.visible_devices,
         "launch_nonce": args.launch_nonce,
         "checkpoint": str(args.checkpoint.resolve()),
         "config": _file_descriptor(args.config),
@@ -311,8 +330,9 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
         "resources": {"cpu_affinity_count": cpu_count, "gpus": gpus},
         "policy_server": metadata,
         "validation": {
-            "one_server_four_rank_fsdp": True,
+            "four_rank_fsdp_server": True,
             "rank0_is_torchrun_descendant": True,
+            "declared_gpu_group_matches_torchrun_environment": True,
             "exact_input_paths_match_server": True,
             "checkpoint_weight_receipt_present": True,
         },
@@ -363,6 +383,7 @@ def shutdown_server(args: argparse.Namespace) -> dict[str, Any]:
         "status": "passed",
         "completed_at_utc": _utc_now(),
         "uri": args.uri,
+        "server_label": runtime.get("server_label"),
         "launch_nonce": args.launch_nonce,
         "request": request,
         "ack": ack,
@@ -413,6 +434,7 @@ def verify_gate(args: argparse.Namespace) -> dict[str, Any]:
         "seed": 42,
         "checkpoint": str(args.checkpoint.resolve()),
         "run_name": args.run_name,
+        "port": args.port,
         "results_dir": str(args.results_dir.parent.resolve()),
         "headless": True,
         "save_video": False,
@@ -435,6 +457,8 @@ def verify_gate(args: argparse.Namespace) -> dict[str, Any]:
         "status": "passed",
         "completed_at_utc": _utc_now(),
         "role": "preflight_only_not_part_of_340_primary_metric",
+        "server_label": args.server_label,
+        "policy_uri": f"ws://127.0.0.1:{args.port}",
         "task": "CloseBlenderLid",
         "episode_count": 1,
     }
@@ -443,15 +467,36 @@ def verify_gate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def summarize(args: argparse.Namespace) -> dict[str, Any]:
-    runtime = _load_object(args.runtime_receipt, "runtime receipt")
-    shutdown = _load_object(args.shutdown_receipt, "shutdown receipt")
-    gate = _load_object(args.gate_receipt, "gate receipt")
-    if runtime.get("status") != "passed" or shutdown.get("status") != "passed" or gate.get("status") != "passed":
-        raise ContractError("runtime, gate, and controlled shutdown must all pass")
-    if args.server_exit_code != 0:
-        raise ContractError(f"torchrun exit code is not zero: {args.server_exit_code}")
-    if not args.server_log.is_file() or args.server_log.stat().st_size <= 0:
-        raise ContractError("policy server log is missing or empty")
+    expected_labels = {"server-a", "server-b"}
+    collections = {
+        "runtime": [_load_object(path, f"runtime receipt {index}") for index, path in enumerate(args.runtime_receipt)],
+        "shutdown": [_load_object(path, f"shutdown receipt {index}") for index, path in enumerate(args.shutdown_receipt)],
+        "gate": [_load_object(path, f"gate receipt {index}") for index, path in enumerate(args.gate_receipt)],
+    }
+    for kind, receipts in collections.items():
+        if len(receipts) != 2:
+            raise ContractError(f"expected two {kind} receipts")
+        if {receipt.get("server_label") for receipt in receipts} != expected_labels:
+            raise ContractError(f"{kind} receipts do not cover both policy servers")
+        if any(receipt.get("status") != "passed" for receipt in receipts):
+            raise ContractError(f"all {kind} receipts must pass")
+    runtime_by_label = {receipt["server_label"]: receipt for receipt in collections["runtime"]}
+    shutdown_by_label = {receipt["server_label"]: receipt for receipt in collections["shutdown"]}
+    gate_by_label = {receipt["server_label"]: receipt for receipt in collections["gate"]}
+    expected_devices = {"server-a": "0,1,2,3", "server-b": "4,5,6,7"}
+    expected_uris = {"server-a": "ws://127.0.0.1:16000", "server-b": "ws://127.0.0.1:16001"}
+    for label in sorted(expected_labels):
+        runtime = runtime_by_label[label]
+        if runtime.get("visible_devices") != expected_devices[label] or runtime.get("uri") != expected_uris[label]:
+            raise ContractError(f"{label} runtime topology mismatch")
+        if shutdown_by_label[label].get("uri") != runtime.get("uri"):
+            raise ContractError(f"{label} shutdown receipt URI mismatch")
+        if gate_by_label[label].get("policy_uri") != runtime.get("uri"):
+            raise ContractError(f"{label} gate receipt URI mismatch")
+    if args.server_exit_code != [0, 0]:
+        raise ContractError(f"torchrun exit codes are not both zero: {args.server_exit_code}")
+    if len(args.server_log) != 2 or any(not path.is_file() or path.stat().st_size <= 0 for path in args.server_log):
+        raise ContractError("both policy server logs must be present and non-empty")
     checkpoint = str(args.checkpoint.resolve())
     results_parent = str(args.results_dir.parent.resolve())
     episode_rows: list[dict[str, Any]] = []
@@ -583,15 +628,17 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
             "platform": "Alibaba Cloud PAI DLC cn-beijing",
             "physical_servers": 1,
             "physical_gpus": 8,
-            "distributed_world_size": 4,
-            "evaluator_schedule": "sequential_logical_shards_0_through_7",
-            "torchrun_exit_code": args.server_exit_code,
+            "policy_server_count": 2,
+            "distributed_world_size_per_server": 4,
+            "aggregate_policy_ranks": 8,
+            "evaluator_schedule": "two_parallel_groups_with_serial_shards_a_0_2_4_6_b_1_3_5_7",
+            "torchrun_exit_codes": args.server_exit_code,
         },
         "artifacts": {
-            "runtime_receipt": _file_descriptor(args.runtime_receipt),
-            "gate_receipt": _file_descriptor(args.gate_receipt),
-            "shutdown_receipt": _file_descriptor(args.shutdown_receipt),
-            "server_log": _file_descriptor(args.server_log),
+            "runtime_receipts": [_file_descriptor(path) for path in args.runtime_receipt],
+            "gate_receipts": [_file_descriptor(path) for path in args.gate_receipt],
+            "shutdown_receipts": [_file_descriptor(path) for path in args.shutdown_receipt],
+            "server_logs": [_file_descriptor(path) for path in args.server_log],
             "summary_csv": _file_descriptor(args.summary_csv),
             "task_success_rates_csv": _file_descriptor(args.task_csv),
             "raw_shards": raw_artifacts,
@@ -601,8 +648,9 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
             "exactly_17_tasks_and_340_episodes": True,
             "all_action_logs_complete_width7_and_finite": True,
             "one_episode_graphics_gate_passed": True,
-            "controlled_server_shutdown_acknowledged": True,
-            "torchrun_exited_zero": True,
+            "both_policy_servers_passed_runtime_and_graphics_gates": True,
+            "both_controlled_server_shutdowns_acknowledged": True,
+            "both_torchrun_processes_exited_zero": True,
         },
     }
     _write_json(args.evidence_json, evidence)
@@ -643,6 +691,8 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--output", type=Path, required=True)
     runtime.add_argument("--timeout-seconds", type=float, default=1800)
     runtime.add_argument("--launcher-pid", type=int, required=True)
+    runtime.add_argument("--server-label", choices=("server-a", "server-b"), required=True)
+    runtime.add_argument("--visible-devices", required=True)
     runtime.add_argument("--launch-nonce", required=True)
     runtime.add_argument("--checkpoint", type=Path, required=True)
     runtime.add_argument("--config", type=Path, required=True)
@@ -661,6 +711,8 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--results-dir", type=Path, required=True)
     gate.add_argument("--checkpoint", type=Path, required=True)
     gate.add_argument("--run-name", required=True)
+    gate.add_argument("--server-label", choices=("server-a", "server-b"), required=True)
+    gate.add_argument("--port", type=int, required=True)
     gate.add_argument("--output", type=Path, required=True)
     summary = commands.add_parser("summarize")
     summary.add_argument("--experiment-id", required=True)
@@ -670,11 +722,11 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--run-name", required=True)
     summary.add_argument("--results-dir", type=Path, required=True)
     summary.add_argument("--checkpoint", type=Path, required=True)
-    summary.add_argument("--runtime-receipt", type=Path, required=True)
-    summary.add_argument("--gate-receipt", type=Path, required=True)
-    summary.add_argument("--shutdown-receipt", type=Path, required=True)
-    summary.add_argument("--server-log", type=Path, required=True)
-    summary.add_argument("--server-exit-code", type=int, required=True)
+    summary.add_argument("--runtime-receipt", type=Path, action="append", required=True)
+    summary.add_argument("--gate-receipt", type=Path, action="append", required=True)
+    summary.add_argument("--shutdown-receipt", type=Path, action="append", required=True)
+    summary.add_argument("--server-log", type=Path, action="append", required=True)
+    summary.add_argument("--server-exit-code", type=int, action="append", required=True)
     summary.add_argument("--summary-csv", type=Path, required=True)
     summary.add_argument("--task-csv", type=Path, required=True)
     summary.add_argument("--evidence-json", type=Path, required=True)

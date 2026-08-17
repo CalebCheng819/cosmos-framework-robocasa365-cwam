@@ -71,14 +71,19 @@ def _formal_tree(root: Path) -> SimpleNamespace:
                 "complete": True,
             }
         _write(results_dir / f"results_shard{shard}.json", shard_results)
-    runtime = root / "runtime.json"
-    shutdown = root / "shutdown.json"
-    gate = root / "gate.json"
-    server_log = root / "server.log"
-    _write(runtime, {"status": "passed"})
-    _write(shutdown, {"status": "passed"})
-    _write(gate, {"status": "passed"})
-    server_log.write_text("server exited cleanly\n", encoding="utf-8")
+    runtime = [root / "runtime-a.json", root / "runtime-b.json"]
+    shutdown = [root / "shutdown-a.json", root / "shutdown-b.json"]
+    gate = [root / "gate-a.json", root / "gate-b.json"]
+    server_log = [root / "server-a.log", root / "server-b.log"]
+    topology = (
+        ("server-a", "ws://127.0.0.1:16000", "0,1,2,3"),
+        ("server-b", "ws://127.0.0.1:16001", "4,5,6,7"),
+    )
+    for index, (label, uri, devices) in enumerate(topology):
+        _write(runtime[index], {"status": "passed", "server_label": label, "uri": uri, "visible_devices": devices})
+        _write(shutdown[index], {"status": "passed", "server_label": label, "uri": uri})
+        _write(gate[index], {"status": "passed", "server_label": label, "policy_uri": uri})
+        server_log[index].write_text("server exited cleanly\n", encoding="utf-8")
     return SimpleNamespace(
         experiment_id="exp",
         logical_run_id="run",
@@ -91,7 +96,7 @@ def _formal_tree(root: Path) -> SimpleNamespace:
         gate_receipt=gate,
         shutdown_receipt=shutdown,
         server_log=server_log,
-        server_exit_code=0,
+        server_exit_code=[0, 0],
         summary_csv=root / "summary.csv",
         task_csv=root / "tasks.csv",
         evidence_json=root / "evidence.json",
@@ -106,6 +111,7 @@ def test_complete_result() -> None:
         assert evidence["status"] == "COMPLETE"
         assert evidence["result"]["successes"] == 17
         assert evidence["result"]["episodes"] == 340
+        assert evidence["execution"]["policy_server_count"] == 2
 
 
 def test_reject_bad_action_width() -> None:

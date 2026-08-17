@@ -11,7 +11,7 @@ export PYTHONNOUSERSITE=1
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
 
 readonly SOURCE_COMMIT=e7775ffcea0a2d577597fbeb05c8bb92905aba0f
-readonly CONTROL_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/$EVAL_EXPERIMENT_ID"
+readonly CONTROL_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/$EVAL_EXPERIMENT_ID-control-v2"
 readonly SOURCE_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B4-e7775ff-20260817
 readonly INPUT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs
 readonly OSS_ROOT=/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval
@@ -29,6 +29,7 @@ readonly VAE_SOURCE="$INPUT_ROOT/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
 readonly QWEN_SOURCE="$INPUT_ROOT/models/Qwen3-VL-8B-Instruct-tokenizer"
 readonly EGL_FRONTEND_SOURCE="$INPUT_ROOT/runtime/glvnd/libEGL.so.1.1.0"
 readonly RUNNER="$CONTROL_ROOT/run_cwam_b4_robocasa365_eval_dlc.sh"
+readonly SHARD_GROUP_RUNNER="$CONTROL_ROOT/run_cwam_b4_robocasa365_eval_shard_group.sh"
 readonly B4_EVAL_HELPER="$CONTROL_ROOT/cwam_b4_robocasa365_eval.py"
 readonly ENV_HELPER="$CONTROL_ROOT/cwam_cosmos_env_archive.py"
 readonly ASSET_HELPER="$CONTROL_ROOT/cwam_robocasa_asset_source_package.py"
@@ -130,7 +131,7 @@ trap 'exit 143' TERM
 [[ -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" ]] || die "source snapshot missing"
 [[ "$(git_revision "$SOURCE_ROOT")" == "$SOURCE_COMMIT" ]] || die "source snapshot revision mismatch"
 [[ -z "$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] || die "source snapshot is dirty"
-for file in "$RUNNER" "$B4_EVAL_HELPER" "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE"; do
+for file in "$RUNNER" "$SHARD_GROUP_RUNNER" "$B4_EVAL_HELPER" "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE"; do
     require_control_file "$file"
 done
 for file in "$ENV_ARCHIVE" "$ENV_RECEIPT" "$ROBOCASA_ARCHIVE" "$ROBOCASA_OVERLAY" \
@@ -205,7 +206,7 @@ export COSMOS_ENV ROBOCASA_ENV DEMIAN_REPO ROBOCASA_REPO ROBOSUITE_REPO
 export CHECKPOINT_ARTIFACT_ROOT SERVING_CHECKPOINT_PATH ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER
 export TRAINING_CONFIG="$CHECKPOINT_ARTIFACT_ROOT/config.yaml"
 export EVAL_OUTPUT_ROOT="$OUTPUT_STAGE"
-export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER
+export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER
 
 bash "$RUNNER"
 [[ -s "$OUTPUT_STAGE/evaluation_evidence.json" ]] || die "terminal evaluation evidence missing"

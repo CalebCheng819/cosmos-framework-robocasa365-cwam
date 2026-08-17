@@ -29,7 +29,7 @@ PROJECT_ROOT = pathlib.Path("/mnt/workspace/cwam_cosmos3_robocasa365_eval")
 OSS_ROOT = pathlib.Path(
     "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval"
 )
-CONTROL_ROOT = PROJECT_ROOT / "control" / "scripts" / EXPERIMENT_ID
+CONTROL_ROOT = PROJECT_ROOT / "control" / "scripts" / f"{EXPERIMENT_ID}-control-v2"
 LAUNCHER = CONTROL_ROOT / "launch_cwam_b4_robocasa365_eval_dlc.sh"
 CHECKPOINT_ROOT = OSS_ROOT / "inputs" / "checkpoints" / (
     "B4-iter_000020000-serving-ema-bf16-metadata-v1"
@@ -152,6 +152,7 @@ def validate_local() -> None:
     for name in (
         "launch_cwam_b4_robocasa365_eval_dlc.sh",
         "run_cwam_b4_robocasa365_eval_dlc.sh",
+        "run_cwam_b4_robocasa365_eval_shard_group.sh",
         "cwam_b4_robocasa365_eval.py",
         "cwam_cosmos_env_archive.py",
         "cwam_robocasa_asset_source_package.py",
@@ -186,7 +187,7 @@ def request_body(commit: str) -> dict:
             "EVAL_LOGICAL_RUN_ID": LOGICAL_RUN_ID,
             "NVIDIA_DRIVER_CAPABILITIES": "compute,utility,graphics,display",
         },
-        "JobMaxRunningTimeMinutes": 4320,
+        "JobMaxRunningTimeMinutes": 8640,
         "JobSpecs": [{
             "ElasticSpotSpecs": [],
             "Image": IMAGE,
@@ -211,7 +212,7 @@ def request_body(commit: str) -> dict:
                 "experiment": "B4-iter20000-eval",
                 "protocol": "robocasa365-17x20-seed42",
                 "provenance": "git-path-time-no-new-hash",
-                "topology": "1x8-physical-4rank-policy",
+                "topology": "1x8-physical-dual-4rank-policy",
             },
         },
         "SuccessPolicy": "AllWorkers",
