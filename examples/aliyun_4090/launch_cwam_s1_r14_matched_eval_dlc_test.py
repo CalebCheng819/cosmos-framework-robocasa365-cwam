@@ -21,12 +21,15 @@ def _script() -> str:
     return BOOTSTRAP.read_text(encoding="utf-8")
 
 
-def test_bootstrap_pins_experiment_and_r14_baseline() -> None:
+def test_bootstrap_requires_formal_ids_and_pins_r14_baseline() -> None:
     script = _script()
 
-    assert "CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R11-20260817" in script
-    assert "CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R11-20260817" in script
-    assert "MATCHED2-R10-20260817" not in script
+    assert ': "${EVAL_EXPERIMENT_ID:?Set the formal evaluation Experiment ID}"' in script
+    assert ': "${EVAL_LOGICAL_RUN_ID:?Set the formal evaluation Run ID}"' in script
+    assert "EVAL_EXPERIMENT_ID has an invalid formal ID" in script
+    assert "EVAL_LOGICAL_RUN_ID has an invalid formal ID" in script
+    assert "readonly EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID" in script
+    assert "MATCHED2-R11-20260817" not in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
     assert 'readonly R14_BASELINE_RESULTS="$R14_BASELINE_ROOT/results_shard0.json"' in script

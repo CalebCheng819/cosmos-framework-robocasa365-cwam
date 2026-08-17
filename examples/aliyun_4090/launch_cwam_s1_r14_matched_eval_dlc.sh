@@ -8,13 +8,22 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 
 : "${EVAL_CONTROL_COMMIT:?Set the immutable evaluation-control Git commit}"
+: "${EVAL_EXPERIMENT_ID:?Set the formal evaluation Experiment ID}"
+: "${EVAL_LOGICAL_RUN_ID:?Set the formal evaluation Run ID}"
 [[ "$EVAL_CONTROL_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
     printf 'ERROR EVAL_CONTROL_COMMIT must be a lowercase 40-character Git commit\n' >&2
     exit 2
 }
+[[ "$EVAL_EXPERIMENT_ID" =~ ^CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R[0-9]+-[0-9]{8}$ ]] || {
+    printf 'ERROR EVAL_EXPERIMENT_ID has an invalid formal ID\n' >&2
+    exit 2
+}
+[[ "$EVAL_LOGICAL_RUN_ID" =~ ^CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R[0-9]+-[0-9]{8}$ ]] || {
+    printf 'ERROR EVAL_LOGICAL_RUN_ID has an invalid formal ID\n' >&2
+    exit 2
+}
 
-readonly EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-S1-VS-R14-MATCHED2-8GPU-S42-R11-20260817
-readonly EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-NANO-S1-EMA-10000-S42-MATCHED2-R11-20260817
+readonly EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID
 readonly R14_BASELINE_RUN_ID=CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809
 readonly PROJECT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval
 readonly INPUTS_ROOT="$PROJECT_ROOT/inputs"
