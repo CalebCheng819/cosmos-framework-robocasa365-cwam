@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R5 contribution decomposition and R6 dynamic-exclusive probes planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "First decompose the completed R5 checkpoint into base, gate-only, residual-only, and full final-residual cells on the same 2048 held-out samples. Then run matched 500-step eight-B200 probes from the same R4 checkpoint. R6-A removes absolute visual-memory tokens and absolute-memory per-layer conditioning from the main ActionDiT, leaving object memory only in the final exact-zero object-delta gate/residual. R6-B adds exact-zero-masked object-delta cross-attention plus FiLM after all four action layers. Keep current vision, task, proprio, action/control history, data, batch, seeds, optimizer scope, losses, and validation stream fixed. Require finite complete checkpoints, non-collapsed slots, contrastive margins above 0.05, exact-zero interventions, and at least 1 percent aligned main-action gain over both zero and shuffle before any 20k run."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

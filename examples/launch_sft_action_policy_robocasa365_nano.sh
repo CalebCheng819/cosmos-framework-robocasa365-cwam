@@ -224,7 +224,7 @@ elif [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == r4 ]]; then
     TAIL_OVERRIDES+=(
         "checkpoint.strict_resume=true"
         "checkpoint.load_training_state=false"
-        "checkpoint.keys_to_skip_loading=[visual_memory_delta_main]"
+        "checkpoint.keys_to_skip_loading=[visual_memory_delta_main,visual_memory_delta_conditioners]"
         "optimizer.keys_to_select=[strong_action_expert]"
         "trainer.callbacks.action_gradient_evidence.families=[strong_action_expert]"
     )

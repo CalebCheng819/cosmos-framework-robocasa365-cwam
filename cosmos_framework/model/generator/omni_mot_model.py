@@ -309,6 +309,18 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_visual_memory_delta_residual_scale=(
                     self.config.strong_action_visual_memory_delta_residual_scale
                 ),
+                strong_action_visual_memory_delta_main_component=(
+                    self.config.strong_action_visual_memory_delta_main_component
+                ),
+                strong_action_visual_memory_exclusive_dynamic=(
+                    self.config.strong_action_visual_memory_exclusive_dynamic
+                ),
+                strong_action_visual_memory_delta_conditioning_layers=(
+                    self.config.strong_action_visual_memory_delta_conditioning_layers
+                ),
+                strong_action_visual_memory_delta_conditioning_scale=(
+                    self.config.strong_action_visual_memory_delta_conditioning_scale
+                ),
                 strong_action_visual_memory_diversity_loss_weight=(
                     self.config.strong_action_visual_memory_diversity_loss_weight
                 ),
@@ -1473,6 +1485,10 @@ class OmniMoTModel(ImaginaireModel):
                     "strong_action_visual_memory_episode_negative_fraction",
                     "strong_action_visual_memory_conditioning_scale",
                     "strong_action_visual_memory_conditioned_residual_rms",
+                    "strong_action_visual_memory_aux_conditioned_residual_rms",
+                    "strong_action_visual_memory_delta_conditioned_residual_rms",
+                    "strong_action_visual_memory_main_context_tokens",
+                    "strong_action_visual_memory_delta_conditioning_layers",
                     "strong_action_visual_memory_action_aux_hidden_rms",
                     "strong_action_visual_memory_object_delta_rms",
                     "strong_action_visual_memory_object_delta_active_fraction",
@@ -1482,6 +1498,12 @@ class OmniMoTModel(ImaginaireModel):
                         "strong_action_visual_memory_delta_main_gate_mean",
                         "strong_action_visual_memory_delta_main_gate_deviation",
                         "strong_action_visual_memory_delta_main_residual_rms",
+                        "strong_action_visual_memory_delta_main_raw_gate_deviation",
+                        "strong_action_visual_memory_delta_main_raw_residual_rms",
+                        "strong_action_visual_memory_delta_main_base_rms",
+                        "strong_action_visual_memory_delta_main_applied_delta_rms",
+                        "strong_action_visual_memory_delta_main_delta_base_ratio",
+                        "strong_action_visual_memory_delta_main_delta_base_cosine",
                     )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
@@ -1536,8 +1558,13 @@ class OmniMoTModel(ImaginaireModel):
                     self.config.strong_action_visual_memory_action_gradient_loss_weight
                 )
                 if action_gradient_weight > 0.0:
+                    gradient_state_name = (
+                        "strong_action_visual_memory_object_delta"
+                        if self.config.strong_action_visual_memory_exclusive_dynamic
+                        else "strong_action_visual_memory_slots"
+                    )
                     gradient_required = (
-                        "strong_action_visual_memory_slots",
+                        gradient_state_name,
                         "strong_action_visual_memory_action_attention",
                     )
                     missing_gradient_inputs = [
@@ -1545,13 +1572,13 @@ class OmniMoTModel(ImaginaireModel):
                     ]
                     if missing_gradient_inputs:
                         raise ValueError(
-                            "R4 action-gradient supervision is missing inputs: "
+                            "Action-gradient supervision is missing inputs: "
                             f"{missing_gradient_inputs}"
                         )
                     action_gradient_loss, gradient_valid_fraction, gradient_target_entropy = (
                         action_gradient_alignment_loss(
                             losses_dict["flow_matching_loss_action"],
-                            out_net["strong_action_visual_memory_slots"],
+                            out_net[gradient_state_name],
                             out_net["strong_action_visual_memory_action_attention"],
                         )
                     )

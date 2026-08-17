@@ -149,7 +149,10 @@ def test_b5_r5_probe_loads_r4_and_trains_complete_strong_action_expert(tmp_path:
     result = _run(env)
 
     assert result.returncode == 0, result.stdout
-    assert "TORCHRUN_ARG=checkpoint.keys_to_skip_loading=[visual_memory_delta_main]" in result.stdout
+    assert (
+        "TORCHRUN_ARG=checkpoint.keys_to_skip_loading="
+        "[visual_memory_delta_main,visual_memory_delta_conditioners]" in result.stdout
+    )
     assert "TORCHRUN_ARG=optimizer.keys_to_select=[strong_action_expert]" in result.stdout
     assert (
         "TORCHRUN_ARG=trainer.callbacks.action_gradient_evidence.families=[strong_action_expert]"

@@ -7,6 +7,8 @@ import pytest
 import torch
 
 from cosmos_framework.model.generator.mot.strong_action_expert import (
+    MemoryConditioningBlock,
+    MemoryDeltaMainResidual,
     StrongActionContextExpert,
     action_gradient_alignment_loss,
 )
@@ -17,6 +19,9 @@ def _expert(
     view_token_width: int = 2,
     visual_memory_enabled: bool = False,
     visual_memory_intervention: str = "none",
+    visual_memory_delta_main_component: str = "full",
+    visual_memory_exclusive_dynamic: bool = False,
+    visual_memory_delta_conditioning_layers: int = 0,
 ) -> StrongActionContextExpert:
     module = StrongActionContextExpert(
         hidden_size=32,
@@ -45,6 +50,10 @@ def _expert(
         visual_memory_delta_main_enabled=visual_memory_enabled,
         visual_memory_delta_gate_scale=0.25,
         visual_memory_delta_residual_scale=0.25,
+        visual_memory_delta_main_component=visual_memory_delta_main_component,
+        visual_memory_exclusive_dynamic=visual_memory_exclusive_dynamic,
+        visual_memory_delta_conditioning_layers=visual_memory_delta_conditioning_layers,
+        visual_memory_delta_conditioning_scale=0.25,
         visual_memory_intervention=visual_memory_intervention,
     )
     module.init_weights()
@@ -230,6 +239,10 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     assert metrics["visual_memory_episode_negative_fraction"].item() == 0.0
     assert metrics["visual_memory_conditioning_scale"].item() == pytest.approx(0.25)
     assert metrics["visual_memory_conditioned_residual_rms"].item() > 0.0
+    assert metrics["visual_memory_aux_conditioned_residual_rms"].item() > 0.0
+    assert metrics["visual_memory_delta_conditioned_residual_rms"].item() == 0.0
+    assert metrics["visual_memory_main_context_tokens"].item() == 3.0
+    assert metrics["visual_memory_delta_conditioning_layers"].item() == 0.0
     assert metrics["visual_memory_object_delta"].shape == (2, 3, 16)
     assert metrics["visual_memory_object_delta_valid"].tolist() == [True, True]
     assert metrics["visual_memory_object_delta_rms"].item() > 0.0
@@ -237,6 +250,8 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     assert metrics["visual_memory_delta_main_gate_mean"].item() > 1.0
     assert metrics["visual_memory_delta_main_gate_deviation"].item() > 0.0
     assert metrics["visual_memory_delta_main_residual_rms"].item() > 0.0
+    assert metrics["visual_memory_delta_main_applied_delta_rms"].item() > 0.0
+    assert metrics["visual_memory_delta_main_delta_base_ratio"].item() > 0.0
     assert metrics["visual_memory_delta_main_attention"].shape == (2, 3)
     torch.testing.assert_close(
         metrics["visual_memory_delta_main_attention"].sum(dim=-1),
@@ -257,6 +272,109 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     assert torch.isfinite(delta_out_grad).all()
     assert torch.count_nonzero(delta_out_grad) > 0
     assert all(value.grad is not None and torch.count_nonzero(value.grad) > 0 for value in visual_latents)
+
+
+def test_memory_delta_components_decompose_full_residual_exactly() -> None:
+    torch.manual_seed(19)
+    modules = {
+        component: MemoryDeltaMainResidual(
+            model_dim=16,
+            hidden_size=32,
+            num_heads=4,
+            gate_scale=0.25,
+            residual_scale=0.25,
+            component=component,
+        )
+        for component in ("base", "gate", "residual", "full")
+    }
+    modules["full"].init_weights()
+    full_state = modules["full"].state_dict()
+    for component, module in modules.items():
+        if component != "full":
+            module.load_state_dict(full_state)
+
+    action = torch.randn(2, 5, 16)
+    base = torch.randn(2, 5, 32)
+    delta = torch.randn(2, 3, 16)
+    delta_valid = torch.ones(2, dtype=torch.bool)
+    action_valid = torch.ones(2, 5, dtype=torch.bool)
+    outputs = {}
+    metrics = {}
+    for component, module in modules.items():
+        outputs[component], metrics[component] = module(
+            action,
+            base,
+            delta,
+            delta_valid,
+            action_valid=action_valid,
+        )
+
+    torch.testing.assert_close(outputs["base"], base)
+    torch.testing.assert_close(
+        outputs["full"],
+        outputs["gate"] + outputs["residual"] - outputs["base"],
+    )
+    assert metrics["base"]["visual_memory_delta_main_applied_delta_rms"].item() == 0.0
+    assert metrics["gate"]["visual_memory_delta_main_residual_rms"].item() == 0.0
+    assert metrics["residual"]["visual_memory_delta_main_gate_deviation"].item() == 0.0
+    assert metrics["full"]["visual_memory_delta_main_raw_gate_deviation"].item() > 0.0
+    assert metrics["full"]["visual_memory_delta_main_raw_residual_rms"].item() > 0.0
+
+
+def test_memory_conditioner_masks_invalid_delta_exactly() -> None:
+    torch.manual_seed(23)
+    conditioner = MemoryConditioningBlock(model_dim=16, num_heads=4, residual_scale=0.25)
+    conditioner.init_weights()
+    action = torch.randn(2, 5, 16)
+    memory = torch.randn(2, 3, 16)
+    action_valid = torch.ones(2, 5, dtype=torch.bool)
+
+    updated, residual_rms, attention = conditioner(
+        action,
+        memory,
+        action_valid=action_valid,
+        memory_valid=torch.zeros(2, dtype=torch.bool),
+    )
+
+    torch.testing.assert_close(updated, action)
+    assert residual_rms.item() == 0.0
+    assert torch.count_nonzero(attention) == 0
+
+
+def test_exclusive_dynamic_memory_removes_absolute_main_path() -> None:
+    torch.manual_seed(29)
+    r6a = _expert(
+        visual_memory_enabled=True,
+        visual_memory_exclusive_dynamic=True,
+    )
+    r6b = _expert(
+        visual_memory_enabled=True,
+        visual_memory_exclusive_dynamic=True,
+        visual_memory_delta_conditioning_layers=2,
+    )
+    inputs = _inputs()
+    inputs.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6) for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        episode_ids=[torch.tensor(4), torch.tensor(5)],
+        action_seed_hidden=torch.randn(6, 32),
+    )
+
+    _, _, metrics_a = r6a(**inputs)
+    output_b, _, metrics_b = r6b(**inputs)
+
+    assert metrics_a["visual_memory_main_context_tokens"].item() == 0.0
+    assert metrics_a["visual_memory_conditioned_residual_rms"].item() == 0.0
+    assert metrics_a["visual_memory_delta_conditioned_residual_rms"].item() == 0.0
+    torch.testing.assert_close(
+        metrics_a["visual_memory_action_attention"].sum(dim=-1),
+        torch.ones(2),
+    )
+    assert metrics_b["visual_memory_main_context_tokens"].item() == 0.0
+    assert metrics_b["visual_memory_conditioned_residual_rms"].item() == 0.0
+    assert metrics_b["visual_memory_delta_conditioning_layers"].item() == 2.0
+    assert metrics_b["visual_memory_delta_conditioned_residual_rms"].item() > 0.0
+    assert torch.isfinite(output_b).all()
 
 
 def test_visual_object_memory_uses_two_by_four_anchors_for_eight_slots() -> None:

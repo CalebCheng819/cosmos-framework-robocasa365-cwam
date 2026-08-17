@@ -24,28 +24,28 @@ _NUM_CONTEXT_TYPES = 5
 
 def action_gradient_alignment_loss(
     action_loss: torch.Tensor,
-    memory_slots: torch.Tensor,
+    relevance_state: torch.Tensor,
     action_attention: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Align action-to-slot attention with per-sample action-loss saliency."""
+    """Align action-to-slot attention with saliency of the state used by the action path."""
     zero = action_attention.float().sum() * 0.0
     if (
         not torch.is_grad_enabled()
         or not action_loss.requires_grad
-        or not memory_slots.requires_grad
+        or not relevance_state.requires_grad
     ):
         return zero, zero.detach(), zero.detach()
-    slot_gradient = torch.autograd.grad(
+    state_gradient = torch.autograd.grad(
         action_loss,
-        memory_slots,
+        relevance_state,
         retain_graph=True,
         create_graph=False,
         allow_unused=True,
     )[0]
-    if slot_gradient is None:
+    if state_gradient is None:
         return zero, zero.detach(), zero.detach()
 
-    saliency = slot_gradient.detach().float().square().sum(dim=-1).sqrt()
+    saliency = state_gradient.detach().float().square().sum(dim=-1).sqrt()
     saliency_sum = saliency.sum(dim=-1, keepdim=True)
     valid = saliency_sum.squeeze(-1) > 1.0e-12
     target = saliency / saliency_sum.clamp_min(1.0e-12)
@@ -55,7 +55,7 @@ def action_gradient_alignment_loss(
     valid_weight = valid.float()
     valid_denominator = valid_weight.sum().clamp_min(1.0)
     loss = (per_sample_loss * valid_weight).sum() / valid_denominator
-    entropy_denominator = math.log(max(memory_slots.shape[1], 2))
+    entropy_denominator = math.log(max(relevance_state.shape[1], 2))
     target_entropy = -(target.clamp_min(1.0e-8).log() * target).sum(dim=-1)
     target_entropy = (target_entropy * valid_weight).sum() / valid_denominator / entropy_denominator
     return loss, valid.float().mean(), target_entropy
@@ -690,7 +690,10 @@ class MemoryConditioningBlock(nn.Module):
         memory: torch.Tensor,
         *,
         action_valid: torch.Tensor,
+        memory_valid: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if memory_valid is not None and memory_valid.shape != action.shape[:1]:
+            raise ValueError("Memory validity must align with the action batch")
         normalized_action = self.action_norm(action)
         normalized_memory = self.memory_norm(memory)
         attended, attention = self.cross_attention(
@@ -702,11 +705,17 @@ class MemoryConditioningBlock(nn.Module):
         )
         gamma, beta = self.film(attended).chunk(2, dim=-1)
         conditioned = attended + torch.tanh(gamma) * normalized_action + torch.tanh(beta)
-        residual = (self.residual_scale * conditioned).masked_fill(~action_valid[:, :, None], 0.0)
+        effective_valid = action_valid
+        if memory_valid is not None:
+            effective_valid = effective_valid & memory_valid[:, None]
+        residual = (self.residual_scale * conditioned).masked_fill(~effective_valid[:, :, None], 0.0)
         valid_residual = residual.float().square().sum() / (
-            action_valid.sum().clamp_min(1) * residual.shape[-1]
+            effective_valid.sum().clamp_min(1) * residual.shape[-1]
         )
-        return action + residual, valid_residual.sqrt(), attention.mean(dim=1)
+        mean_attention = attention.mean(dim=1)
+        if memory_valid is not None:
+            mean_attention = mean_attention.masked_fill(~memory_valid[:, None, None], 0.0)
+        return action + residual, valid_residual.sqrt(), mean_attention
 
 
 class MemoryDeltaMainResidual(nn.Module):
@@ -720,6 +729,7 @@ class MemoryDeltaMainResidual(nn.Module):
         num_heads: int,
         gate_scale: float,
         residual_scale: float,
+        component: str,
     ) -> None:
         super().__init__()
         if not 0.0 < gate_scale <= 1.0:
@@ -728,6 +738,9 @@ class MemoryDeltaMainResidual(nn.Module):
             raise ValueError("Memory delta residual_scale must be in (0, 1]")
         self.gate_scale = float(gate_scale)
         self.residual_scale = float(residual_scale)
+        if component not in {"base", "gate", "residual", "full"}:
+            raise ValueError("Memory delta component must be base, gate, residual, or full")
+        self.component = component
         self.action_norm = nn.LayerNorm(model_dim)
         self.delta_norm = nn.LayerNorm(model_dim)
         self.cross_attention = nn.MultiheadAttention(
@@ -792,21 +805,49 @@ class MemoryDeltaMainResidual(nn.Module):
         )
         local_rms = (attention.float() * slot_rms[:, None]).sum(dim=-1, keepdim=True)
         global_rms = slot_rms.mean(dim=-1, keepdim=True)[:, None]
-        gate_deviation = self.gate_scale * torch.tanh(0.5 * (local_rms + global_rms))
-        gate_deviation = gate_deviation.masked_fill(~valid[:, :, None], 0.0)
+        raw_gate_deviation = self.gate_scale * torch.tanh(0.5 * (local_rms + global_rms))
+        raw_gate_deviation = raw_gate_deviation.masked_fill(~valid[:, :, None], 0.0)
 
-        directional_residual = self.residual_scale * self.delta_out(attended)
-        directional_residual = directional_residual.masked_fill(~valid[:, :, None], 0.0)
+        raw_directional_residual = self.residual_scale * self.delta_out(attended)
+        raw_directional_residual = raw_directional_residual.masked_fill(~valid[:, :, None], 0.0)
+        gate_deviation = (
+            raw_gate_deviation
+            if self.component in {"gate", "full"}
+            else torch.zeros_like(raw_gate_deviation)
+        )
+        directional_residual = (
+            raw_directional_residual
+            if self.component in {"residual", "full"}
+            else torch.zeros_like(raw_directional_residual)
+        )
         residual = base_residual * (1.0 + gate_deviation.to(base_residual.dtype))
         residual = residual + directional_residual
 
         valid_weight = valid[:, :, None].float()
         valid_denominator = (valid_weight.sum() * base_residual.shape[-1]).clamp_min(1.0)
+        raw_directional_mean_square = raw_directional_residual.float().square().sum() / valid_denominator
+        raw_directional_rms = torch.where(
+            raw_directional_mean_square > 0.0,
+            raw_directional_mean_square.clamp_min(1.0e-12).sqrt(),
+            torch.zeros_like(raw_directional_mean_square),
+        )
         directional_mean_square = directional_residual.float().square().sum() / valid_denominator
         directional_rms = torch.where(
             directional_mean_square > 0.0,
             directional_mean_square.clamp_min(1.0e-12).sqrt(),
             torch.zeros_like(directional_mean_square),
+        )
+        applied_delta = (residual - base_residual).float() * valid_weight
+        applied_delta_rms = (applied_delta.square().sum() / valid_denominator).sqrt()
+        base_rms = ((base_residual.float() * valid_weight).square().sum() / valid_denominator).sqrt()
+        delta_base_ratio = applied_delta_rms / base_rms.clamp_min(1.0e-12)
+        delta_square_sum = applied_delta.square().sum()
+        base_square_sum = (base_residual.float() * valid_weight).square().sum()
+        delta_base_cosine = torch.where(
+            (delta_square_sum > 0.0) & (base_square_sum > 0.0),
+            (applied_delta * base_residual.float()).sum()
+            / (delta_square_sum * base_square_sum).clamp_min(1.0e-24).sqrt(),
+            torch.zeros_like(delta_square_sum),
         )
         gate_denominator = valid_weight.sum().clamp_min(1.0)
         metrics = {
@@ -819,6 +860,15 @@ class MemoryDeltaMainResidual(nn.Module):
             ).sum()
             / gate_denominator,
             "visual_memory_delta_main_residual_rms": directional_rms,
+            "visual_memory_delta_main_raw_gate_deviation": (
+                raw_gate_deviation.float().abs() * valid_weight
+            ).sum()
+            / gate_denominator,
+            "visual_memory_delta_main_raw_residual_rms": raw_directional_rms,
+            "visual_memory_delta_main_base_rms": base_rms,
+            "visual_memory_delta_main_applied_delta_rms": applied_delta_rms,
+            "visual_memory_delta_main_delta_base_ratio": delta_base_ratio,
+            "visual_memory_delta_main_delta_base_cosine": delta_base_cosine,
             "visual_memory_delta_main_attention": (
                 attention.float() * valid_weight
             ).sum(dim=1)
@@ -999,6 +1049,10 @@ class StrongActionContextExpert(nn.Module):
         visual_memory_delta_main_enabled: bool = False,
         visual_memory_delta_gate_scale: float = 0.25,
         visual_memory_delta_residual_scale: float = 0.25,
+        visual_memory_delta_main_component: str = "full",
+        visual_memory_exclusive_dynamic: bool = False,
+        visual_memory_delta_conditioning_layers: int = 0,
+        visual_memory_delta_conditioning_scale: float = 0.25,
         visual_memory_contrastive_temperature: float = 0.07,
         visual_memory_intervention: str = "none",
     ) -> None:
@@ -1040,6 +1094,24 @@ class StrongActionContextExpert(nn.Module):
             raise ValueError("visual_memory_delta_main_enabled requires visual_memory_enabled")
         self.visual_memory_delta_gate_scale = float(visual_memory_delta_gate_scale)
         self.visual_memory_delta_residual_scale = float(visual_memory_delta_residual_scale)
+        self.visual_memory_delta_main_component = visual_memory_delta_main_component
+        if self.visual_memory_delta_main_component not in {"base", "gate", "residual", "full"}:
+            raise ValueError("visual_memory_delta_main_component must be base, gate, residual, or full")
+        self.visual_memory_exclusive_dynamic = bool(visual_memory_exclusive_dynamic)
+        if self.visual_memory_exclusive_dynamic and not (
+            self.visual_memory_enabled and self.visual_memory_delta_main_enabled
+        ):
+            raise ValueError("Exclusive dynamic memory requires visual memory and the delta main residual")
+        self.visual_memory_delta_conditioning_layers = int(visual_memory_delta_conditioning_layers)
+        if not 0 <= self.visual_memory_delta_conditioning_layers <= num_layers:
+            raise ValueError("Delta conditioning layers must be between zero and the action layer count")
+        if self.visual_memory_delta_conditioning_layers and not self.visual_memory_exclusive_dynamic:
+            raise ValueError("Delta conditioning layers require exclusive dynamic memory")
+        self.visual_memory_delta_conditioning_scale = float(visual_memory_delta_conditioning_scale)
+        if self.visual_memory_delta_conditioning_layers and not (
+            0.0 < self.visual_memory_delta_conditioning_scale <= 1.0
+        ):
+            raise ValueError("Delta conditioning scale must be in (0, 1]")
 
         self.action_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -1088,6 +1160,14 @@ class StrongActionContextExpert(nn.Module):
                 )
                 for _ in range(num_layers)
             )
+            self.visual_memory_delta_conditioners = nn.ModuleList(
+                MemoryConditioningBlock(
+                    model_dim=model_dim,
+                    num_heads=num_heads,
+                    residual_scale=self.visual_memory_delta_conditioning_scale,
+                )
+                for _ in range(self.visual_memory_delta_conditioning_layers)
+            )
             self.visual_memory_aux_norm = nn.LayerNorm(model_dim)
             self.visual_memory_aux_out = nn.Linear(model_dim, hidden_size, bias=False)
             if self.visual_memory_delta_main_enabled:
@@ -1097,6 +1177,7 @@ class StrongActionContextExpert(nn.Module):
                     num_heads=num_heads,
                     gate_scale=self.visual_memory_delta_gate_scale,
                     residual_scale=self.visual_memory_delta_residual_scale,
+                    component=self.visual_memory_delta_main_component,
                 )
         self.layers = nn.ModuleList(
             ActionExpertBlock(
@@ -1140,6 +1221,8 @@ class StrongActionContextExpert(nn.Module):
             nn.init.constant_(self.visual_memory_gate_logit, visual_memory_initial_logit)
             self.visual_object_memory.init_weights()
             for conditioner in self.visual_memory_conditioners:
+                conditioner.init_weights()
+            for conditioner in self.visual_memory_delta_conditioners:
                 conditioner.init_weights()
             nn.init.ones_(self.visual_memory_aux_norm.weight)
             nn.init.zeros_(self.visual_memory_aux_norm.bias)
@@ -1333,8 +1416,11 @@ class StrongActionContextExpert(nn.Module):
             memory_types = torch.full(
                 (self.memory_tokens,), _MEMORY_CONTEXT, device=hidden_states.device, dtype=torch.long
             )
+            include_absolute_visual_memory = (
+                self.visual_memory_enabled and not self.visual_memory_exclusive_dynamic
+            )
             visual_memory_types = torch.full(
-                (self.visual_memory_tokens if self.visual_memory_enabled else 0,),
+                (self.visual_memory_tokens if include_absolute_visual_memory else 0,),
                 _MEMORY_CONTEXT,
                 device=hidden_states.device,
                 dtype=torch.long,
@@ -1354,7 +1440,7 @@ class StrongActionContextExpert(nn.Module):
             )
             sample_visual_memory = (
                 visual_memory_tokens[sample_id]
-                if visual_memory_tokens is not None
+                if visual_memory_tokens is not None and include_absolute_visual_memory
                 else memory_tokens.new_empty((0, self.model_dim))
             )
             sample_context = torch.cat(
@@ -1443,6 +1529,10 @@ class StrongActionContextExpert(nn.Module):
         entropies = []
         conditioned_residual_rms = []
         visual_memory_attentions = []
+        auxiliary_conditioned_residual_rms = []
+        delta_conditioned_residual_rms = []
+        delta_memory_attentions = []
+        delta_conditioning_start = len(self.layers) - self.visual_memory_delta_conditioning_layers
         for layer_id, layer in enumerate(self.layers):
             action_batch, entropy = layer(
                 action_batch,
@@ -1458,18 +1548,32 @@ class StrongActionContextExpert(nn.Module):
                 assert visual_memory_tokens is not None
                 assert action_seed_batch is not None
                 conditioner = self.visual_memory_conditioners[layer_id]
-                action_batch, residual_rms, action_attention = conditioner(
-                    action_batch,
-                    visual_memory_tokens,
-                    action_valid=action_valid,
-                )
-                action_seed_batch, _, _ = conditioner(
+                if not self.visual_memory_exclusive_dynamic:
+                    action_batch, residual_rms, action_attention = conditioner(
+                        action_batch,
+                        visual_memory_tokens,
+                        action_valid=action_valid,
+                    )
+                    conditioned_residual_rms.append(residual_rms)
+                    visual_memory_attentions.append(action_attention)
+                action_seed_batch, auxiliary_residual_rms, _ = conditioner(
                     action_seed_batch,
                     visual_memory_tokens,
                     action_valid=action_valid,
                 )
-                conditioned_residual_rms.append(residual_rms)
-                visual_memory_attentions.append(action_attention)
+                auxiliary_conditioned_residual_rms.append(auxiliary_residual_rms)
+                if layer_id >= delta_conditioning_start:
+                    delta_conditioner = self.visual_memory_delta_conditioners[
+                        layer_id - delta_conditioning_start
+                    ]
+                    action_batch, delta_residual_rms, delta_attention = delta_conditioner(
+                        action_batch,
+                        visual_memory_metrics["visual_memory_object_delta"],
+                        action_valid=action_valid,
+                        memory_valid=visual_memory_metrics["visual_memory_object_delta_valid"],
+                    )
+                    delta_conditioned_residual_rms.append(delta_residual_rms)
+                    delta_memory_attentions.append(delta_attention)
 
         residuals = self.action_out(self.output_norm(action_batch))
         delta_main_metrics: dict[str, torch.Tensor] = {}
@@ -1511,18 +1615,67 @@ class StrongActionContextExpert(nn.Module):
             )
             metrics["visual_memory_conditioned_residual_rms"] = torch.stack(
                 conditioned_residual_rms
+            ).mean() if conditioned_residual_rms else torch.zeros((), device=hidden_states.device)
+            metrics["visual_memory_aux_conditioned_residual_rms"] = torch.stack(
+                auxiliary_conditioned_residual_rms
             ).mean()
+            metrics["visual_memory_delta_conditioned_residual_rms"] = torch.stack(
+                delta_conditioned_residual_rms
+            ).mean() if delta_conditioned_residual_rms else torch.zeros((), device=hidden_states.device)
+            metrics["visual_memory_main_context_tokens"] = torch.tensor(
+                0 if self.visual_memory_exclusive_dynamic else self.visual_memory_tokens,
+                device=hidden_states.device,
+                dtype=torch.float32,
+            )
+            metrics["visual_memory_delta_conditioning_layers"] = torch.tensor(
+                self.visual_memory_delta_conditioning_layers,
+                device=hidden_states.device,
+                dtype=torch.float32,
+            )
             assert visual_memory_action_hidden is not None
             metrics["visual_memory_action_aux_hidden_rms"] = (
                 visual_memory_action_hidden.float().square().mean().sqrt()
             )
-            stacked_attention = torch.stack(visual_memory_attentions).float()
             attention_weight = action_valid[None, :, :, None].float()
-            metrics["visual_memory_action_attention"] = (
-                stacked_attention * attention_weight
-            ).sum(dim=(0, 2)) / (
-                attention_weight.sum(dim=(0, 2)) * len(visual_memory_attentions)
-            ).clamp_min(1.0)
+            if visual_memory_attentions:
+                stacked_attention = torch.stack(visual_memory_attentions).float()
+                metrics["visual_memory_action_attention"] = (
+                    stacked_attention * attention_weight
+                ).sum(dim=(0, 2)) / (
+                    attention_weight.sum(dim=(0, 2)) * len(visual_memory_attentions)
+                ).clamp_min(1.0)
+            elif delta_memory_attentions:
+                stacked_attention = torch.stack(delta_memory_attentions).float()
+                metrics["visual_memory_action_attention"] = (
+                    stacked_attention * attention_weight
+                ).sum(dim=(0, 2)) / (
+                    attention_weight.sum(dim=(0, 2)) * len(delta_memory_attentions)
+                ).clamp_min(1.0)
+            elif "visual_memory_delta_main_attention" in delta_main_metrics:
+                metrics["visual_memory_action_attention"] = delta_main_metrics[
+                    "visual_memory_delta_main_attention"
+                ]
+            else:
+                metrics["visual_memory_action_attention"] = torch.zeros(
+                    num_samples,
+                    self.visual_memory_tokens,
+                    device=hidden_states.device,
+                    dtype=torch.float32,
+                )
+            if delta_memory_attentions:
+                stacked_delta_attention = torch.stack(delta_memory_attentions).float()
+                metrics["visual_memory_delta_action_attention"] = (
+                    stacked_delta_attention * attention_weight
+                ).sum(dim=(0, 2)) / (
+                    attention_weight.sum(dim=(0, 2)) * len(delta_memory_attentions)
+                ).clamp_min(1.0)
+            else:
+                metrics["visual_memory_delta_action_attention"] = torch.zeros(
+                    num_samples,
+                    self.visual_memory_tokens,
+                    device=hidden_states.device,
+                    dtype=torch.float32,
+                )
         metrics.update(visual_memory_metrics)
         metrics.update(delta_main_metrics)
         return updated, visual_memory_action_hidden, metrics

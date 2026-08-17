@@ -604,6 +604,18 @@ def _action_policy_robocasa365_b5_visual_object_memory_nano_model_config() -> di
     intervention = os.environ.get("CWAM_VISUAL_MEMORY_INTERVENTION", "none")
     if intervention not in {"none", "zero", "shuffle"}:
         raise ValueError("CWAM_VISUAL_MEMORY_INTERVENTION must be none, zero, or shuffle")
+    delta_component = os.environ.get("CWAM_VISUAL_MEMORY_DELTA_COMPONENT", "full")
+    if delta_component not in {"base", "gate", "residual", "full"}:
+        raise ValueError("CWAM_VISUAL_MEMORY_DELTA_COMPONENT must be base, gate, residual, or full")
+    exclusive_dynamic_raw = os.environ.get("CWAM_VISUAL_MEMORY_EXCLUSIVE_DYNAMIC", "0")
+    if exclusive_dynamic_raw not in {"0", "1"}:
+        raise ValueError("CWAM_VISUAL_MEMORY_EXCLUSIVE_DYNAMIC must be exactly 0 or 1")
+    exclusive_dynamic = exclusive_dynamic_raw == "1"
+    delta_conditioning_layers = int(os.environ.get("CWAM_VISUAL_MEMORY_DELTA_CONDITIONING_LAYERS", "0"))
+    if delta_conditioning_layers not in {0, 4}:
+        raise ValueError("CWAM_VISUAL_MEMORY_DELTA_CONDITIONING_LAYERS must be 0 or 4")
+    if delta_conditioning_layers and not exclusive_dynamic:
+        raise ValueError("Delta conditioning layers require exclusive dynamic memory")
     cfg.update(
         strong_action_visual_memory_enabled=True,
         strong_action_visual_history_length=3,
@@ -618,6 +630,10 @@ def _action_policy_robocasa365_b5_visual_object_memory_nano_model_config() -> di
         strong_action_visual_memory_delta_main_enabled=True,
         strong_action_visual_memory_delta_gate_scale=0.25,
         strong_action_visual_memory_delta_residual_scale=0.25,
+        strong_action_visual_memory_delta_main_component=delta_component,
+        strong_action_visual_memory_exclusive_dynamic=exclusive_dynamic,
+        strong_action_visual_memory_delta_conditioning_layers=delta_conditioning_layers,
+        strong_action_visual_memory_delta_conditioning_scale=0.25,
         strong_action_visual_memory_diversity_loss_weight=0.20,
         strong_action_visual_memory_assignment_entropy_loss_weight=0.05,
         strong_action_visual_memory_assignment_balance_loss_weight=0.05,

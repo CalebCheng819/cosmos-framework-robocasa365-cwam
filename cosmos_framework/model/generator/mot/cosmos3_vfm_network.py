@@ -95,6 +95,10 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_visual_memory_delta_main_enabled=False,
         strong_action_visual_memory_delta_gate_scale=0.25,
         strong_action_visual_memory_delta_residual_scale=0.25,
+        strong_action_visual_memory_delta_main_component="full",
+        strong_action_visual_memory_exclusive_dynamic=False,
+        strong_action_visual_memory_delta_conditioning_layers=0,
+        strong_action_visual_memory_delta_conditioning_scale=0.25,
         strong_action_visual_memory_diversity_loss_weight=0.05,
         strong_action_visual_memory_assignment_entropy_loss_weight=0.0,
         strong_action_visual_memory_assignment_balance_loss_weight=0.0,
@@ -187,6 +191,14 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_visual_memory_delta_main_enabled = strong_action_visual_memory_delta_main_enabled
         self.strong_action_visual_memory_delta_gate_scale = strong_action_visual_memory_delta_gate_scale
         self.strong_action_visual_memory_delta_residual_scale = strong_action_visual_memory_delta_residual_scale
+        self.strong_action_visual_memory_delta_main_component = strong_action_visual_memory_delta_main_component
+        self.strong_action_visual_memory_exclusive_dynamic = strong_action_visual_memory_exclusive_dynamic
+        self.strong_action_visual_memory_delta_conditioning_layers = (
+            strong_action_visual_memory_delta_conditioning_layers
+        )
+        self.strong_action_visual_memory_delta_conditioning_scale = (
+            strong_action_visual_memory_delta_conditioning_scale
+        )
         self.strong_action_visual_memory_diversity_loss_weight = strong_action_visual_memory_diversity_loss_weight
         self.strong_action_visual_memory_assignment_entropy_loss_weight = (
             strong_action_visual_memory_assignment_entropy_loss_weight
@@ -269,6 +281,27 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                     raise ValueError("Strong action memory-delta gate scale must be in (0, 1]")
                 if not 0.0 < float(self.strong_action_visual_memory_delta_residual_scale) <= 1.0:
                     raise ValueError("Strong action memory-delta residual scale must be in (0, 1]")
+                if self.strong_action_visual_memory_delta_main_component not in {
+                    "base",
+                    "gate",
+                    "residual",
+                    "full",
+                }:
+                    raise ValueError("Strong action memory-delta component is invalid")
+            if self.strong_action_visual_memory_exclusive_dynamic and not (
+                self.strong_action_visual_memory_enabled
+                and self.strong_action_visual_memory_delta_main_enabled
+            ):
+                raise ValueError("Exclusive dynamic memory requires visual memory and delta main")
+            if not 0 <= int(self.strong_action_visual_memory_delta_conditioning_layers) <= int(
+                self.strong_action_expert_num_layers
+            ):
+                raise ValueError("Strong action delta conditioning layer count is invalid")
+            if self.strong_action_visual_memory_delta_conditioning_layers:
+                if not self.strong_action_visual_memory_exclusive_dynamic:
+                    raise ValueError("Delta conditioning layers require exclusive dynamic memory")
+                if not 0.0 < float(self.strong_action_visual_memory_delta_conditioning_scale) <= 1.0:
+                    raise ValueError("Strong action delta conditioning scale must be in (0, 1]")
             nonnegative_visual_memory_values = {
                 "diversity_loss_weight": self.strong_action_visual_memory_diversity_loss_weight,
                 "assignment_entropy_loss_weight": (
@@ -434,6 +467,18 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     ),
                     visual_memory_delta_residual_scale=(
                         config.strong_action_visual_memory_delta_residual_scale
+                    ),
+                    visual_memory_delta_main_component=(
+                        config.strong_action_visual_memory_delta_main_component
+                    ),
+                    visual_memory_exclusive_dynamic=(
+                        config.strong_action_visual_memory_exclusive_dynamic
+                    ),
+                    visual_memory_delta_conditioning_layers=(
+                        config.strong_action_visual_memory_delta_conditioning_layers
+                    ),
+                    visual_memory_delta_conditioning_scale=(
+                        config.strong_action_visual_memory_delta_conditioning_scale
                     ),
                     visual_memory_contrastive_temperature=(
                         config.strong_action_visual_memory_contrastive_temperature
