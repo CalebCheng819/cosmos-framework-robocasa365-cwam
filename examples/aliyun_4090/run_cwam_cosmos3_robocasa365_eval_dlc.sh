@@ -691,7 +691,7 @@ require_exact_value \
 require_exact_value \
     egl_mapping_receipt_path \
     "$EGL_MAPPING_RECEIPT" \
-    "${FORMAL_INPUT_ROOT%/inputs}/control/dlc-egl/$EVAL_EXPERIMENT_ID/robocasa-egl-device-mapping.json"
+    "${FORMAL_INPUT_ROOT%/inputs}/control/dlc-egl/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID/robocasa-egl-device-mapping.json"
 require_exact_value \
     robocasa_torchcodec_relay_receipt_path \
     "$ROBOCASA_TORCHCODEC_RELAY_RECEIPT" \

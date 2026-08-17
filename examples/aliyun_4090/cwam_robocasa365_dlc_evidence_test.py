@@ -235,6 +235,12 @@ def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     assert 'bash "$EGL_MATRIX"' in script
     assert 'exec bash "$FORMAL_RUNNER"' in script
 
+    runner = RUNNER.read_text(encoding="utf-8")
+    assert (
+        '"${FORMAL_INPUT_ROOT%/inputs}/control/dlc-egl/$EVAL_EXPERIMENT_ID/'
+        '$EVAL_LOGICAL_RUN_ID/robocasa-egl-device-mapping.json"'
+    ) in runner
+
     generator = (HERE / "generate_cwam_dlc_egl_mapping_receipt.py").read_text(encoding="utf-8")
     assert '"script": descriptor(probe, 0o444)' in generator
     assert '"script": descriptor(probe, 0o555)' not in generator
