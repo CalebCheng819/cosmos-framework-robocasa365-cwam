@@ -170,3 +170,32 @@ def test_b5_run_checkpoint_mode_cannot_be_used_for_formal_name(tmp_path: Path) -
 
     assert result.returncode != 0
     assert "run-checkpoint warm start is probe-only" in result.stdout
+
+
+def test_b5_r4_formal_warm_start_requires_explicit_authorization(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, checkpoint_shards=8, checkpoint_json=False)
+    env["RUN_NAME"] = "CWAM-COSMOS3-B5-VOM-FORMAL-R7-20K"
+    env["CWAM_B5_RUN_CHECKPOINT_MODE"] = "r4"
+    env["CWAM_B5_ALLOW_FORMAL_R4_WARM_START"] = "1"
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stdout
+    assert (
+        "TORCHRUN_ARG=checkpoint.keys_to_skip_loading="
+        "[visual_memory_delta_main,visual_memory_delta_conditioners]" in result.stdout
+    )
+    assert "TORCHRUN_ARG=optimizer.keys_to_select=[strong_action_expert]" in result.stdout
+    assert "TORCHRUN_ARG=checkpoint.load_training_state=false" in result.stdout
+
+
+def test_b5_formal_authorization_does_not_allow_non_r4_checkpoint(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, checkpoint_shards=8, checkpoint_json=False)
+    env["RUN_NAME"] = "CWAM-COSMOS3-B5-VOM-FORMAL-R7-20K"
+    env["CWAM_B5_RUN_CHECKPOINT_MODE"] = "b4"
+    env["CWAM_B5_ALLOW_FORMAL_R4_WARM_START"] = "1"
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "run-checkpoint warm start is probe-only" in result.stdout

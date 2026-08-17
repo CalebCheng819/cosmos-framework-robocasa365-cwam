@@ -26,6 +26,8 @@
 #                                          initialization), b5 (probe eval), or
 #                                          r4 (R5 probe from the B5-R4 run)
 #   CWAM_B5_PROBE_TRAIN_SCOPE              memory (default) or strong_action_expert
+#   CWAM_B5_ALLOW_FORMAL_R4_WARM_START      1 explicitly authorizes a FORMAL
+#                                           model-only warm start in r4 mode
 #   RESUME_EXISTING_RUN      0 for a new run (default), 1 for functional
 #                            model/optim/scheduler/trainer resume
 #   ALLOW_DATA_STREAM_REPLAY must be 1 with RESUME_EXISTING_RUN=1, acknowledging
@@ -41,6 +43,7 @@ EXPERIMENT_SLUG="$(basename "$TOML_FILE" .toml)"
 : "${ALLOW_DATA_STREAM_REPLAY:=0}"
 : "${CWAM_B5_RUN_CHECKPOINT_MODE:=disabled}"
 : "${CWAM_B5_PROBE_TRAIN_SCOPE:=memory}"
+: "${CWAM_B5_ALLOW_FORMAL_R4_WARM_START:=0}"
 if [[ -z "${MASTER_PORT:-}" ]]; then
     CWAM_PORT_HASH="$(printf '%s' "$RUN_NAME" | cksum)"
     CWAM_PORT_HASH="${CWAM_PORT_HASH%% *}"
@@ -80,6 +83,8 @@ export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
     { echo "ERROR: CWAM_B5_RUN_CHECKPOINT_MODE must be disabled, b4, b5, or r4" >&2; exit 1; }
 [[ "$CWAM_B5_PROBE_TRAIN_SCOPE" =~ ^(memory|strong_action_expert)$ ]] ||
     { echo "ERROR: CWAM_B5_PROBE_TRAIN_SCOPE must be memory or strong_action_expert" >&2; exit 1; }
+[[ "$CWAM_B5_ALLOW_FORMAL_R4_WARM_START" =~ ^[01]$ ]] ||
+    { echo "ERROR: CWAM_B5_ALLOW_FORMAL_R4_WARM_START must be 0 or 1" >&2; exit 1; }
 if [[ "$RESUME_EXISTING_RUN" == 1 && "$ALLOW_DATA_STREAM_REPLAY" != 1 ]]; then
     echo "ERROR: packed-loader state is not checkpointed; functional resume restarts the data stream." >&2
     echo "Set ALLOW_DATA_STREAM_REPLAY=1 only for a documented smoke/restart attempt." >&2
@@ -93,6 +98,7 @@ IMAGINAIRE_OUTPUT_ROOT="${IMAGINAIRE_OUTPUT_ROOT:-$OUTPUT_ROOT}"
 [[ "$IMAGINAIRE_OUTPUT_ROOT" = /* ]] ||
     IMAGINAIRE_OUTPUT_ROOT="$LAUNCHER_WORKDIR/$IMAGINAIRE_OUTPUT_ROOT"
 export OUTPUT_ROOT IMAGINAIRE_OUTPUT_ROOT
+export CWAM_B5_ALLOW_FORMAL_R4_WARM_START
 mkdir -p "$IMAGINAIRE_OUTPUT_ROOT" ||
     { echo "ERROR: cannot create output root: $IMAGINAIRE_OUTPUT_ROOT" >&2; exit 1; }
 [[ -w "$IMAGINAIRE_OUTPUT_ROOT" ]] ||
@@ -139,8 +145,11 @@ if [[ "$CWAM_B5_RUN_CHECKPOINT_MODE" == disabled ]]; then
 else
     [[ "$(basename "$TOML_FILE")" == action_policy_robocasa365_b5_visual_object_memory_nano.toml ]] ||
         { echo "ERROR: run-checkpoint warm start is restricted to the B5 recipe" >&2; exit 1; }
-    [[ "$RUN_NAME" == *PROBE* ]] ||
-        { echo "ERROR: run-checkpoint warm start is probe-only; RUN_NAME must contain PROBE" >&2; exit 1; }
+    if [[ "$RUN_NAME" != *PROBE* ]]; then
+        [[ "$CWAM_B5_ALLOW_FORMAL_R4_WARM_START" == 1 && \
+           "$CWAM_B5_RUN_CHECKPOINT_MODE" == r4 && "$RUN_NAME" == *FORMAL* ]] ||
+            { echo "ERROR: run-checkpoint warm start is probe-only unless an r4 FORMAL run is explicitly authorized" >&2; exit 1; }
+    fi
     [[ "$(find "$BASE_CHECKPOINT_PATH/model" -maxdepth 1 -type f -name "*.distcp" | wc -l)" -eq 8 ]] ||
         { echo "ERROR: B5 probe run checkpoint must contain eight model DCP shards" >&2; exit 1; }
 fi
