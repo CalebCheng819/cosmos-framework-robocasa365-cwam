@@ -79,7 +79,7 @@ rjob submit \
     --termination-grace-period-seconds 60 \
     --backoff_limit 1 \
     --enable-sshd \
-    --store-host-nvme True \
+    --store-host-nvme=True \
     --image "$RJOB_IMAGE" \
     --cpu 96 \
     --gpu 6 \
