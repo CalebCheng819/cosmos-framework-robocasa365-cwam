@@ -11,7 +11,7 @@ export PYTHONNOUSERSITE=1
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
 
 readonly SOURCE_COMMIT=e7775ffcea0a2d577597fbeb05c8bb92905aba0f
-readonly CONTROL_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/$EVAL_EXPERIMENT_ID-control-v2"
+readonly CONTROL_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/$EVAL_EXPERIMENT_ID-control-v3"
 readonly SOURCE_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B4-e7775ff-20260817
 readonly INPUT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs
 readonly OSS_ROOT=/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval
@@ -206,6 +206,7 @@ export COSMOS_ENV ROBOCASA_ENV DEMIAN_REPO ROBOCASA_REPO ROBOSUITE_REPO
 export CHECKPOINT_ARTIFACT_ROOT SERVING_CHECKPOINT_PATH ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER
 export TRAINING_CONFIG="$CHECKPOINT_ARTIFACT_ROOT/config.yaml"
 export EVAL_OUTPUT_ROOT="$OUTPUT_STAGE"
+export EVAL_WORKER_SCRATCH="$SCRATCH_ROOT/runtime/eval"
 export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER
 
 bash "$RUNNER"

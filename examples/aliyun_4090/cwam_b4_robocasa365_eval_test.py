@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 
 MODULE_PATH = Path(__file__).with_name("cwam_b4_robocasa365_eval.py")
+LAUNCHER_PATH = Path(__file__).with_name("launch_cwam_b4_robocasa365_eval_dlc.sh")
+RUNNER_PATH = Path(__file__).with_name("run_cwam_b4_robocasa365_eval_dlc.sh")
 SPEC = importlib.util.spec_from_file_location("cwam_b4_eval", MODULE_PATH)
 assert SPEC and SPEC.loader
 module = importlib.util.module_from_spec(SPEC)
@@ -129,7 +131,17 @@ def test_reject_bad_action_width() -> None:
             raise AssertionError("invalid action width was accepted")
 
 
+def test_worker_scratch_is_local() -> None:
+    launcher = LAUNCHER_PATH.read_text(encoding="utf-8")
+    runner = RUNNER_PATH.read_text(encoding="utf-8")
+    assert 'export EVAL_WORKER_SCRATCH="$SCRATCH_ROOT/runtime/eval"' in launcher
+    assert 'readonly SCRATCH_DIR="$EVAL_WORKER_SCRATCH"' in runner
+    assert '[[ "$SCRATCH_DIR" == /tmp/* ]]' in runner
+    assert 'readonly SCRATCH_DIR="$EVAL_OUTPUT_ROOT/scratch"' not in runner
+
+
 if __name__ == "__main__":
     test_complete_result()
     test_reject_bad_action_width()
-    print("2 tests passed")
+    test_worker_scratch_is_local()
+    print("3 tests passed")

@@ -11,7 +11,7 @@ required=(
     ROBOSUITE_REPO CHECKPOINT_ARTIFACT_ROOT SERVING_CHECKPOINT_PATH
     TRAINING_CONFIG ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER
     EVAL_OUTPUT_ROOT EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID EVAL_RUN_NAME
-    EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER
+    EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER EVAL_WORKER_SCRATCH
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -28,7 +28,7 @@ readonly CONTROL_DIR="$EVAL_OUTPUT_ROOT/control"
 readonly RESULTS_ROOT="$EVAL_OUTPUT_ROOT/results"
 readonly RESULTS_DIR="$RESULTS_ROOT/$EVAL_RUN_NAME"
 readonly GATE_ROOT="$EVAL_OUTPUT_ROOT/one-episode-gates"
-readonly SCRATCH_DIR="$EVAL_OUTPUT_ROOT/scratch"
+readonly SCRATCH_DIR="$EVAL_WORKER_SCRATCH"
 readonly HELPER="$B4_EVAL_HELPER"
 readonly SERVER_MODULE=cosmos_framework.scripts.action_policy_server_robocasa365
 readonly EVALUATOR="$DEMIAN_REPO/demian_wam/eval_utils/run_robocasa_eval.py"
@@ -142,7 +142,12 @@ done
 [[ "$(git_revision "$ROBOCASA_REPO")" == "$ROBOCASA_COMMIT" ]] || die "RoboCasa revision mismatch"
 [[ "$(git_revision "$ROBOSUITE_REPO")" == "$ROBOSUITE_COMMIT" ]] || die "robosuite revision mismatch"
 [[ "$(findmnt -n -T "$EVAL_OUTPUT_ROOT" -o TARGET)" != / ]] || die "evaluation output is not on persistent storage"
+[[ "$SCRATCH_DIR" == /tmp/* ]] || die "worker scratch must be under /tmp: $SCRATCH_DIR"
+scratch_mount="$(findmnt -n -T /tmp -o TARGET)"
+[[ "$scratch_mount" != /mnt/workspace && "$scratch_mount" != /oss-chengjuntao ]] || \
+    die "worker scratch resolves to persistent shared storage: $scratch_mount"
 [[ ! -e "$CONTROL_DIR" ]] || die "refusing to reuse evaluation output: $EVAL_OUTPUT_ROOT"
+[[ ! -e "$SCRATCH_DIR" ]] || die "refusing to reuse worker scratch: $SCRATCH_DIR"
 mkdir -p "$CONTROL_DIR" "$RESULTS_ROOT" "$GATE_ROOT" \
     "$SCRATCH_DIR/server-a" "$SCRATCH_DIR/server-b" \
     "$SCRATCH_DIR/torchinductor-a" "$SCRATCH_DIR/torchinductor-b"

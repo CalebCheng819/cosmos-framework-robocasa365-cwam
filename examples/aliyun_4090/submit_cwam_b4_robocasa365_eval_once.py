@@ -29,7 +29,7 @@ PROJECT_ROOT = pathlib.Path("/mnt/workspace/cwam_cosmos3_robocasa365_eval")
 OSS_ROOT = pathlib.Path(
     "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval"
 )
-CONTROL_ROOT = PROJECT_ROOT / "control" / "scripts" / f"{EXPERIMENT_ID}-control-v2"
+CONTROL_ROOT = PROJECT_ROOT / "control" / "scripts" / f"{EXPERIMENT_ID}-control-v3"
 LAUNCHER = CONTROL_ROOT / "launch_cwam_b4_robocasa365_eval_dlc.sh"
 CHECKPOINT_ROOT = OSS_ROOT / "inputs" / "checkpoints" / (
     "B4-iter_000020000-serving-ema-bf16-metadata-v1"
