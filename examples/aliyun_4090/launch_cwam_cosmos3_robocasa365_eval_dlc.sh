@@ -11,11 +11,12 @@ export PYTHONNOUSERSITE=1
 : "${ROBOCASA_ENV:?Set ROBOCASA_ENV to the pinned RoboCasa environment}"
 : "${EXPECTED_ROBOCASA_ENV_READY_MARKER_SHA256:?Set the ready-marker SHA256}"
 : "${EVAL_EXPERIMENT_ID:?Set EVAL_EXPERIMENT_ID}"
+: "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
 
 readonly GPU_COUNT=8
 readonly PROJECT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval
-readonly EGL_CONTROL_ROOT="$PROJECT_ROOT/control/dlc-egl/$EVAL_EXPERIMENT_ID"
-readonly EVIDENCE_ROOT="$EGL_CONTROL_ROOT/egl-mapping-evidence-$EVAL_EXPERIMENT_ID"
+readonly EGL_CONTROL_ROOT="$PROJECT_ROOT/control/dlc-egl/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+readonly EVIDENCE_ROOT="$EGL_CONTROL_ROOT/egl-mapping-evidence-$EVAL_LOGICAL_RUN_ID"
 readonly EGL_MAPPING_RECEIPT="$EGL_CONTROL_ROOT/robocasa-egl-device-mapping.json"
 readonly EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly EGL_PROBE="$COSMOS_SOURCE/examples/aliyun_4090/probe_mujoco_egl_mapping.py"

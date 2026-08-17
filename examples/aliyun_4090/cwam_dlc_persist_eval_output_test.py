@@ -129,3 +129,53 @@ def test_existing_persistent_root_is_never_replaced(tmp_path: Path) -> None:
     assert second.returncode == 1
     assert "refusing to replace persistent run root" in second.stderr
     assert persistent_root.is_dir()
+
+
+def test_distinct_retry_run_is_published_under_existing_experiment(tmp_path: Path) -> None:
+    first, _, first_persistent_root = _invoke(tmp_path, launcher_exit_code=17)
+    assert first.returncode == 0, first.stderr
+
+    second_run = f"{RUN}-R2"
+    local_parent = tmp_path / "local"
+    persistent_parent = tmp_path / "persistent"
+    second_local_root = local_parent / EXPERIMENT / second_run
+    (second_local_root / "control").mkdir(parents=True)
+    (second_local_root / "control" / "receipt.json").write_text(
+        '{"status":"complete"}\n', encoding="utf-8"
+    )
+    second_persistent_root = persistent_parent / EXPERIMENT / second_run
+    second = subprocess.run(
+        [
+            "python3",
+            str(HELPER),
+            "--local-output-parent",
+            str(local_parent),
+            "--local-output-root",
+            str(second_local_root),
+            "--persistent-output-parent",
+            str(persistent_parent),
+            "--persistent-output-root",
+            str(second_persistent_root),
+            "--experiment-id",
+            EXPERIMENT,
+            "--run-id",
+            second_run,
+            "--control-commit",
+            COMMIT,
+            "--launcher-exit-code",
+            "0",
+            "--job-id",
+            "dlc-test-r2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert first_persistent_root.is_dir()
+    assert second_persistent_root.is_dir()
+    assert json.loads(
+        (second_persistent_root / "persistence-status.json").read_text(
+            encoding="utf-8"
+        )
+    )["terminal_status"] == "complete"

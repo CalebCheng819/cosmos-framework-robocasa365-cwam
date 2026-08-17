@@ -215,6 +215,15 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
 def test_dlc_launcher_generates_same_host_egl_evidence() -> None:
     script = LAUNCHER.read_text(encoding="utf-8")
     assert "readonly GPU_COUNT=8" in script
+    assert ': "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"' in script
+    assert (
+        'readonly EGL_CONTROL_ROOT="$PROJECT_ROOT/control/dlc-egl/'
+        '$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"'
+    ) in script
+    assert (
+        'readonly EVIDENCE_ROOT="$EGL_CONTROL_ROOT/'
+        'egl-mapping-evidence-$EVAL_LOGICAL_RUN_ID"'
+    ) in script
     assert "run_mujoco_egl_mapping_matrix_dlc.sh" in script
     assert "generate_cwam_dlc_egl_mapping_receipt.py" in script
     assert 'export EXPECTED_EGL_MAPPING_RECEIPT_SHA256="$(sha256_file' in script

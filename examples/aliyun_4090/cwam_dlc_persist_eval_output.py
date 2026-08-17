@@ -168,8 +168,20 @@ def persist(args: argparse.Namespace) -> Path:
 
     experiment_root = persistent_parent / args.experiment_id
     if experiment_root.exists() or experiment_root.is_symlink():
-        raise PersistenceError(f"refusing to reuse persistent experiment root: {experiment_root}")
-    experiment_root.mkdir(mode=0o700)
+        experiment_root = _canonical_existing_directory(
+            experiment_root, "persistent_experiment_root"
+        )
+    else:
+        try:
+            experiment_root.mkdir(mode=0o700)
+        except FileExistsError:
+            experiment_root = _canonical_existing_directory(
+                experiment_root, "persistent_experiment_root"
+            )
+    if not os.access(experiment_root, os.W_OK):
+        raise PersistenceError(
+            f"persistent_experiment_root is not writable: {experiment_root}"
+        )
     stage_root = experiment_root / f".{args.run_id}.incomplete-{os.getpid()}"
     stage_root.mkdir(mode=0o700)
 
