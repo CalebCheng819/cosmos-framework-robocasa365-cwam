@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-17T22:50:20+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-17T23:05:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T22:50:20+08:00", "end": "2026-08-17T23:05:00+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r8-b128"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817; W&B offline q44f94ks; GPU monitor cwam-b5-vom-probe-r8-b128-gpu-monitor"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Real optimizer evidence confirmed through iteration 13 at 6.19-6.53 s/step with global batch 1024, or 156.8-165.4 samples/s. Iteration-1 action-gradient audit passed: 199,967,573 optimizer gradient elements, 195,707,070 nonzero, 0 nonfinite. Eight B200s used 91,888-96,032 MiB each and reached 100%/907-965 W during compute phases. Initial matched validation on 2,048 examples retained 6.94% aligned gain versus zero and 4.85% versus shuffle. Step-100 validation/checkpoint and final throughput remain pending."}}]}
+  }
+}

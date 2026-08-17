@@ -1,0 +1,59 @@
+{
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+  "recorded_at": "2026-08-17T22:53:30+08:00",
+  "status": "Running",
+  "container": {
+    "job": "cwam-b5-vom-probe-r8-b128",
+    "monitor": "cwam-b5-vom-probe-r8-b128-gpu-monitor",
+    "host": "pyrogpucompute1",
+    "started_at": "2026-08-17T22:50:20+08:00",
+    "running": true
+  },
+  "training": {
+    "optimizer_step_start": 0,
+    "optimizer_step_target": 100,
+    "latest_verified_iteration": 13,
+    "stable_seconds_per_step": [6.19, 6.53],
+    "effective_global_batch": 1024,
+    "observed_samples_per_second": [156.8, 165.4],
+    "wandb_mode": "offline",
+    "wandb_run_id": "q44f94ks"
+  },
+  "gradient_evidence": {
+    "iteration": 1,
+    "status": "passed",
+    "family": "strong_action_expert",
+    "optimizer_gradient_elements": 199967573,
+    "nonzero_gradient_elements": 195707070,
+    "nonfinite_gradient_elements": 0,
+    "gradient_l2_norm": 0.12956114656975778
+  },
+  "initial_matched_validation": {
+    "iteration": 0,
+    "examples": 2048,
+    "unstable_count": 0,
+    "aligned_action_loss": 0.008289460092782974,
+    "zero_action_loss": 0.00890787411481142,
+    "shuffle_action_loss": 0.008711774833500385,
+    "aligned_vs_zero_relative_gain": 0.06942,
+    "aligned_vs_shuffle_relative_gain": 0.04847,
+    "policy_rank_zero_violation_fraction": 0.11279296875,
+    "policy_rank_shuffle_violation_fraction": 0.16259765625
+  },
+  "gpu_snapshot": {
+    "device_count": 8,
+    "compute_phase_utilization_percent": 100,
+    "memory_used_mib_min": 91888,
+    "memory_used_mib_max": 96032,
+    "memory_total_mib_each": 183359,
+    "compute_phase_power_watts_min": 907.66,
+    "compute_phase_power_watts_max": 965.37,
+    "monitor_path": "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817/gpu.csv"
+  },
+  "artifacts": {
+    "run_root": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+    "log": "/data0/wam/cwam-b5/runs/logs/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817.log",
+    "checkpoint_planned_iteration": 100
+  },
+  "interpretation": "The probe has real optimizer evidence and materially higher allocated memory than R7, but early sample throughput is approximately tied with R7. Final step-100 throughput, intervention validation, and checkpoint readiness remain pending."
+}
