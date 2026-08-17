@@ -237,6 +237,12 @@ class VisualObjectMemory(nn.Module):
         self.token_k = nn.Linear(model_dim, model_dim, bias=False)
         self.token_v = nn.Linear(model_dim, model_dim, bias=False)
         self.slot_out = nn.Linear(model_dim, model_dim, bias=False)
+        self.temporal_predictor = nn.Sequential(
+            nn.LayerNorm(model_dim),
+            nn.Linear(model_dim, 2 * model_dim),
+            nn.SiLU(),
+            nn.Linear(2 * model_dim, model_dim),
+        )
         rows = 2 if num_slots >= 4 else 1
         columns = math.ceil(num_slots / rows)
         anchor_y = torch.linspace(-0.5, 0.5, rows)
@@ -353,6 +359,50 @@ class VisualObjectMemory(nn.Module):
         # pooled feature scale stable when historical frames are missing.
         competitive_assignment = assignment_logits.float().softmax(dim=-1).to(dtype)
         competitive_assignment = competitive_assignment * token_valid[:, None, :, None]
+
+        num_spatial_tokens = self.latent_height * self.latent_width
+        num_history_tokens = self.history_length * num_spatial_tokens
+        frame_assignment = competitive_assignment[:, :, :num_history_tokens].reshape(
+            batch_size,
+            self.num_heads,
+            self.history_length,
+            num_spatial_tokens,
+            self.num_slots,
+        )
+        frame_value = value[:, :, :num_history_tokens].reshape(
+            batch_size,
+            self.num_heads,
+            self.history_length,
+            num_spatial_tokens,
+            self.head_dim,
+        )
+        frame_weights = frame_assignment / frame_assignment.sum(dim=3, keepdim=True).clamp_min(1.0e-6)
+        frame_pooled = torch.einsum("bhrpk,bhrpd->bhrkd", frame_weights, frame_value)
+        frame_pooled = frame_pooled.permute(0, 2, 4, 1, 3).reshape(
+            batch_size,
+            self.history_length,
+            self.num_slots,
+            self.model_dim,
+        )
+        frame_slots = self.output_norm(queries[:, None] + self.slot_out(frame_pooled))
+        temporal_prediction = self.temporal_predictor(frame_slots[:, :-1])
+        temporal_target = frame_slots[:, 1:].detach()
+        temporal_distance = 1.0 - (
+            F.normalize(temporal_prediction.float(), dim=-1)
+            * F.normalize(temporal_target.float(), dim=-1)
+        ).sum(dim=-1)
+        temporal_pair_valid = history_mask[:, :-1] & history_mask[:, 1:]
+        temporal_pair_weight = temporal_pair_valid[:, :, None].float()
+        temporal_pair_denominator = (temporal_pair_weight.sum() * self.num_slots).clamp_min(1.0)
+        temporal_correspondence_loss = (
+            temporal_distance * temporal_pair_weight
+        ).sum() / temporal_pair_denominator
+        temporal_pair_fraction = (
+            temporal_pair_valid.float().mean()
+            if temporal_pair_valid.numel()
+            else temporal_pair_valid.new_zeros((), dtype=torch.float32)
+        )
+
         slot_weights = competitive_assignment / competitive_assignment.sum(dim=2, keepdim=True).clamp_min(1.0e-6)
         pooled = torch.einsum("bhnk,bhnd->bhkd", slot_weights, value)
         pooled = pooled.permute(0, 2, 1, 3).reshape(batch_size, self.num_slots, self.model_dim)
@@ -374,8 +424,69 @@ class VisualObjectMemory(nn.Module):
             "visual_memory_slot_abs_cosine": slot_abs_cosine,
             "visual_memory_diversity_loss": diversity_loss,
             "visual_memory_history_fraction": history_mask.float().mean(),
+            "visual_memory_temporal_correspondence_loss": temporal_correspondence_loss,
+            "visual_memory_temporal_pair_fraction": temporal_pair_fraction,
         }
-        return slots, slot_valid, metrics
+        # Zero is represented by learned null slots, not by removing the branch.
+        # This keeps the R3 conditioning path structurally active for matched
+        # none/zero/shuffle interventions without introducing all-masked attention.
+        return slots, torch.ones_like(slot_valid), metrics
+
+
+class MemoryConditioningBlock(nn.Module):
+    """Inject object memory into every action layer through fixed-scale attention and FiLM."""
+
+    def __init__(self, *, model_dim: int, num_heads: int, residual_scale: float) -> None:
+        super().__init__()
+        if not 0.0 < residual_scale <= 1.0:
+            raise ValueError("Memory conditioning residual_scale must be in (0, 1]")
+        self.residual_scale = float(residual_scale)
+        self.action_norm = nn.LayerNorm(model_dim)
+        self.memory_norm = nn.LayerNorm(model_dim)
+        self.cross_attention = nn.MultiheadAttention(
+            model_dim,
+            num_heads,
+            dropout=0.0,
+            batch_first=True,
+        )
+        self.film = nn.Linear(model_dim, 2 * model_dim)
+
+    def init_weights(self) -> None:
+        for norm in (self.action_norm, self.memory_norm):
+            nn.init.ones_(norm.weight)
+            nn.init.zeros_(norm.bias)
+        nn.init.xavier_uniform_(self.cross_attention.in_proj_weight)
+        if self.cross_attention.in_proj_bias is not None:
+            nn.init.zeros_(self.cross_attention.in_proj_bias)
+        nn.init.xavier_uniform_(self.cross_attention.out_proj.weight)
+        if self.cross_attention.out_proj.bias is not None:
+            nn.init.zeros_(self.cross_attention.out_proj.bias)
+        std = 1.0 / math.sqrt(self.film.in_features)
+        nn.init.trunc_normal_(self.film.weight, std=std, a=-3 * std, b=3 * std)
+        nn.init.zeros_(self.film.bias)
+
+    def forward(
+        self,
+        action: torch.Tensor,
+        memory: torch.Tensor,
+        *,
+        action_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        normalized_action = self.action_norm(action)
+        normalized_memory = self.memory_norm(memory)
+        attended, _ = self.cross_attention(
+            normalized_action,
+            normalized_memory,
+            normalized_memory,
+            need_weights=False,
+        )
+        gamma, beta = self.film(attended).chunk(2, dim=-1)
+        conditioned = attended + torch.tanh(gamma) * normalized_action + torch.tanh(beta)
+        residual = (self.residual_scale * conditioned).masked_fill(~action_valid[:, :, None], 0.0)
+        valid_residual = residual.float().square().sum() / (
+            action_valid.sum().clamp_min(1) * residual.shape[-1]
+        )
+        return action + residual, valid_residual.sqrt()
 
 
 class RelationAwareCrossAttention(nn.Module):
@@ -546,6 +657,7 @@ class StrongActionContextExpert(nn.Module):
         visual_memory_layers: int = 2,
         visual_memory_tokens: int = 8,
         visual_memory_initial_gate: float = 0.1,
+        visual_memory_conditioning_scale: float = 0.25,
         visual_memory_intervention: str = "none",
     ) -> None:
         super().__init__()
@@ -578,6 +690,9 @@ class StrongActionContextExpert(nn.Module):
         self.visual_memory_initial_gate = float(visual_memory_initial_gate)
         if self.visual_memory_enabled and not 0.0 < self.visual_memory_initial_gate < 1.0:
             raise ValueError("visual_memory_initial_gate must be strictly between zero and one")
+        self.visual_memory_conditioning_scale = float(visual_memory_conditioning_scale)
+        if self.visual_memory_enabled and not 0.0 < self.visual_memory_conditioning_scale <= 1.0:
+            raise ValueError("visual_memory_conditioning_scale must be in (0, 1]")
 
         self.action_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
@@ -617,6 +732,16 @@ class StrongActionContextExpert(nn.Module):
                 num_views=num_views,
                 intervention=visual_memory_intervention,
             )
+            self.visual_memory_conditioners = nn.ModuleList(
+                MemoryConditioningBlock(
+                    model_dim=model_dim,
+                    num_heads=num_heads,
+                    residual_scale=self.visual_memory_conditioning_scale,
+                )
+                for _ in range(num_layers)
+            )
+            self.visual_memory_aux_norm = nn.LayerNorm(model_dim)
+            self.visual_memory_aux_out = nn.Linear(model_dim, hidden_size, bias=False)
         self.layers = nn.ModuleList(
             ActionExpertBlock(
                 model_dim=model_dim,
@@ -658,6 +783,17 @@ class StrongActionContextExpert(nn.Module):
             )
             nn.init.constant_(self.visual_memory_gate_logit, visual_memory_initial_logit)
             self.visual_object_memory.init_weights()
+            for conditioner in self.visual_memory_conditioners:
+                conditioner.init_weights()
+            nn.init.ones_(self.visual_memory_aux_norm.weight)
+            nn.init.zeros_(self.visual_memory_aux_norm.bias)
+            aux_output_std = 1.0 / math.sqrt(self.visual_memory_aux_out.in_features)
+            nn.init.trunc_normal_(
+                self.visual_memory_aux_out.weight,
+                std=aux_output_std,
+                a=-3 * aux_output_std,
+                b=3 * aux_output_std,
+            )
         for layer in self.layers:
             layer.init_weights()
         initial_logit = math.log(self.initial_residual_gate / (1.0 - self.initial_residual_gate))
@@ -699,7 +835,8 @@ class StrongActionContextExpert(nn.Module):
         action_history_mask: list[torch.Tensor] | None,
         visual_history_latent: list[torch.Tensor] | None = None,
         visual_history_mask: list[torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        action_seed_hidden: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor]]:
         control_fields = (proprio_history, proprio_history_mask, action_history, action_history_mask)
         if any(value is None for value in control_fields):
             raise ValueError("Strong action expert requires proprio/action history tensors and masks")
@@ -712,6 +849,14 @@ class StrongActionContextExpert(nn.Module):
             raise ValueError("Strong action expert control fields must align with packed samples")
         if action_indexes.numel() == 0 or vision_indexes.numel() == 0:
             raise ValueError("Strong action expert requires action tokens and clean visual context")
+        if self.visual_memory_enabled:
+            if action_seed_hidden is None:
+                raise ValueError("R3 visual memory conditioning requires pre-transformer action seeds")
+            if action_seed_hidden.shape != (action_indexes.numel(), self.hidden_size):
+                raise ValueError(
+                    "R3 action seeds must follow packed action order: "
+                    f"expected {(action_indexes.numel(), self.hidden_size)}, got {tuple(action_seed_hidden.shape)}"
+                )
 
         proprio = torch.stack(_strip_optional_collator_axis(proprio_history, expected_ndim=2))
         proprio_valid = torch.stack(
@@ -760,10 +905,16 @@ class StrongActionContextExpert(nn.Module):
         text_sample_ids = _sample_ids(text_indexes, sample_lens)
         vision_sample_ids = _sample_ids(vision_indexes, sample_lens)
         action_projected = self.action_in(self.action_norm(hidden_states[action_indexes]))
+        action_seed_projected = (
+            self.action_in(self.action_norm(action_seed_hidden))
+            if action_seed_hidden is not None
+            else None
+        )
         projected_text = self.context_in(self.context_norm(hidden_states[text_indexes]))
         projected_vision = self.context_in(self.context_norm(hidden_states[vision_indexes]))
 
         action_groups: list[torch.Tensor] = []
+        action_seed_groups: list[torch.Tensor] = []
         action_index_groups: list[torch.Tensor] = []
         context_groups: list[torch.Tensor] = []
         context_type_groups: list[torch.Tensor] = []
@@ -786,6 +937,12 @@ class StrongActionContextExpert(nn.Module):
             progress = progress / max(action_length - 1, 1)
             sample_action = sample_action + self.action_progress_mlp(progress[:, None].to(sample_action.dtype))
             action_groups.append(sample_action)
+            if action_seed_projected is not None:
+                sample_action_seed = action_seed_projected[action_mask]
+                sample_action_seed = sample_action_seed + self.action_progress_mlp(
+                    progress[:, None].to(sample_action_seed.dtype)
+                )
+                action_seed_groups.append(sample_action_seed)
             action_index_groups.append(action_indexes[action_mask])
             action_lengths.append(action_length)
 
@@ -901,6 +1058,11 @@ class StrongActionContextExpert(nn.Module):
             context_valid_groups.append(context_valid)
 
         action_batch = pad_sequence(action_groups, batch_first=True)
+        action_seed_batch = (
+            pad_sequence(action_seed_groups, batch_first=True)
+            if action_seed_groups
+            else None
+        )
         context_batch = pad_sequence(context_groups, batch_first=True)
         context_types = pad_sequence(context_type_groups, batch_first=True)
         context_views = pad_sequence(context_view_groups, batch_first=True, padding_value=nonvisual_view)
@@ -912,7 +1074,8 @@ class StrongActionContextExpert(nn.Module):
         )
 
         entropies = []
-        for layer in self.layers:
+        conditioned_residual_rms = []
+        for layer_id, layer in enumerate(self.layers):
             action_batch, entropy = layer(
                 action_batch,
                 context_batch,
@@ -923,6 +1086,21 @@ class StrongActionContextExpert(nn.Module):
                 context_age=context_ages,
             )
             entropies.append(entropy)
+            if self.visual_memory_enabled:
+                assert visual_memory_tokens is not None
+                assert action_seed_batch is not None
+                conditioner = self.visual_memory_conditioners[layer_id]
+                action_batch, residual_rms = conditioner(
+                    action_batch,
+                    visual_memory_tokens,
+                    action_valid=action_valid,
+                )
+                action_seed_batch, _ = conditioner(
+                    action_seed_batch,
+                    visual_memory_tokens,
+                    action_valid=action_valid,
+                )
+                conditioned_residual_rms.append(residual_rms)
 
         residuals = self.action_out(self.output_norm(action_batch))
         ordered_indexes = torch.cat(action_index_groups)
@@ -932,6 +1110,13 @@ class StrongActionContextExpert(nn.Module):
         )
         gate = self.residual_gate_logit.sigmoid().squeeze(0)
         updated = hidden_states.index_add(0, ordered_indexes, gate * ordered_residuals)
+        visual_memory_action_hidden: torch.Tensor | None = None
+        if action_seed_batch is not None:
+            auxiliary_hidden = self.visual_memory_aux_out(self.visual_memory_aux_norm(action_seed_batch))
+            visual_memory_action_hidden = torch.cat(
+                [auxiliary_hidden[sample_id, :length] for sample_id, length in enumerate(action_lengths)],
+                dim=0,
+            )
         valid_context_count = torch.stack([mask.sum() for mask in context_valid_groups]).float().mean()
         metrics = {
             "residual_gate": gate,
@@ -941,5 +1126,17 @@ class StrongActionContextExpert(nn.Module):
         }
         if self.visual_memory_enabled:
             metrics["visual_memory_gate"] = self.visual_memory_gate_logit.sigmoid()
+            metrics["visual_memory_conditioning_scale"] = torch.tensor(
+                self.visual_memory_conditioning_scale,
+                device=hidden_states.device,
+                dtype=torch.float32,
+            )
+            metrics["visual_memory_conditioned_residual_rms"] = torch.stack(
+                conditioned_residual_rms
+            ).mean()
+            assert visual_memory_action_hidden is not None
+            metrics["visual_memory_action_aux_hidden_rms"] = (
+                visual_memory_action_hidden.float().square().mean().sqrt()
+            )
         metrics.update(visual_memory_metrics)
-        return updated, metrics
+        return updated, visual_memory_action_hidden, metrics

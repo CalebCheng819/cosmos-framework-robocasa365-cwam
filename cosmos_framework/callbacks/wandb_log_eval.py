@@ -25,6 +25,14 @@ _PROBE_METRIC_KEYS = (
     "strong_action_visual_memory_slot_abs_cosine",
     "strong_action_visual_memory_diversity_loss",
     "strong_action_visual_memory_history_fraction",
+    "strong_action_visual_memory_temporal_correspondence_loss",
+    "strong_action_visual_memory_temporal_pair_fraction",
+    "strong_action_visual_memory_conditioning_scale",
+    "strong_action_visual_memory_conditioned_residual_rms",
+    "strong_action_visual_memory_action_aux_hidden_rms",
+    "flow_matching_loss_action_visual_memory_only",
+    "strong_action_visual_memory_action_aux_loss_weight",
+    "strong_action_visual_memory_temporal_loss_weight",
 )
 
 

@@ -301,7 +301,11 @@ class OmniMoTModelConfig:
     strong_action_visual_memory_layers: int = 2
     strong_action_visual_memory_tokens: int = 8
     strong_action_visual_memory_initial_gate: float = 0.1
+    strong_action_visual_memory_conditioning_scale: float = 0.25
     strong_action_visual_memory_diversity_loss_weight: float = 0.05
+    strong_action_visual_memory_temporal_loss_weight: float = 0.05
+    strong_action_visual_memory_action_aux_loss_weight: float = 0.25
+    strong_action_visual_memory_action_aux_warmup_iters: int = 50
     strong_action_visual_memory_intervention: str = "none"
 
     # sound configs

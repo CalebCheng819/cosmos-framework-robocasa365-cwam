@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -139,7 +138,9 @@ def run_gate(*, source_root: Path, expected_commit: str) -> dict[str, object]:
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.synchronize(device)
     started = time.perf_counter()
-    output, metrics = expert(**inputs)
+    output, auxiliary, metrics = expert(**inputs)
+    if auxiliary is not None:
+        raise RuntimeError("Visual-memory auxiliary output must be disabled for the baseline GPU gate")
     action_indexes = inputs["action_indexes"]
     assert isinstance(action_indexes, torch.Tensor)
     loss = output[action_indexes].float().square().mean()
@@ -184,12 +185,11 @@ def run_gate(*, source_root: Path, expected_commit: str) -> dict[str, object]:
             raise RuntimeError(f"Packed hidden-state gradient is zero for {field}")
 
     properties = torch.cuda.get_device_properties(device)
-    source_path = source_root / "cosmos_framework/model/generator/mot/strong_action_expert.py"
     return {
         "schema_version": 1,
         "status": "passed",
         "git_commit": actual_commit,
-        "source_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        "source_path": "cosmos_framework/model/generator/mot/strong_action_expert.py",
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "device": properties.name,

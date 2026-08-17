@@ -77,13 +77,14 @@ def test_strong_action_expert_updates_only_action_tokens_and_backpropagates_cont
     inputs = _inputs()
     original = inputs["hidden_states"].detach().clone()
 
-    output, metrics = expert(**inputs)
+    output, auxiliary, metrics = expert(**inputs)
 
     action_indexes = inputs["action_indexes"]
     untouched = torch.ones(output.shape[0], dtype=torch.bool)
     untouched[action_indexes] = False
     torch.testing.assert_close(output[untouched], original[untouched])
     assert not torch.equal(output[action_indexes], original[action_indexes])
+    assert auxiliary is None
     assert metrics.keys() == {
         "residual_gate",
         "attention_entropy",
@@ -126,9 +127,10 @@ def test_strong_action_expert_accepts_singleton_collator_axis() -> None:
     ):
         inputs[field] = [value.unsqueeze(0) for value in inputs[field]]
 
-    output, metrics = expert(**inputs)
+    output, auxiliary, metrics = expert(**inputs)
 
     assert output.shape == inputs["hidden_states"].shape
+    assert auxiliary is None
     assert torch.isfinite(output).all()
     assert all(torch.isfinite(value) for value in metrics.values())
 
@@ -199,16 +201,24 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
             torch.tensor([False, True, True]),
             torch.tensor([True, True, True]),
         ],
+        action_seed_hidden=torch.randn(6, 32, requires_grad=True),
     )
-    output, metrics = visual(**inputs)
+    output, auxiliary, metrics = visual(**inputs)
 
     assert torch.isfinite(output).all()
+    assert auxiliary is not None
+    assert auxiliary.shape == (6, 32)
+    assert torch.isfinite(auxiliary).all()
     assert metrics["visual_memory_gate"].item() == pytest.approx(0.1)
     assert metrics["visual_memory_history_fraction"].item() == pytest.approx(5.0 / 6.0)
     assert 0.0 <= metrics["visual_memory_slot_abs_cosine"].item() <= 1.0
     assert 0.0 <= metrics["visual_memory_diversity_loss"].item() <= 1.0
+    assert torch.isfinite(metrics["visual_memory_temporal_correspondence_loss"])
+    assert metrics["visual_memory_temporal_pair_fraction"].item() == pytest.approx(0.75)
+    assert metrics["visual_memory_conditioning_scale"].item() == pytest.approx(0.25)
+    assert metrics["visual_memory_conditioned_residual_rms"].item() > 0.0
     assert visual.visual_object_memory.slot_anchors.shape == (3, 2)
-    output[inputs["action_indexes"]].square().mean().backward()
+    (output[inputs["action_indexes"]].square().mean() + auxiliary.square().mean()).backward()
     assert visual.visual_memory_gate_logit.grad is not None
     assert torch.count_nonzero(visual.visual_memory_gate_logit.grad) > 0
     assert all(value.grad is not None and torch.count_nonzero(value.grad) > 0 for value in visual_latents)
@@ -256,15 +266,69 @@ def test_visual_memory_zero_intervention_masks_history_from_action_context() -> 
     inputs_a.update(
         visual_history_latent=[torch.randn(3, 8, 3, 6) for _ in range(2)],
         visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        action_seed_hidden=torch.randn(6, 32),
     )
     inputs_b.update(
         visual_history_latent=[torch.randn(3, 8, 3, 6) * 100 for _ in range(2)],
         visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        action_seed_hidden=inputs_a["action_seed_hidden"],
     )
 
-    output_a, metrics_a = visual(**inputs_a)
-    output_b, metrics_b = visual(**inputs_b)
+    output_a, auxiliary_a, metrics_a = visual(**inputs_a)
+    output_b, auxiliary_b, metrics_b = visual(**inputs_b)
 
     torch.testing.assert_close(output_a, output_b)
+    assert auxiliary_a is not None and auxiliary_b is not None
+    torch.testing.assert_close(auxiliary_a, auxiliary_b)
     assert metrics_a["visual_memory_history_fraction"].item() == 0.0
     assert metrics_b["visual_memory_history_fraction"].item() == 0.0
+    assert metrics_a["visual_memory_temporal_pair_fraction"].item() == 0.0
+    assert metrics_b["visual_memory_temporal_pair_fraction"].item() == 0.0
+
+
+def test_visual_memory_auxiliary_has_no_full_context_bypass() -> None:
+    torch.manual_seed(17)
+    visual = _expert(visual_memory_enabled=True)
+    inputs_a = _inputs()
+    inputs_a.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6) for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        action_seed_hidden=torch.randn(6, 32),
+    )
+    inputs_b = dict(inputs_a)
+    inputs_b["hidden_states"] = torch.randn_like(inputs_a["hidden_states"], requires_grad=True)
+
+    output_a, auxiliary_a, _ = visual(**inputs_a)
+    output_b, auxiliary_b, _ = visual(**inputs_b)
+
+    assert not torch.equal(output_a, output_b)
+    assert auxiliary_a is not None and auxiliary_b is not None
+    torch.testing.assert_close(auxiliary_a, auxiliary_b)
+
+
+def test_visual_memory_auxiliary_depends_on_matching_memory() -> None:
+    torch.manual_seed(19)
+    visual = _expert(visual_memory_enabled=True)
+    action_seed = torch.randn(6, 32, requires_grad=True)
+    inputs_a = _inputs()
+    inputs_a.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6, requires_grad=True) for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        action_seed_hidden=action_seed,
+    )
+    inputs_b = dict(inputs_a)
+    inputs_b["visual_history_latent"] = [
+        torch.randn(3, 8, 3, 6) + 4.0 for _ in range(2)
+    ]
+
+    _, auxiliary_a, _ = visual(**inputs_a)
+    _, auxiliary_b, _ = visual(**inputs_b)
+
+    assert auxiliary_a is not None and auxiliary_b is not None
+    assert not torch.allclose(auxiliary_a, auxiliary_b)
+    auxiliary_a.square().mean().backward()
+    assert action_seed.grad is not None and torch.count_nonzero(action_seed.grad) > 0
+    assert all(
+        latent.grad is not None and torch.count_nonzero(latent.grad) > 0
+        for latent in inputs_a["visual_history_latent"]
+    )

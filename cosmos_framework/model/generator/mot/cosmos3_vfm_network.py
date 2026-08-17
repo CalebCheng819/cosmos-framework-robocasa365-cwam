@@ -91,7 +91,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_visual_memory_layers=2,
         strong_action_visual_memory_tokens=8,
         strong_action_visual_memory_initial_gate=0.1,
+        strong_action_visual_memory_conditioning_scale=0.25,
         strong_action_visual_memory_diversity_loss_weight=0.05,
+        strong_action_visual_memory_temporal_loss_weight=0.05,
+        strong_action_visual_memory_action_aux_loss_weight=0.25,
+        strong_action_visual_memory_action_aux_warmup_iters=50,
         strong_action_visual_memory_intervention="none",
         natten_parameter_list=None,
         video_temporal_causal=False,
@@ -169,7 +173,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_visual_memory_layers = strong_action_visual_memory_layers
         self.strong_action_visual_memory_tokens = strong_action_visual_memory_tokens
         self.strong_action_visual_memory_initial_gate = strong_action_visual_memory_initial_gate
+        self.strong_action_visual_memory_conditioning_scale = strong_action_visual_memory_conditioning_scale
         self.strong_action_visual_memory_diversity_loss_weight = strong_action_visual_memory_diversity_loss_weight
+        self.strong_action_visual_memory_temporal_loss_weight = strong_action_visual_memory_temporal_loss_weight
+        self.strong_action_visual_memory_action_aux_loss_weight = strong_action_visual_memory_action_aux_loss_weight
+        self.strong_action_visual_memory_action_aux_warmup_iters = strong_action_visual_memory_action_aux_warmup_iters
         self.strong_action_visual_memory_intervention = strong_action_visual_memory_intervention
         if self.action_gen:
             assert self.vision_gen, (
@@ -218,8 +226,24 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError("Strong action expert initial gate must be strictly between zero and one")
             if not 0.0 < float(self.strong_action_visual_memory_initial_gate) < 1.0:
                 raise ValueError("Strong action visual memory initial gate must be strictly between zero and one")
-            if float(self.strong_action_visual_memory_diversity_loss_weight) < 0.0:
-                raise ValueError("Strong action visual memory diversity loss weight must be non-negative")
+            if not 0.0 < float(self.strong_action_visual_memory_conditioning_scale) <= 1.0:
+                raise ValueError("Strong action visual memory conditioning scale must be in (0, 1]")
+            nonnegative_visual_memory_values = {
+                "diversity_loss_weight": self.strong_action_visual_memory_diversity_loss_weight,
+                "temporal_loss_weight": self.strong_action_visual_memory_temporal_loss_weight,
+                "action_aux_loss_weight": self.strong_action_visual_memory_action_aux_loss_weight,
+                "action_aux_warmup_iters": self.strong_action_visual_memory_action_aux_warmup_iters,
+            }
+            invalid_visual_memory_values = {
+                name: value
+                for name, value in nonnegative_visual_memory_values.items()
+                if float(value) < 0.0
+            }
+            if invalid_visual_memory_values:
+                raise ValueError(
+                    "Strong action visual memory loss schedule must be non-negative: "
+                    f"{invalid_visual_memory_values}"
+                )
             if self.strong_action_visual_memory_intervention not in {"none", "zero", "shuffle"}:
                 raise ValueError(
                     "strong_action_visual_memory_intervention must be none, zero, or shuffle"
@@ -338,6 +362,9 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     visual_memory_layers=config.strong_action_visual_memory_layers,
                     visual_memory_tokens=config.strong_action_visual_memory_tokens,
                     visual_memory_initial_gate=config.strong_action_visual_memory_initial_gate,
+                    visual_memory_conditioning_scale=(
+                        config.strong_action_visual_memory_conditioning_scale
+                    ),
                     visual_memory_intervention=config.strong_action_visual_memory_intervention,
                 )
 
@@ -975,20 +1002,22 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             preds_action = self.unpack_action(preds_action, action.token_shapes, action.noisy_frame_indexes)
             output_dict.update(preds_action=preds_action)
 
-    def _decode_action_relevance_only(
+    def _decode_action_auxiliary(
         self,
         packed_seq: PackedSequence,
         action_hidden_states: torch.Tensor,
         output_dict: dict,
+        *,
+        output_key: str,
     ) -> None:
-        """Decode the B2 auxiliary prediction from action-order hidden states."""
+        """Decode an auxiliary prediction from action-order hidden states."""
         action = packed_seq.action
         if action is None or action.tokens is None:
-            raise ValueError("relevance-only action decoding requires action tokens")
+            raise ValueError("auxiliary action decoding requires action tokens")
         expected_tokens = sum(int(shape[0]) for shape in action.token_shapes)
         if action_hidden_states.shape != (expected_tokens, self.hidden_size):
             raise ValueError(
-                "relevance-only hidden states must follow packed action order: "
+                "auxiliary hidden states must follow packed action order: "
                 f"expected {(expected_tokens, self.hidden_size)}, got {tuple(action_hidden_states.shape)}"
             )
 
@@ -997,7 +1026,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             preds = [torch.zeros_like(tokens) for tokens in action.tokens]
             if preds:
                 preds[0] = preds[0] + graph_anchor
-            output_dict["preds_action_relevance_only"] = preds
+            output_dict[output_key] = preds
             return
 
         local_noisy_indexes: list[torch.Tensor] = []
@@ -1015,7 +1044,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         noisy_hidden = action_hidden_states[torch.cat(local_noisy_indexes)]
         per_token_domain_id = torch.cat(domain_ids)
         preds = self.llm2action(noisy_hidden, per_token_domain_id)
-        output_dict["preds_action_relevance_only"] = self.unpack_action(
+        output_dict[output_key] = self.unpack_action(
             preds,
             action.token_shapes,
             action.noisy_frame_indexes,
@@ -1165,7 +1194,10 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         action_seed_hidden: torch.Tensor | None = None
         if self.config.action_gen:
             self._encode_action(packed_seq, packed_sequence, target_dtype)
-            if self.config.action_relevance_enabled:
+            if self.config.action_relevance_enabled or (
+                self.config.strong_action_expert_enabled
+                and self.config.strong_action_visual_memory_enabled
+            ):
                 if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
                     raise ValueError("action relevance requires packed action tokens")
                 # Keep an immutable, action-order-aligned copy before the joint
@@ -1334,7 +1366,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             if not isinstance(packed_seq.position_ids, torch.Tensor):
                 raise TypeError("Strong action expert requires finalized position IDs")
             clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
-            last_hidden_state, strong_action_metrics = self.strong_action_expert(
+            last_hidden_state, visual_memory_action_hidden, strong_action_metrics = self.strong_action_expert(
                 last_hidden_state,
                 action_indexes=packed_seq.action.sequence_indexes,
                 text_indexes=packed_seq.text_indexes,
@@ -1347,8 +1379,11 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                 action_history_mask=packed_seq.control_action_history_mask,
                 visual_history_latent=packed_seq.control_visual_history_latent,
                 visual_history_mask=packed_seq.control_visual_history_mask,
+                action_seed_hidden=action_seed_hidden,
             )
             output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})
+        else:
+            visual_memory_action_hidden = None
 
         auxiliary_action_hidden: torch.Tensor | None = None
         if self.config.action_relevance_enabled:
@@ -1391,7 +1426,19 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         if self.config.action_gen:
             self._decode_action(packed_seq, last_hidden_state, output_dict)
             if auxiliary_action_hidden is not None:
-                self._decode_action_relevance_only(packed_seq, auxiliary_action_hidden, output_dict)
+                self._decode_action_auxiliary(
+                    packed_seq,
+                    auxiliary_action_hidden,
+                    output_dict,
+                    output_key="preds_action_relevance_only",
+                )
+            if visual_memory_action_hidden is not None:
+                self._decode_action_auxiliary(
+                    packed_seq,
+                    visual_memory_action_hidden,
+                    output_dict,
+                    output_key="preds_action_visual_memory_only",
+                )
 
         # decode sound tokens
         if self.config.sound_gen:

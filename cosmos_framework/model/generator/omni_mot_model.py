@@ -296,8 +296,20 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_visual_memory_layers=self.config.strong_action_visual_memory_layers,
                 strong_action_visual_memory_tokens=self.config.strong_action_visual_memory_tokens,
                 strong_action_visual_memory_initial_gate=self.config.strong_action_visual_memory_initial_gate,
+                strong_action_visual_memory_conditioning_scale=(
+                    self.config.strong_action_visual_memory_conditioning_scale
+                ),
                 strong_action_visual_memory_diversity_loss_weight=(
                     self.config.strong_action_visual_memory_diversity_loss_weight
+                ),
+                strong_action_visual_memory_temporal_loss_weight=(
+                    self.config.strong_action_visual_memory_temporal_loss_weight
+                ),
+                strong_action_visual_memory_action_aux_loss_weight=(
+                    self.config.strong_action_visual_memory_action_aux_loss_weight
+                ),
+                strong_action_visual_memory_action_aux_warmup_iters=(
+                    self.config.strong_action_visual_memory_action_aux_warmup_iters
                 ),
                 strong_action_visual_memory_intervention=self.config.strong_action_visual_memory_intervention,
                 natten_parameter_list=self.config.natten_parameter_list,
@@ -1417,6 +1429,11 @@ class OmniMoTModel(ImaginaireModel):
                     "strong_action_visual_memory_slot_abs_cosine",
                     "strong_action_visual_memory_diversity_loss",
                     "strong_action_visual_memory_history_fraction",
+                    "strong_action_visual_memory_temporal_correspondence_loss",
+                    "strong_action_visual_memory_temporal_pair_fraction",
+                    "strong_action_visual_memory_conditioning_scale",
+                    "strong_action_visual_memory_conditioned_residual_rms",
+                    "strong_action_visual_memory_action_aux_hidden_rms",
                 )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
@@ -1430,6 +1447,57 @@ class OmniMoTModel(ImaginaireModel):
                     diversity_weight,
                     **self.tensor_kwargs_fp32,
                 )
+                temporal_loss = out_net["strong_action_visual_memory_temporal_correspondence_loss"]
+                temporal_weight = float(self.config.strong_action_visual_memory_temporal_loss_weight)
+                total_loss += temporal_loss * temporal_weight
+                losses_dict["strong_action_visual_memory_temporal_loss_weight"] = torch.tensor(
+                    temporal_weight,
+                    **self.tensor_kwargs_fp32,
+                )
+
+                action_aux_weight = float(
+                    self.config.strong_action_visual_memory_action_aux_loss_weight
+                )
+                action_aux_warmup_iters = int(
+                    self.config.strong_action_visual_memory_action_aux_warmup_iters
+                )
+                if action_aux_weight > 0.0:
+                    if "preds_action_visual_memory_only" not in out_net:
+                        raise ValueError("R3 visual-memory action auxiliary prediction is missing")
+                    action_aux_warmup = action_relevance_aux_warmup_fraction(
+                        iteration=iteration,
+                        start_iter=0,
+                        warmup_iters=action_aux_warmup_iters,
+                    )
+                    if data_batch_packed.action is not None:
+                        assert isinstance(data_batch_packed.action.condition_mask, list)
+                        assert gen_data_noised.vt_target_action is not None
+                        visual_memory_action_loss, _ = self._compute_flow_matching_loss(
+                            pred=out_net["preds_action_visual_memory_only"],
+                            target=gen_data_noised.vt_target_action,
+                            condition_mask=data_batch_packed.action.condition_mask,
+                            timesteps=ts_action,
+                            has_valid_tokens=has_noisy_tokens(data_batch_packed.action),
+                            rectified_flow=self.rectified_flow_action,
+                            raw_action_dim=data_batch_packed.action.raw_action_dim,
+                            normalize_by_active=normalize_by_active,
+                        )
+                    else:
+                        visual_memory_action_loss = 0.0 * sum(
+                            prediction.sum()
+                            for prediction in out_net["preds_action_visual_memory_only"]
+                        )
+                    effective_action_aux_weight = (
+                        rf_cfg.action_loss_weight * action_aux_weight * action_aux_warmup
+                    )
+                    total_loss += visual_memory_action_loss * effective_action_aux_weight
+                    losses_dict.update(
+                        flow_matching_loss_action_visual_memory_only=visual_memory_action_loss,
+                        strong_action_visual_memory_action_aux_loss_weight=torch.tensor(
+                            effective_action_aux_weight,
+                            **self.tensor_kwargs_fp32,
+                        ),
+                    )
 
         if self.config.sound_gen:
             if data_batch_packed.sound is not None:
@@ -4716,6 +4784,7 @@ class OmniMoTModel(ImaginaireModel):
                 - "preds_sound": Velocity prediction for sound modality (if sound_gen enabled).
                 - "action_relevance_*": routing losses and diagnostics (if enabled).
                 - "preds_action_relevance_only": B2 auxiliary action prediction (if enabled).
+                - "preds_action_visual_memory_only": R3 memory-only future-action prediction (if enabled).
                 - "strong_action_*": strong action expert diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
@@ -4732,6 +4801,8 @@ class OmniMoTModel(ImaginaireModel):
             output_dict["preds_action"] = out_net["preds_action"]
         if self.config.action_relevance_enabled and "preds_action_relevance_only" in out_net:
             output_dict["preds_action_relevance_only"] = out_net["preds_action_relevance_only"]
+        if self.config.strong_action_visual_memory_enabled and "preds_action_visual_memory_only" in out_net:
+            output_dict["preds_action_visual_memory_only"] = out_net["preds_action_visual_memory_only"]
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
