@@ -363,6 +363,10 @@ def test_exclusive_dynamic_memory_removes_absolute_main_path() -> None:
     _, _, metrics_a = r6a(**inputs)
     output_b, _, metrics_b = r6b(**inputs)
 
+    assert not r6a.visual_memory_context_embed.requires_grad
+    assert not r6a.visual_memory_gate_logit.requires_grad
+    assert not r6b.visual_memory_context_embed.requires_grad
+    assert not r6b.visual_memory_gate_logit.requires_grad
     assert metrics_a["visual_memory_main_context_tokens"].item() == 0.0
     assert metrics_a["visual_memory_conditioned_residual_rms"].item() == 0.0
     assert metrics_a["visual_memory_delta_conditioned_residual_rms"].item() == 0.0

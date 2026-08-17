@@ -659,6 +659,11 @@ action_policy_robocasa365_b5_visual_object_memory_nano.job.name = (
 action_policy_robocasa365_b5_visual_object_memory_nano.model.config = (
     _action_policy_robocasa365_b5_visual_object_memory_nano_model_config()
 )
+if action_policy_robocasa365_b5_visual_object_memory_nano.model.config.strong_action_visual_memory_exclusive_dynamic:
+    action_policy_robocasa365_b5_visual_object_memory_nano.trainer.callbacks.action_gradient_evidence.excluded_parameter_patterns = [
+        r"strong_action_expert\.visual_memory_context_embed$",
+        r"strong_action_expert\.visual_memory_gate_logit$",
+    ]
 action_policy_robocasa365_b5_visual_object_memory_nano.dataloader_train = (
     _strong_robocasa365_packing_dataloader(
         split="train",

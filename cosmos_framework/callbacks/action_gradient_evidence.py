@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +34,16 @@ class ActionGradientEvidence(Callback):
         every_n: int = 50,
         fail_on_first_step: bool = True,
         output_subdir: str = "action_gradient_evidence",
+        excluded_parameter_patterns: list[str] | None = None,
     ) -> None:
         self.families = tuple(families or ("action2llm", "llm2action", "action_modality_embed"))
         self.every_n = int(every_n)
         self.fail_on_first_step = bool(fail_on_first_step)
         self.output_subdir = output_subdir
+        self.excluded_parameter_patterns = tuple(excluded_parameter_patterns or ())
+        self._excluded_parameter_regexes = tuple(
+            re.compile(pattern) for pattern in self.excluded_parameter_patterns
+        )
         if not self.families:
             raise ValueError("ActionGradientEvidence requires at least one parameter family.")
         if self.every_n < 1:
@@ -85,8 +91,8 @@ class ActionGradientEvidence(Callback):
                     id(parameter) for group in inner_optimizer.param_groups for parameter in group["params"]
                 )
         # Columns reduced by SUM:
-        # total, trainable, optimizer, grad, nonfinite, nonzero, grad_sq_sum.
-        sums = torch.zeros((len(self.families), 7), dtype=torch.float64, device=device)
+        # total, trainable, optimizer, grad, nonfinite, nonzero, grad_sq_sum, excluded.
+        sums = torch.zeros((len(self.families), 8), dtype=torch.float64, device=device)
         maxima = torch.zeros(len(self.families), dtype=torch.float64, device=device)
 
         for family_index, family in enumerate(self.families):
@@ -95,6 +101,9 @@ class ActionGradientEvidence(Callback):
                     continue
                 local_parameter = self._local(parameter)
                 local_elements = int(local_parameter.numel())
+                if any(pattern.search(name) for pattern in self._excluded_parameter_regexes):
+                    sums[family_index, 7] += local_elements
+                    continue
                 sums[family_index, 0] += local_elements
                 if parameter.requires_grad:
                     sums[family_index, 1] += local_elements
@@ -133,6 +142,7 @@ class ActionGradientEvidence(Callback):
                 "nonzero_gradient_elements": int(values[5]),
                 "gradient_l2_norm": float(values[6] ** 0.5),
                 "gradient_abs_max": float(maxima[family_index].cpu().item()),
+                "excluded_parameter_elements": int(values[7]),
             }
         return report
 

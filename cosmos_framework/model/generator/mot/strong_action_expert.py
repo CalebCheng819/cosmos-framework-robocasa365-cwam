@@ -1139,6 +1139,11 @@ class StrongActionContextExpert(nn.Module):
                 self.visual_memory_initial_gate / (1.0 - self.visual_memory_initial_gate)
             )
             self.visual_memory_gate_logit = nn.Parameter(torch.tensor([visual_memory_initial_logit]))
+            if self.visual_memory_exclusive_dynamic:
+                # These parameters only scale/identify absolute memory context tokens,
+                # which are absent from the dynamic-exclusive action path.
+                self.visual_memory_context_embed.requires_grad_(False)
+                self.visual_memory_gate_logit.requires_grad_(False)
             self.visual_object_memory = VisualObjectMemory(
                 latent_channels=visual_latent_channels,
                 history_length=visual_history_length,
