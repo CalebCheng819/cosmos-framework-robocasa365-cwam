@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R7 policy-ranking 20k formal training planned"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "R7 passed the preregistered 500-step causal dependency gates: aligned main-action loss was 11.31% lower than zero memory and 8.49% lower than shuffled memory on the same 2048 held-out samples, with finite complete checkpoint artifacts. Launch a new eight-B200 formal run from the same R4 model-only warm start, not from the probe optimizer state, for 20,000 optimizer steps with batch 64 per rank, global batch 512, R6-A dynamic-exclusive full final-delta architecture, and the R7 paired policy-ranking objective. Preserve a complete checkpoint every 1,000 steps, paired validation every 500 steps, GPU telemetry, gradient evidence, and immutable Git/run records. The formal run tests whether the causal memory dependence survives long training and later closed-loop evaluation; the probe result alone is not evidence of control success."}}]
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "parent": {"type": "data_source_id", "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"},
+  "properties": {
+    "Name": {"type": "title", "title": [{"type": "text", "text": {"content": "CWAM B5 VOM R7 policy-ranking formal 20k"}}]},
+    "Experiment ID": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817"}}]},
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "confirmatory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Train the R7 architecture long enough to determine whether its preregistered causal dependence on aligned object-memory history remains stable and yields a viable checkpoint for closed-loop RoboCasa365 evaluation."}}]},
+    "Acceptance Criterion": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Complete 20,000 finite optimizer steps on 8 B200s; save complete model/optim/scheduler/trainer DCP checkpoints every 1,000 steps; retain finite action gradients and nonzero memory contribution; at final matched validation, aligned main-action loss is at least 1% below both exact-zero and shuffled memory. Closed-loop success remains a separate terminal evaluation gate."}}]},
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817-aligned-memory-policy-ranking-3bf21e7789cc811898b2ca78f1bed05c"},
+    "Estimated Runtime": {"type": "number", "number": 19},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-18T17:09:03+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-18T17:09:03+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T22:09:03+08:00", "end": "2026-08-18T17:09:03+08:00"}},
+    "Git Commit": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81 (pushed; immutable formal training source)"}}]},
+    "Artifact URL": {"type": "url", "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81"},
+    "Config": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Fresh formal run from R4 model-only checkpoint; no R7 optimizer/scheduler resume; R6-A dynamic-exclusive full final-delta architecture; complete strong_action_expert train scope; R7 aligned/zero/shuffle policy ranking weight=1.0, relative margin=1%, rank warmup=50; 20,000 steps; LR warmup=500/cycle=20,000; batch 64/rank, DP8, global 512; validation every 500; DCP every 1,000."}}]},
+    "Data Version": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and episode-safe t-36/t-24/t-12 visual-history sidecar; same stream and data contract as R7; no future lookup."}}]},
+    "Environment": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; pyrogpucompute1; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; offline assets."}}]},
+    "Command": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": ".research-workflow/launchers/launch_b5_vom_formal_r7_20k_8gpu.sh"}}]},
+    "Hardware": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64/rank; effective global batch 512."}}]},
+    "Seeds": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "42 training; 4242 validation loader"}}]},
+    "Run IDs": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817"}}]},
+    "Primary Metrics": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Optimizer step/time and total loss; aligned/zero/shuffle main action losses and relative gains; ranking loss and violation fractions; main contribution RMS/ratio; slot diversity and contrastive margins; action-gradient validity; GPU utilization/memory/power; checkpoint completeness."}}]}
+  },
+  "children": [
+    {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Formal protocol"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "This is a new 20,000-step confirmatory training run from the same R4 model-only warm start used by R7. The completed 500-step R7 checkpoint authorizes the objective but is not resumed, so the formal optimizer, scheduler, data stream, and LR schedule start independently at step zero. Every 500 steps the same-forward paired intervention metrics are evaluated; every 1,000 steps a full 8-rank DCP snapshot is retained."}}]}}
+  ]
+}

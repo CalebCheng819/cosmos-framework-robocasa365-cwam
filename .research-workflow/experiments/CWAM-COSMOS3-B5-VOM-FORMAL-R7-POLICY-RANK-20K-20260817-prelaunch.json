@@ -1,0 +1,89 @@
+{
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817",
+  "recorded_at": "2026-08-17T22:14:34+08:00",
+  "status": "Planned",
+  "mode": "confirmatory",
+  "notion": {
+    "sync_state": "synced",
+    "page_id": "3bf21e77-89cc-8140-9d43-f090329fa8c5",
+    "page_url": "https://app.notion.com/p/CWAM-B5-VOM-R7-policy-ranking-formal-20k-3bf21e7789cc81409d43f090329fa8c5",
+    "experiment_id_verified": true,
+    "status_verified": "Planned",
+    "truncated": false,
+    "unknown_block_ids": []
+  },
+  "source": {
+    "repository": "CalebCheng819/cosmos-framework-robocasa365-cwam",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r7-20260817",
+    "training_commit": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+    "remote_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-FORMAL-R7-GIT-20260817",
+    "remote_clean": true,
+    "remote_commit_verified": true
+  },
+  "warm_start": {
+    "path": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+    "metadata_present": true,
+    "distcp_files": 8,
+    "scope": "model-only",
+    "source_run_step": 500,
+    "formal_optimizer_state_restored": false,
+    "formal_scheduler_state_restored": false,
+    "formal_trainer_state_restored": false
+  },
+  "resources": {
+    "host": "pyrogpucompute1",
+    "gpus": "8 x NVIDIA B200 183359 MiB",
+    "gpu_compute_processes_before_launch": 0,
+    "conflicting_containers_before_launch": 0,
+    "data0_available": "5.0 TiB",
+    "estimated_full_checkpoint_footprint": "approximately 88 GiB each",
+    "planned_checkpoint_count": 20,
+    "run_directory_absent": true
+  },
+  "data": {
+    "processed_root": "/data0/wam/cwam-b4/inputs/processed",
+    "source_root": "/data0/wam/cwam-b4/inputs/source-data",
+    "control_cache_root": "/data0/wam/cwam-b4/inputs/control-cache",
+    "latent_cache_root": "/data0/wam/cwam-b4/inputs/latent-cache",
+    "visual_history_cache_root": "/data0/wam/cwam-b5/inputs/visual-history-cache",
+    "strong_latent_cache_mode": "required",
+    "future_lookup": false
+  },
+  "configuration": {
+    "formal_optimizer_step_start": 0,
+    "formal_optimizer_step_target": 20000,
+    "new_optimizer_steps": 20000,
+    "samples_per_rank": 64,
+    "world_size": 8,
+    "gradient_accumulation": 1,
+    "effective_global_batch": 512,
+    "train_scope": "strong_action_expert",
+    "visual_memory_intervention": "none",
+    "delta_component": "full",
+    "exclusive_dynamic": true,
+    "delta_conditioning_layers": 0,
+    "policy_rank_weight": 1.0,
+    "policy_rank_relative_margin": 0.01,
+    "policy_rank_warmup_iters": 50,
+    "lr_warmup_steps": 500,
+    "lr_cycle_steps": 20000,
+    "validation_interval": 500,
+    "validation_iterations": 8,
+    "checkpoint_interval": 1000
+  },
+  "authorization": {
+    "r7_gate_page_id": "3bf21e77-89cc-8118-98b2-ca78f1bed05c",
+    "r7_probe_complete": true,
+    "r7_matched_validation_examples": 2048,
+    "r7_aligned_vs_zero_relative_gain": 0.113125,
+    "r7_aligned_vs_shuffle_relative_gain": 0.084876,
+    "formal_page_exists": true,
+    "prelaunch_gates_passed": true,
+    "launch_allowed": true
+  },
+  "provenance_policy": {
+    "code_identity": "Git commit plus branch",
+    "run_identity": "experiment ID plus container name plus artifact path plus timestamps",
+    "content_hashes_required": false
+  }
+}
