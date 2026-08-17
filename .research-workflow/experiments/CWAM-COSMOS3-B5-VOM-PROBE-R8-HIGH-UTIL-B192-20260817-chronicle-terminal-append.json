@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R8 B192 probe passed but B128 selected for formal 20k"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "The B192/rank, global-1536 probe completed 100 finite steps, exited 0, and wrote a complete 8-rank checkpoint. Mean throughput was 164.371 samples/s, only 0.511% above B128's 163.535, while peak memory reached 155,996 MiB (85.08%) and per-GPU average utilization reached 80.34%-85.68%. Terminal aligned/zero/shuffle losses were 0.0082599744/0.0091486471/0.0089573516, retaining 9.71371%/7.78553% aligned-history gains. Under the preregistered throughput-first rule and a fixed 20,000-step target, select B128 because it is projected to take about 34.8 hours versus 51.9 hours for B192."}}]}}
+  ]
+}
