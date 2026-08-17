@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import shutil
@@ -31,6 +32,16 @@ ZIP_TARGETS = {
     "textures.zip": PurePosixPath("robocasa/models/assets"),
 }
 ZIP_ROOTS = {name: name.removesuffix(".zip") for name in ZIP_TARGETS}
+PINNED_ASSET_README = (
+    b"Assets from https://huggingface.co/datasets/nvidia/"
+    b"PhysicalAI-Robotics-Manipulation-Objects-Kitchen-MJCF\n\n"
+    b"Please visit https://huggingface.co/datasets/nvidia/"
+    b"PhysicalAI-Robotics-Manipulation-Objects-Kitchen-MJCF for more information"
+)
+ZIP_ROOT_METADATA = {
+    "fixtures.zip": {PurePosixPath("README.md"): PINNED_ASSET_README},
+    "lightwheel.zip": {PurePosixPath("README.md"): PINNED_ASSET_README},
+}
 PROVENANCE_FILES = (
     PurePosixPath(".cwam_provenance/asset-tree-manifest.jsonl"),
     PurePosixPath(".cwam_provenance/asset-tree-receipt.json"),
@@ -228,6 +239,32 @@ def _zip_entry_kind(info: zipfile.ZipInfo) -> str:
     return "file"
 
 
+def _require_pinned_zip_metadata(
+    package: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    archive_name: str,
+    member: PurePosixPath,
+) -> bytes:
+    expected = ZIP_ROOT_METADATA.get(archive_name, {}).get(member)
+    if expected is None:
+        raise AssetPackageError(f"ZIP member has unexpected root: {archive_name}:{member}")
+    if _zip_entry_kind(info) != "file" or info.file_size != len(expected):
+        raise AssetPackageError(f"pinned ZIP metadata mismatch: {archive_name}:{member}")
+    with package.open(info, "r") as source:
+        observed = source.read(len(expected) + 1)
+    if observed != expected:
+        raise AssetPackageError(f"pinned ZIP metadata mismatch: {archive_name}:{member}")
+    return expected
+
+
+def _require_identical_existing_file(path: Path, expected: bytes) -> None:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise AssetPackageError(f"pinned ZIP metadata collides with a non-file: {path}")
+    if metadata.st_size != len(expected) or path.read_bytes() != expected:
+        raise AssetPackageError(f"pinned ZIP metadata collides with different content: {path}")
+
+
 def _extract_zip(stage: Path, archive_name: str, occupied: set[PurePosixPath]) -> None:
     archive = stage / ".source-zips" / archive_name
     target_base = ZIP_TARGETS[archive_name]
@@ -238,18 +275,33 @@ def _extract_zip(stage: Path, archive_name: str, occupied: set[PurePosixPath]) -
             if info.flag_bits & 0x1:
                 raise AssetPackageError(f"encrypted ZIP entry is forbidden: {archive_name}:{info.filename}")
             member = _safe_relative_path(info.filename, f"{archive_name} member")
-            if member.parts[0] != expected_root:
-                raise AssetPackageError(
-                    f"ZIP member has unexpected root: {archive_name}:{member}"
-                )
             if member in seen:
                 raise AssetPackageError(f"duplicate ZIP member: {archive_name}:{member}")
             seen.add(member)
             final_relative = target_base / member
+            destination = stage.joinpath(*final_relative.parts)
+            if member.parts[0] != expected_root:
+                expected_metadata = _require_pinned_zip_metadata(
+                    package,
+                    info,
+                    archive_name,
+                    member,
+                )
+                if final_relative in occupied:
+                    _require_identical_existing_file(destination, expected_metadata)
+                    continue
+                _ensure_directory(stage, PurePosixPath(*final_relative.parts[:-1]))
+                _copy_exact(
+                    io.BytesIO(expected_metadata),
+                    destination,
+                    len(expected_metadata),
+                    executable=False,
+                )
+                occupied.add(final_relative)
+                continue
             if final_relative in occupied:
                 raise AssetPackageError(f"ZIP member collides with repository skeleton: {final_relative}")
             occupied.add(final_relative)
-            destination = stage.joinpath(*final_relative.parts)
             kind = _zip_entry_kind(info)
             if kind == "directory":
                 _ensure_directory(stage, final_relative)
