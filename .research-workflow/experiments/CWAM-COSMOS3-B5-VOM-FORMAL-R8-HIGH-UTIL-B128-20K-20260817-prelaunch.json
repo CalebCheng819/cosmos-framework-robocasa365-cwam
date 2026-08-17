@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "confirmatory",
+  "status": "planned",
+  "notion": {
+    "database_id": "1475491573de47c8b180ee1ec97dff22",
+    "data_source_id": "74256a26ec9d4ddbb674ee84cac23be4",
+    "page_id": "3bf21e7789cc81088c14ec75367d32d6",
+    "page_url": "https://app.notion.com/p/CWAM-B5-VOM-R8-high-utilization-B128-formal-20k-3bf21e7789cc81088c14ec75367d32d6",
+    "sync_state": "synced",
+    "experiment_id_verified": true,
+    "status_verified": "Planned",
+    "chronicle_page_id": "39721e7789cc809e8877da95648820dc",
+    "chronicle_append_verified": true
+  },
+  "hypothesis": "The R8 B128 no-checkpointing configuration can complete a stable 20,000-step action-policy run while preserving policy dependence on aligned object-local visual memory and improving effective B200 utilization over R7.",
+  "objective": "Reach exactly 20,000 finite optimizer steps; save complete 8-rank checkpoints every 1,000 steps; validate aligned, zero, and shuffled memory every 500 steps; retain at least 1% final aligned action-loss gain over both interventions; keep closed-loop policy success as a separate evaluation claim.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+    "run_ids": ["CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817", "q44f94ks"]
+  },
+  "estimated_runtime_seconds": 129600,
+  "initial_eta": "2026-08-19T11:45:00+08:00",
+  "current_eta": "2026-08-19T11:45:00+08:00",
+  "experiment_window": {
+    "start": "2026-08-17T23:45:00+08:00",
+    "end": "2026-08-19T11:45:00+08:00"
+  },
+  "git": {
+    "commit": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r7-20260817",
+    "dirty": false,
+    "pushed": true,
+    "snapshot_sha256": "not-computed-under-project-no-hash-policy",
+    "patch_path": null,
+    "patch_sha256": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null,
+    "untracked_bundle_sha256": null,
+    "launcher_commit": "0bf1c6615b5e91b96b9fbbe448ca24e8b1a1c515",
+    "repository": "CalebCheng819/cosmos-framework-robocasa365-cwam",
+    "remote_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-FORMAL-R7-GIT-20260817",
+    "remote_clean": true,
+    "remote_commit_verified": true
+  },
+  "config": {
+    "path": ".research-workflow/launchers/launch_b5_vom_formal_r8_b128_20k_8gpu.sh",
+    "sha256": "not-computed-under-project-no-hash-policy",
+    "samples_per_rank": 128,
+    "world_size": 8,
+    "gradient_accumulation": 1,
+    "effective_global_batch": 1024,
+    "max_num_tokens_after_packing": 296000,
+    "activation_checkpointing": "none",
+    "optimizer_step_start": 0,
+    "optimizer_step_target": 20000,
+    "validation_interval": 500,
+    "checkpoint_interval": 1000,
+    "policy_rank_weight": 1.0,
+    "policy_rank_relative_margin": 0.01,
+    "policy_rank_warmup_iters": 50
+  },
+  "data": {
+    "version": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and episode-safe visual-history sidecar",
+    "revision": "same immutable paths and online no-future-lookup contract as R7 and R8 probes",
+    "processed_root": "/data0/wam/cwam-b4/inputs/processed",
+    "latent_cache_root": "/data0/wam/cwam-b4/inputs/latent-cache",
+    "visual_history_cache_root": "/data0/wam/cwam-b5/inputs/visual-history-cache"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130 with cwam-b4-runtime:ngc25.09-ffmpeg6",
+    "sha256": "not-computed-under-project-no-hash-policy"
+  },
+  "command": ".research-workflow/launchers/launch_b5_vom_formal_r8_b128_20k_8gpu.sh",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 128/rank; global batch 1024; activation checkpointing disabled",
+  "seeds": [42, 4242],
+  "started_at": null,
+  "completed_at": null,
+  "actual_runtime_seconds": null,
+  "job_id": null,
+  "run_ids": [],
+  "primary_metrics": {},
+  "artifact_urls": [],
+  "conclusion": null,
+  "failure_reason": null,
+  "warm_start": {
+    "path": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+    "distcp_files": 8,
+    "scope": "model-only",
+    "source_run_step": 500,
+    "optimizer_state_restored": false,
+    "scheduler_state_restored": false,
+    "trainer_state_restored": false
+  },
+  "resources": {
+    "gpu_compute_processes_before_launch": 0,
+    "data0_available": "4.8 TiB",
+    "run_directory_absent": true,
+    "job_names_absent": true
+  },
+  "selection_evidence": {
+    "b128_mean_samples_per_second": 163.535,
+    "b128_peak_memory_mib": 96500,
+    "b192_mean_samples_per_second": 164.371,
+    "b192_peak_memory_mib": 155996,
+    "b192_throughput_gain_over_b128_percent": 0.5112,
+    "decision": "B128 selected because B192 did not materially improve useful throughput for a fixed optimizer-step target"
+  },
+  "gates": {
+    "b128_probe_succeeded": true,
+    "b192_probe_succeeded": true,
+    "throughput_first_selection_applied": true,
+    "formal_page_exists": true,
+    "formal_page_exact_id_verified": true,
+    "chronicle_plan_synced": true,
+    "remote_preflight_passed": true,
+    "launch_allowed": true
+  }
+}

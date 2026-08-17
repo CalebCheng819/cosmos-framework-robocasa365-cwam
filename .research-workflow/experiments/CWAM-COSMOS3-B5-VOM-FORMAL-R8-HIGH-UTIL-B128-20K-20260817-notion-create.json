@@ -1,0 +1,31 @@
+{
+  "parent": {"type": "data_source_id", "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"},
+  "properties": {
+    "Name": {"type": "title", "title": [{"type": "text", "text": {"content": "CWAM B5 VOM R8 high-utilization B128 formal 20k"}}]},
+    "Experiment ID": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817"}}]},
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "confirmatory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Test whether the R8 B128 no-checkpointing configuration can complete a stable 20,000-step action-policy run while preserving policy dependence on aligned object-local visual memory and improving effective B200 utilization over R7."}}]},
+    "Acceptance Criterion": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Reach exactly 20,000 finite optimizer steps on 8 B200s without OOM, traceback, NCCL failure, or nonfinite action gradients; write complete 8-rank model/optimizer/scheduler/trainer checkpoints every 1,000 steps including step 20,000; run matched aligned/zero/shuffle validation every 500 steps and retain at least 1% aligned action-loss improvement over both interventions at final validation. Closed-loop policy success is a separate required evaluation and cannot be inferred from training completion or offline loss."}}]},
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-B5-VOM-R8-high-utilization-B128-probe-3bf21e7789cc81a28e39fae2251c171a"},
+    "Estimated Runtime": {"type": "number", "number": 36},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-19T11:45:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-19T11:45:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T23:45:00+08:00", "end": "2026-08-19T11:45:00+08:00"}},
+    "Git Commit": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81 immutable training source; 0bf1c6615b5e91b96b9fbbe448ca24e8b1a1c515 selected formal launcher and R8 decision record (pushed)"}}]},
+    "Artifact URL": {"type": "url", "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/0bf1c6615b5e91b96b9fbbe448ca24e8b1a1c515"},
+    "Config": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "R4 step-500 model-only warm start; fresh optimizer/scheduler/trainer at step 0; R6-A dynamic-exclusive full final-delta architecture; R7 aligned/zero/shuffle intervention-ranking objective weight=1.0, relative margin=1%, warmup=50; 20,000 steps; batch 128/rank, DP8, global 1024; token cap 296000; activation checkpointing none; validation every 500 steps including start; full checkpoint every 1,000 steps."}}]},
+    "Data Version": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and episode-safe t-36/t-24/t-12 visual-history sidecar; identical stream and online no-future-lookup contract to R7 and the R8 probes."}}]},
+    "Environment": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; pyrogpucompute1; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; offline assets."}}]},
+    "Command": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": ".research-workflow/launchers/launch_b5_vom_formal_r8_b128_20k_8gpu.sh"}}]},
+    "Hardware": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 128/rank; effective global batch 1024; activation checkpointing disabled."}}]},
+    "Seeds": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "42 training; 4242 validation loader"}}]},
+    "Run IDs": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817"}}]},
+    "Primary Metrics": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Finite optimizer-step trajectory and action-gradient evidence; seconds/step and samples/s; GPU utilization, memory, and power; aligned/zero/shuffle action loss and relative gains every 500 steps; complete checkpoint inventory every 1,000 steps; subsequent closed-loop task success recorded separately."}}]}
+  },
+  "children": [
+    {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Confirmatory protocol"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "B128 was preregistered as the throughput-first selection because the B192 probe increased peak memory to 85.08% but improved mean samples/s by only 0.511%; at a fixed 20,000 optimizer steps B192 would extend runtime from about 34.8 to 51.9 hours. This run therefore uses B128 to maximize optimizer progress per wall-clock hour while retaining the matched aligned-memory intervention gate."}}]}}
+  ]
+}

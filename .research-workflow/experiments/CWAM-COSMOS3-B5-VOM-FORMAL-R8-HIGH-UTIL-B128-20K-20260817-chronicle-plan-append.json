@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R8 B128 high-utilization formal 20k selected"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "R8 B128 and B192 both passed 100-step finite-gradient, checkpoint-completeness, memory, and aligned-versus-zero/shuffle intervention gates. B192 raised peak memory to 155,996/183,359 MiB and average GPU utilization to 80.34%-85.68%, but mean throughput was only 164.371 samples/s versus 163.535 for B128, a 0.511% increase. For the fixed 20,000-step target, select B128/rank, global batch 1024, token cap 296000, and activation checkpointing none. Start from the same R4 step-500 model-only checkpoint with fresh optimizer/scheduler/trainer state; validate interventions every 500 steps and save complete checkpoints every 1,000 steps. Formal Experiment ID: CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817. Training completion and later closed-loop policy evaluation remain separate evidence stages."}}]
+      }
+    }
+  ]
+}
