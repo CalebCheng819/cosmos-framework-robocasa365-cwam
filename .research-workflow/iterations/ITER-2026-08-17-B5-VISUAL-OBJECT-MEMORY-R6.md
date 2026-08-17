@@ -1,4 +1,4 @@
-### ITER-2026-08-17-B5-VISUAL-OBJECT-MEMORY-R6 - R5 contribution decomposition and dynamic-exclusive memory
+### ITER-2026-08-17-B5-VISUAL-OBJECT-MEMORY-R6 — R5 contribution decomposition and dynamic-exclusive memory
 
 - 时间：2026-08-17T18:10:00+08:00
 - 类型：Code Config Experiment
@@ -15,4 +15,10 @@
 - R5 分解结果：12 个 matched validation cells 均完成且每个覆盖相同 2048 个 held-out samples。aligned base/gate-only/residual-only/full action loss 分别为 0.008303430/0.008301578/0.008344762/0.008263416；gate-only 相对 base 改善 0.02231%，residual-only 退化 0.49777%，full 改善 0.48190%，推导出的 gate-residual interaction 为 base loss 的 0.95736%。full none/zero/shuffle 为 0.008263416/0.008293392/0.008271596，仅改善 0.36145%/0.09890%。因此拒绝“单一路径贡献主导”假设：两个分支需要协同，但因果效应仍低于 1% 门槛。
 - R6-A attempt0：Run `CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-20260817` 完成 initial validation 后，在第一个 optimizer step 前由 fail-closed action-gradient gate 终止。缺失梯度的 1,025/199,968,598 个元素精确对应 dynamic-exclusive 模式不可达的 legacy `visual_memory_context_embed`（1,024）与 `visual_memory_gate_logit`（1），不是数值非有限问题；失败日志、GPU 监控和首尾容器 inspect 均保留。
 - R6 修复：commit `a8681df43d240cd56d86627b7677d7b9dbc78f1c` 冻结上述两个不可达 legacy 参数，并允许梯度证据 callback 显式排除它们；所有其他 active action parameters 仍执行 fail-closed 检查。修复后 22 个聚焦测试及 R6-A/R6-B 8-rank BF16 smoke 均通过。正式重试使用全新 Run IDs `CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-RETRY1-20260817` 与 `CWAM-COSMOS3-B5-VOM-PROBE-R6B-R4WARM-500S-FIX1-20260817`。
+- R6-A retry1 失败：initial validation 完成，首个 backward 的 action-gradient gate 通过（199,967,573/199,967,573 active elements 有有限梯度），但在首个 optimizer boundary 的 EMA `torch._foreach_mul_` 报 CUDA illegal memory access；没有证据表明已完成一个 optimizer step，因此未标记 Running。失败日志、GPU 监控与容器首尾 inspect 保存在 `/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-RETRY1-20260817`。
+- R6 fix2 计划：保持两个不可达 legacy 参数参与与 R5 相同的 FSDP/optimizer 参数布局，但 dynamic-exclusive forward 不读取它们，因此其梯度必须严格为 `None`；action-gradient callback 继续按精确名称排除这 1,025 个元素。先运行聚焦测试与 8-rank、2-step、`CUDA_LAUNCH_BLOCKING=1` 门禁，只有跨过 backward、optimizer、EMA 和 batch-end 后才提交新的 500-step retry。
+- 变更：实现 R5 matched contribution decomposition；新增 R6-A/R6-B dynamic-exclusive 配置、精确 zero mask、action-gradient fail-closed gate，并为 R6 fix2 保留 legacy 参数布局但切断其 forward 梯度。
+- 结果：R5 的 gate-residual interaction 为主要贡献但 full 因果效应仍低于 1%；R6 fix2 聚焦测试 22 passed，8-rank optimizer/EMA 门禁及两个 500-step probe 结果待补。
+- 决策：拒绝 R5 单一路径贡献主导假设；R6-A/B 只有在 fix2 8-rank 门禁通过后才允许正式重试，任一 500-step 验收门槛失败均不扩展到 20k。
+- 下一步：冻结并推送 fix2 source，依次运行 R6-A、R6-B 2-step 门禁、500-step probe 与 matched none/zero/shuffle validation，最后更新 Notion 和本地终态记录。
 - 记录人：Codex

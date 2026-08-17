@@ -66,14 +66,10 @@ def test_action_gradient_evidence_fails_on_missing_gradient(tmp_path) -> None:
 
 def test_action_gradient_evidence_excludes_declared_inactive_parameters(tmp_path) -> None:
     model = _ActionHeads()
-    model.llm2action.bias.requires_grad_(False)
-    optimizer = torch.optim.SGD(
-        [parameter for parameter in model.parameters() if parameter.requires_grad],
-        lr=0.1,
-    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     for parameter in model.parameters():
-        if parameter.requires_grad:
-            parameter.grad = torch.ones_like(parameter)
+        parameter.grad = torch.ones_like(parameter)
+    model.llm2action.bias.grad = None
 
     callback = ActionGradientEvidence(
         every_n=1,

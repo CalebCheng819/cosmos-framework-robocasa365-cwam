@@ -360,13 +360,19 @@ def test_exclusive_dynamic_memory_removes_absolute_main_path() -> None:
         action_seed_hidden=torch.randn(6, 32),
     )
 
-    _, _, metrics_a = r6a(**inputs)
+    output_a, _, metrics_a = r6a(**inputs)
     output_b, _, metrics_b = r6b(**inputs)
 
-    assert not r6a.visual_memory_context_embed.requires_grad
-    assert not r6a.visual_memory_gate_logit.requires_grad
-    assert not r6b.visual_memory_context_embed.requires_grad
-    assert not r6b.visual_memory_gate_logit.requires_grad
+    (output_a.float().square().mean() + output_b.float().square().mean()).backward()
+
+    assert r6a.visual_memory_context_embed.requires_grad
+    assert r6a.visual_memory_gate_logit.requires_grad
+    assert r6b.visual_memory_context_embed.requires_grad
+    assert r6b.visual_memory_gate_logit.requires_grad
+    assert r6a.visual_memory_context_embed.grad is None
+    assert r6a.visual_memory_gate_logit.grad is None
+    assert r6b.visual_memory_context_embed.grad is None
+    assert r6b.visual_memory_gate_logit.grad is None
     assert metrics_a["visual_memory_main_context_tokens"].item() == 0.0
     assert metrics_a["visual_memory_conditioned_residual_rms"].item() == 0.0
     assert metrics_a["visual_memory_delta_conditioned_residual_rms"].item() == 0.0
