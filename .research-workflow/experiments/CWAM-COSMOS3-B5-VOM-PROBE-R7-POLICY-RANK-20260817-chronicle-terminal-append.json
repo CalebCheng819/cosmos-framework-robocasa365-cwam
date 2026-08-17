@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R7 paired policy-ranking probe passed both causal-dependence gates"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "R7 completed 500 finite optimizer steps on 8 B200s, exited 0, validated 2048/2048 paired samples with unstable_count 0, and saved a complete 8-rank 93,930,527,985-byte checkpoint. Aligned/zero/shuffle action losses were 0.0082750777/0.0093306042/0.0090425722, giving aligned improvements of 11.31252% and 8.48757%. Relative to R6-A, intervention gains increased by 10.80768/8.33952 percentage points, policy rank loss ended at 0.00010848, and zero/shuffle violation fractions fell to 6.29883%/9.61914%. Step-500 gradient evidence had 195,691,196 nonzero elements and zero nonfinite values. Aligned action loss itself was 0.21757% worse than R6-A, so the result establishes causal dependence on correct object history but not yet a closed-loop success gain. Decision: both preregistered one-percent gates pass, authorizing R7 for 20k with closed-loop evaluation still mandatory."}}]}}
+  ]
+}

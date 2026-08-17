@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Succeeded"}},
+    "Completed At": {"date": {"start": "2026-08-17T21:07:51+08:00"}},
+    "Actual Runtime": {"number": 0.47},
+    "Current ETA": {"date": {"start": "2026-08-17T21:07:51+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T20:39:32+08:00", "end": "2026-08-17T21:07:51+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r7; 8-B200 500-step train and paired terminal validation; exit 0"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817; W&B offline tg6brhvj; 2048/2048 paired aligned/zero/shuffle samples; unstable 0"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "500 finite steps; complete 8-rank 93,930,527,985-byte checkpoint. Aligned/zero/shuffle action loss 0.0082750777/0.0093306042/0.0090425722; aligned gains 11.31252%/8.48757%. Per-sample mean gains 29.25229%/24.27366%; violation fractions 6.29883%/9.61914%; rank loss 0.00010848. Step-500 gradients: 195,691,196 nonzero of 199,967,573, 0 nonfinite."}}]},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "Execution and hypothesis gates succeeded. Paired relative ranking made the policy strongly sensitive to correctly aligned history: gains over zero/shuffle rose by 10.80768/8.33952 percentage points versus R6-A and exceeded both preregistered 1% gates. However, aligned loss itself was 0.21757% worse than R6-A, so this proves causal dependence, not yet better closed-loop control. R7 is authorized for 20k; closed-loop validation remains required."}}]}
+  }
+}

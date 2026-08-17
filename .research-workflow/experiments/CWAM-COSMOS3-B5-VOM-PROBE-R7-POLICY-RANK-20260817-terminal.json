@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "completed",
+  "notion_page_id": "3bf21e77-89cc-8118-98b2-ca78f1bed05c",
+  "hypothesis": "Paired policy-intervention ranking makes the Action Expert's denoising policy depend specifically on correctly aligned object-memory history.",
+  "baseline_checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+  "git": {
+    "code_commit": "324ace63f3e665ed7226371db67863aee2cde503",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r7-20260817",
+    "dirty_at_launch": false,
+    "pushed_at_launch": true
+  },
+  "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R7-GIT-20260817",
+  "run_id": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817",
+  "wandb_offline_id": "tg6brhvj",
+  "job_id": "cwam-b5-vom-probe-r7",
+  "started_at": "2026-08-17T20:39:32+08:00",
+  "completed_at": "2026-08-17T21:07:51+08:00",
+  "actual_runtime_seconds": 1699,
+  "optimizer_steps": 500,
+  "exit_code": 0,
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64/rank; global batch 512",
+  "objective": {
+    "type": "paired_relative_policy_intervention_ranking",
+    "formula": "0.5 * (relu(L_aligned - 0.99 * stopgrad(L_zero)) + relu(L_aligned - 0.99 * stopgrad(L_shuffle)))",
+    "rank_weight": 1.0,
+    "effective_weight_after_action_loss_scale": 10.0,
+    "relative_margin": 0.01,
+    "warmup_steps": 50,
+    "shared_conditions": ["sample", "target", "noise", "diffusion_timestep", "non_memory_context", "5B_backbone_hidden_state"],
+    "counterfactual_gradients": false
+  },
+  "gradient_evidence": {
+    "milestones": [1, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
+    "all_passed": true,
+    "gradient_elements": 199967573,
+    "nonzero_gradient_elements_at_step_500": 195691196,
+    "nonfinite_gradient_elements": 0,
+    "gradient_l2_norm_at_step_500": 3.866333331175009
+  },
+  "checkpoint": {
+    "path": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817/checkpoints/iter_000000500",
+    "latest_pointer": "iter_000000500",
+    "total_bytes": 93930527985,
+    "model": {"distcp_files": 8, "metadata_files": 1, "bytes": 92320246538},
+    "optim": {"distcp_files": 8, "metadata_files": 1, "bytes": 1610075989},
+    "scheduler": {"distcp_files": 8, "metadata_files": 1, "bytes": 9797},
+    "trainer": {"distcp_files": 8, "metadata_files": 1, "bytes": 195661}
+  },
+  "terminal_validation": {
+    "samples": 2048,
+    "unique_samples": 2048,
+    "unstable_count": 0,
+    "final_loss": 1.3444002866744995,
+    "aligned_action_loss": 0.008275077678263187,
+    "zero_action_loss": 0.00933060422539711,
+    "shuffle_action_loss": 0.009042572230100632,
+    "relative_gain_over_zero_fraction": 0.1131252084,
+    "relative_gain_over_shuffle_fraction": 0.0848756894,
+    "mean_per_sample_zero_relative_gain": 0.2925229072570801,
+    "mean_per_sample_shuffle_relative_gain": 0.2427366077899933,
+    "policy_rank_loss": 0.00010847654630197212,
+    "zero_violation_fraction": 0.06298828125,
+    "shuffle_violation_fraction": 0.09619140625,
+    "main_context_tokens": 0.0,
+    "applied_delta_rms": 0.09571101516485214,
+    "delta_base_ratio": 0.08295381814241409,
+    "slot_abs_cosine": 0.06065190210938454,
+    "positive_similarity": 0.7676748037338257,
+    "object_negative_similarity": 0.017303796485066414,
+    "episode_negative_similarity": 0.0572843998670578
+  },
+  "comparison_to_r6a": {
+    "aligned_action_loss_relative_change_fraction": 0.0021757216,
+    "gain_over_zero_change_percentage_points": 10.80768084,
+    "gain_over_shuffle_change_percentage_points": 8.33951894,
+    "interpretation": "R7 strongly increased causal intervention sensitivity, while aligned offline fit was 0.21757 percent worse than R6-A. The intervention objective therefore establishes dependence but not a closed-loop performance improvement by itself."
+  },
+  "gpu_monitor": {
+    "path": "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817/gpu.csv",
+    "samples_all_gpus": 1512,
+    "active_samples_memory_over_1_gib": 1400,
+    "active_average_utilization_percent": 67.81,
+    "active_average_memory_mib": 57444.93,
+    "maximum_memory_mib": 62158,
+    "active_average_power_w": 665.82,
+    "maximum_power_w": 1014.63
+  },
+  "acceptance": {
+    "finite_500_steps": true,
+    "complete_8_rank_checkpoint": true,
+    "matched_counterfactual_conditions": true,
+    "counterfactual_stop_gradient": true,
+    "exact_zero_intervention": true,
+    "aligned_at_least_1_percent_below_zero": true,
+    "aligned_at_least_1_percent_below_shuffle": true,
+    "all_gates_passed": true,
+    "authorize_20k": true
+  },
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817",
+    "/data0/wam/cwam-b5/runs/logs/CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817.log"
+  ],
+  "conclusion": "R7 completed cleanly and passed every preregistered policy-dependence gate. The aligned action loss was 11.31252 percent below exact-zero memory and 8.48757 percent below shuffled memory on the same 2,048 validation samples. Compared with R6-A, these causal gaps increased by 10.80768 and 8.33952 percentage points, respectively, while aligned action loss itself was 0.21757 percent worse. The policy-ranking objective therefore successfully makes correct history consequential, but closed-loop evaluation is still required to determine whether the learned dependence is useful rather than merely increased counterfactual fragility. R7 is authorized for 20k training under the preregistered gate.",
+  "failure_reason": null
+}
