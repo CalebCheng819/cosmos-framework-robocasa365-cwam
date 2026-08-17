@@ -1,0 +1,81 @@
+{
+  "parent": {
+    "type": "data_source_id",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"
+  },
+  "properties": {
+    "Name": {
+      "type": "title",
+      "title": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817 - memory-delta main residual probe"}}]
+    },
+    "Experiment ID": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817"}}]
+    },
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "exploratory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Test whether making the final main action residual explicitly depend on same-slot object-local memory deltas, through both a raw-delta multiplicative gate and a learned directional residual, converts R4's identifiable object memory into causal full-policy use."}}]
+    },
+    "Acceptance Criterion": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Focused tests and distributed BF16 GPU smoke pass; eight-B200 training completes 500 finite optimizer steps and saves a complete checkpoint; zero intervention gives exactly zero object-delta RMS, gate deviation, and directional residual RMS; slot absolute cosine remains below 0.95 and positive similarity exceeds both negative similarities by at least 0.05; on the identical held-out stream and seed, aligned-history main action loss is at least 1% lower than both zero and shuffled interventions. No 20k run unless every gate passes."}}]
+    },
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817-object-local-contrastive-memory-probe-3bf21e7789cc8101b426f3c606cd1395"},
+    "Estimated Runtime": {"type": "number", "number": 1.5},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-17T16:30:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-17T16:30:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T15:00:00+08:00", "end": "2026-08-17T16:30:00+08:00"}},
+    "Git Commit": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "09f3791c3f30b902b7179a46ab3475493878567e (pushed, clean candidate)"}}]
+    },
+    "Artifact URL": {"type": "url", "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/09f3791c3f30b902b7179a46ab3475493878567e"},
+    "Config": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "R4 competitive visual object memory plus same-slot latest-minus-previous object deltas; action-to-delta cross-attention; fixed raw-delta multiplicative gate scale 0.25; learned directional residual scale 0.25; R4 checkpoint warm start; train complete strong_action_expert; 500 steps; batch 64/rank; DP8; matched none/zero/shuffle validation."}}]
+    },
+    "Data Version": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and episode-safe t-36/t-24/t-12 visual-history sidecar; same data, packing, and held-out stream as R4; no future lookup."}}]
+    },
+    "Environment": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; pyrogpucompute1; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; offline model assets."}}]
+    },
+    "Command": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Eight-rank R5 R4-warm probe with strong_action_expert optimizer scope, followed by exact-checkpoint validation-only none, zero, and shuffle cells on the same held-out stream."}}]
+    },
+    "Hardware": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; effective global batch 512."}}]
+    },
+    "Seeds": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "42 training; 4242 validation loader"}}]
+    },
+    "Run IDs": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R5-R4WARM-500S-20260817; validation suffixes VAL-NONE, VAL-ZERO, VAL-SHUFFLE"}}]
+    },
+    "Primary Metrics": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Aligned/zero/shuffle main action losses and relative gains; object-delta RMS and active fraction; main delta gate mean/deviation and directional residual RMS; slot absolute cosine; positive and negative similarity margins; memory-only action loss; step time; GPU memory, utilization, and power."}}]
+    }
+  },
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_2",
+      "heading_2": {"rich_text": [{"type": "text", "text": {"content": "R4 diagnosis and R5 change"}}]}
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "R4 learned separated temporally matched object slots and made aligned memory useful to the memory-only decoder, but full-policy main action loss remained invariant to none, zero, and shuffle. R5 writes object-local temporal change directly into the final hidden-state residual. A raw-delta magnitude gate cannot be learned away, while a learned directional path preserves signed object dynamics. The terminal decision remains the matched main-policy causal-use gate."}}]}
+    }
+  ]
+}
