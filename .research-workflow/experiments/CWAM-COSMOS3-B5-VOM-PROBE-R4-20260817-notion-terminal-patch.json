@@ -1,0 +1,56 @@
+{
+  "properties": {
+    "Status": {
+      "status": {
+        "name": "Failed"
+      }
+    },
+    "Completed At": {
+      "date": {
+        "start": "2026-08-17T12:17:35+08:00"
+      }
+    },
+    "Actual Runtime": {
+      "number": 0.63
+    },
+    "Experiment Window": {
+      "date": {
+        "start": "2026-08-17T11:40:01+08:00",
+        "end": "2026-08-17T12:17:35+08:00"
+      }
+    },
+    "Run IDs": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "train B4WARM-500S; matched validation VAL-NONE, VAL-ZERO, VAL-SHUFFLE; all validations exited 0"
+          }
+        }
+      ]
+    },
+    "Primary Metrics": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "500 finite steps; complete iter_000000500. Slot abs cosine 0.9989161 -> 0.2091563. Positive/object-negative/episode-negative similarities: 0.7254457/0.0084049/0.0618669. Memory-only action: none 0.3021545, zero 0.3670223, shuffle 0.3114415. Main action: none 0.0082484251, zero 0.0082450183, shuffle 0.0082476446; none was 0.04132% worse than zero and 0.00946% worse than shuffle."
+          }
+        }
+      ]
+    },
+    "Artifact URL": {
+      "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/0169f11f719b4abb5b4b3580e0131406872d5b04"
+    },
+    "Conclusion / Failure Reason": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "R4 solved R3's shared-slot collapse: local competition and object/episode negatives produced separated, temporally matched object slots, and the memory-only decoder benefited from aligned memory. The complete ActionDiT path still bypassed or drowned out that information: correct memory did not beat zero or shuffle on main action loss. Causal-use gates failed, so no 20k run was launched. The next probe should gate or residualize the main action path against memory-derived local deltas rather than add more standalone predictive objectives."
+          }
+        }
+      ]
+    }
+  }
+}

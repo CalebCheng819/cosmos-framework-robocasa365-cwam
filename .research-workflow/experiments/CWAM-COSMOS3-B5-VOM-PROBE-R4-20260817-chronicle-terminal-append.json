@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R4 object-local contrastive memory terminal result"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Experiment CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817 used commit 0169f11f719b4abb5b4b3580e0131406872d5b04 and 8 B200 GPUs. It completed 500 finite steps and a complete iter_000000500. Slot absolute cosine fell from 0.9989161 to 0.2091563; positive/object-negative/episode-negative similarities ended at 0.7254457/0.0084049/0.0618669, so anti-collapse and local contrastive margins passed. The memory-only action decoder preferred aligned memory, but identical 2048-sample main action loss was none 0.0082484251, zero 0.0082450183, shuffle 0.0082476446. Decision: representation identifiability improved but main-policy causal use failed; do not launch 20k. Next make the main action residual or gate depend on object-local memory deltas instead of adding another independently solvable auxiliary. Notion experiment page: 3bf21e77-89cc-8101-b426-f3c606cd1395."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

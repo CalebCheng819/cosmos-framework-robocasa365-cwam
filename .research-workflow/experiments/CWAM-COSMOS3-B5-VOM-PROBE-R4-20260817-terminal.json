@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "failed",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-8101-b426-f3c606cd1395",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817-object-local-contrastive-memory-probe-3bf21e7789cc8101b426f3c606cd1395"
+  },
+  "hypothesis": "Token-to-slot competition, local assignment structure, cross-object and cross-episode negatives, and main-action-gradient supervision will prevent R3's predictive auxiliaries from being solved by a shared collapsed representation and make aligned cross-replan memory causally useful.",
+  "objective": "Complete 500 finite optimizer steps and save the full checkpoint; keep slot mean absolute off-diagonal cosine below 0.95; make positive temporal similarity exceed both cross-object and cross-episode negative similarity by at least 0.05; retain active finite action-gradient supervision; and make aligned-history held-out main action loss at least 1 percent lower than both zero-history and batch-shuffled-history interventions. Do not launch 20k unless every gate passes.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817",
+    "run_ids": [
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-B4WARM-500S-20260817",
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-VAL-NONE-20260817",
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-VAL-ZERO-20260817",
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-VAL-SHUFFLE-20260817"
+    ]
+  },
+  "estimated_runtime_seconds": 18000,
+  "initial_eta": "2026-08-17T16:31:10+08:00",
+  "current_eta": "2026-08-17T12:12:00+08:00",
+  "experiment_window": {
+    "start": "2026-08-17T11:40:01+08:00",
+    "end": "2026-08-17T12:17:35+08:00"
+  },
+  "git": {
+    "commit": "0169f11f719b4abb5b4b3580e0131406872d5b04",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r4-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R3 fixed-scale 0.25 memory cross-attention plus FiLM after every action layer; eight competitive object slots; diversity 0.20; assignment entropy, usage balance, and spatial compactness 0.05 each; temporal correspondence 0.02; cross-object and cross-episode contrastive 0.10 each at temperature 0.07; local action-gradient alignment 0.05; memory-only future-action auxiliary 0.25; B4 warm start; train strong_action_expert; 500 steps; batch 64 per rank; DP8; accumulation 1; maximum 8 validation batches"
+  },
+  "data": {
+    "version": "RoboCasa365 B4 processed split plus Wan latent cache and visual-history sidecar",
+    "revision": "1,143,698 fixed records; 280 shards; same-physical-episode t-36/t-24/t-12 visual-history lookup; scalar episode ID used only to exclude false negatives and form detached cross-rank negative prototypes; no future or cross-episode lookup"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130",
+    "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"
+  },
+  "command": "launch_b5_vom_probe_r4_8gpu.sh followed by launch_b5_vom_matched_val_r4.sh none, zero, and shuffle; formal 20k remained blocked because the main-action causal-use gates failed.",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; global batch 512",
+  "seeds": [
+    42,
+    4242
+  ],
+  "preflight": {
+    "focused_tests": "22 passed in the production container: 13 strong-action-expert tests and 9 action-config tests",
+    "gpu_smoke": "Two-rank NCCL B200 BF16 production-dimension forward/backward finite with loss 2.0586414 and peak allocation 907.19 MiB per rank; cross-episode negative fraction 1.0; action-gradient valid fraction 1.0; all six required parameter groups received finite nonzero gradients",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R4-GIT-20260817",
+    "base_checkpoint": "/data1/wam/cwam-b4/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B4-ADAPTIVE-DSELECT-R1-20260814/checkpoints/iter_000020000",
+    "import_path_guard": "Formal source imported the new action-gradient function from the immutable R4 path before launch"
+  },
+  "validation": {
+    "policy": "git-run-path-timestamp-no-file-hashes",
+    "result": "pass",
+    "legacy_validator": "The bundled validator still requires SHA-256 fields and is superseded by the workflow's higher-priority no-hash policy; immutable non-hash fields were compared with the prelaunch manifest using jq.",
+    "checked_fields": "Prelaunch immutable fields, exact formal source, start and completion timestamps, four run IDs, exit states, W&B terminal metrics, step-500 gradient evidence, checkpoint components, and GPU monitor summary"
+  },
+  "started_at": "2026-08-17T11:40:01+08:00",
+  "completed_at": "2026-08-17T12:17:35+08:00",
+  "actual_runtime_seconds": 2254,
+  "job_id": "cwam-b5-vom-probe-r4",
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R4-VAL-NONE-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R4-VAL-ZERO-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R4-VAL-SHUFFLE-20260817"
+  ],
+  "primary_metrics": {
+    "optimizer_steps": 500,
+    "initial_action_loss": 0.007992175407707691,
+    "train_end_action_loss_final_microbatch": 0.006083430722355843,
+    "aligned_action_loss": 0.008248425088822842,
+    "zero_action_loss": 0.008245018310844898,
+    "shuffle_action_loss": 0.008247644640505314,
+    "aligned_gain_over_zero_fraction": -0.000413192287694788,
+    "aligned_gain_over_shuffle_fraction": -0.00009462681184090816,
+    "initial_memory_only_action_loss": 1.6276603937149048,
+    "aligned_memory_only_action_loss": 0.3021544814109802,
+    "zero_memory_only_action_loss": 0.367022305727005,
+    "shuffle_memory_only_action_loss": 0.31144148111343384,
+    "aligned_memory_only_gain_over_zero_fraction": 0.1767408228432692,
+    "aligned_memory_only_gain_over_shuffle_fraction": 0.029819405139134576,
+    "initial_slot_mean_abs_offdiag_cosine": 0.9989161491394043,
+    "final_slot_mean_abs_offdiag_cosine": 0.2091563194990158,
+    "initial_diversity_loss": 0.9978336095809937,
+    "final_diversity_loss": 0.09854629635810852,
+    "initial_assignment_entropy_loss": 0.9998990297317505,
+    "final_assignment_entropy_loss": 0.8376745581626892,
+    "initial_assignment_balance_loss": 0.0001288841012865305,
+    "final_assignment_balance_loss": 0.07801499962806702,
+    "initial_spatial_compactness_loss": 0.7408483028411865,
+    "final_spatial_compactness_loss": 0.7279534339904785,
+    "initial_temporal_correspondence_loss": 0.8570141792297363,
+    "final_temporal_correspondence_loss": 0.1495543271303177,
+    "initial_positive_similarity": 0.01798582449555397,
+    "final_positive_similarity": 0.7254456877708435,
+    "final_object_negative_similarity": 0.00840491522103548,
+    "final_episode_negative_similarity": 0.06186690181493759,
+    "final_positive_object_margin": 0.717040772549808,
+    "final_positive_episode_margin": 0.6635787859559059,
+    "final_episode_negative_fraction": 0.875,
+    "initial_object_contrastive_loss": 1.7205278873443604,
+    "final_object_contrastive_loss": 0.00014891994942445308,
+    "initial_episode_contrastive_loss": 3.483557939529419,
+    "final_episode_contrastive_loss": 0.32591792941093445,
+    "initial_train_action_gradient_loss": 2.0783650875091553,
+    "final_train_action_gradient_loss": 1.9939913749694824,
+    "action_gradient_valid_fraction_in_distributed_smoke": 1.0,
+    "finite_gradients": true,
+    "step_500_gradient_l2_norm": 4.160531242315365,
+    "step_500_nonzero_gradient_elements": 187299210,
+    "step_500_nonfinite_gradient_elements": 0,
+    "checkpoint": "iter_000000500",
+    "checkpoint_components": {
+      "model_files": 9,
+      "optim_files": 9,
+      "scheduler_files": 9,
+      "trainer_files": 9,
+      "total_bytes": 93812338333
+    },
+    "gpu_monitor": {
+      "samples": 496,
+      "active_samples": 369,
+      "active_mean_utilization_percent": 83.2059620596206,
+      "active_mean_memory_mib": 55952.9864498645,
+      "peak_memory_mib": 59078.0,
+      "active_mean_power_w": 760.8983739837398,
+      "peak_power_w": 1012.3
+    },
+    "validation_exit_codes": {
+      "none": 0,
+      "zero": 0,
+      "shuffle": 0
+    },
+    "acceptance": {
+      "finite_500_steps": true,
+      "complete_checkpoint": true,
+      "slot_abs_cosine_below_0_95": true,
+      "positive_object_margin_at_least_0_05": true,
+      "positive_episode_margin_at_least_0_05": true,
+      "action_gradient_active_and_finite": true,
+      "aligned_gain_over_zero_at_least_0_01": false,
+      "aligned_gain_over_shuffle_at_least_0_01": false,
+      "formal_20k_launched": false
+    }
+  },
+  "artifact_urls": [
+    "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/0169f11f719b4abb5b4b3580e0131406872d5b04"
+  ],
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R4-VAL-NONE-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R4-VAL-ZERO-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R4-VAL-SHUFFLE-20260817"
+  ],
+  "conclusion": "Object-local competition, diversity, cross-object and cross-episode negatives, and local action-gradient supervision prevented the R3 shared-slot collapse and learned highly separated temporally matched object slots. The memory-only action decoder used aligned memory, but the full ActionDiT main path still did not benefit from correct memory over zero or shuffled memory. Representation identifiability improved; causal policy use did not.",
+  "failure_reason": "Aligned main action loss was 0.04132 percent worse than zero and 0.00946 percent worse than shuffle, rather than at least 1 percent better. The formal 20k run was not launched even though all anti-collapse, contrastive-margin, finite-gradient, and checkpoint gates passed."
+}

@@ -10,3 +10,8 @@
 - Git：分支 exp/cosmos3-b5-visual-object-memory-r4-20260817；实现提交在测试与 GPU smoke 通过后生成并推送。
 - 实验：CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817；Run CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817；正式页面在启动前创建。
 - 记录人：Codex
+- 实现：提交 0169f11f719b4abb5b4b3580e0131406872d5b04；生产容器内 22 个聚焦测试通过；两 rank B200 BF16 生产维度 smoke 通过，action-gradient valid fraction 为 1.0，六组新增参数均获得有限非零梯度。
+- 运行：八张 B200 完成 500 个有限 optimizer steps，step 500 的 action expert 梯度 L2 norm 为 4.1605312，187,299,210 个元素非零且无 non-finite。完整 iter_000000500 含 model/optim/scheduler/trainer 各 9 个文件，总大小 93,812,338,333 bytes。三组 matched validation 均 exit code 0。
+- 结果：slot absolute cosine 从 0.9989161 降至 0.2091563，diversity loss 从 0.9978336 降至 0.0985463；同对象正样本相似度为 0.7254457，跨对象和跨 episode 负样本分别为 0.0084049 和 0.0618669，margin 为 0.7170408 和 0.6635788。局部竞争、多样性和 negatives 成功阻止 R3 的共享 slot 坍缩。memory-only action loss 为 none 0.3021545、zero 0.3670223、shuffle 0.3114415，说明 compact memory 对独立辅助头有预测信息。
+- 因果验证：相同 2048 样本下主 action loss 为 none 0.0082484251、zero 0.0082450183、shuffle 0.0082476446；none 分别比 zero 和 shuffle 差 0.04132% 和 0.00946%，没有达到至少改善 1% 的门槛。
+- 决策：实验执行完成，但研究验收失败。R4 证明了对象局部 anti-collapse 与跨对象/episode negatives 可以得到非共享、可预测的 memory slots，却也表明完整 ActionDiT 仍能绕过或淹没这些信息。保持 20k 正式训练阻塞。下一次短探针应让主 action residual/gate 显式依赖对象局部 memory delta，并继续使用相同 none/zero/shuffle 门槛；不要再仅增加可由独立辅助头解决的 predictive objective。
