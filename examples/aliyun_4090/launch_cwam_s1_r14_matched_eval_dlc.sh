@@ -40,6 +40,7 @@ readonly LOCAL_CHECKPOINT_ROOT="$LOCAL_CHECKPOINT_PARENT/S1-R3-iter_000010000-se
 readonly SOURCE_CHECKPOINT_ROOT="$OSS_PROJECT_ROOT/inputs/checkpoints/S1-R3-iter_000010000-serving-ema-bf16-v1"
 readonly SOURCE_ENV_ARCHIVE="$OSS_PROJECT_ROOT/inputs/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
 readonly SOURCE_ROBOCASA_ASSET_PACKAGE="$OSS_PROJECT_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
+readonly SOURCE_ROBOCASA_ASSET_OVERLAY="$OSS_PROJECT_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-legacy-fixture-overlay-20260817.tar"
 readonly SOURCE_ENV_RECEIPT="$OSS_PROJECT_ROOT/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
 readonly SOURCE_RUNTIME_RECEIPT="$OSS_PROJECT_ROOT/control/receipts/cosmos-r21-dlc-runtime-v1-publication-v2.json"
 readonly SOURCE_WAN_VAE="$OSS_PROJECT_ROOT/inputs/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
@@ -337,6 +338,24 @@ asset_package_mount_fstype="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_PACKAGE" -o 
 asset_package_mount_identity="${asset_package_mount_source,,}:${asset_package_mount_fstype,,}"
 [[ "$asset_package_mount_identity" == *oss* ]] ||
     die "RoboCasa asset package mount does not identify OSS"
+[[ -f "$SOURCE_ROBOCASA_ASSET_OVERLAY" && ! -L "$SOURCE_ROBOCASA_ASSET_OVERLAY" ]] ||
+    die "RoboCasa asset overlay is missing or unsafe"
+[[ "$(realpath -e -- "$SOURCE_ROBOCASA_ASSET_OVERLAY")" == "$SOURCE_ROBOCASA_ASSET_OVERLAY" ]] ||
+    die "RoboCasa asset overlay is not canonical"
+[[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_OVERLAY")" == 2181120 ]] ||
+    die "RoboCasa asset overlay size mismatch"
+asset_overlay_mount_target="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_OVERLAY" -o TARGET)" ||
+    die "could not resolve the RoboCasa asset overlay mount target"
+asset_overlay_mount_source="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_OVERLAY" -o SOURCE)" ||
+    die "could not resolve the RoboCasa asset overlay mount source"
+asset_overlay_mount_fstype="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_OVERLAY" -o FSTYPE)" ||
+    die "could not resolve the RoboCasa asset overlay filesystem type"
+[[ "$asset_overlay_mount_target" == /oss-chengjuntao ]] ||
+    die "RoboCasa asset overlay does not resolve to the fixed OSS mount"
+[[ "$asset_overlay_mount_source" == "$asset_package_mount_source" ]] ||
+    die "RoboCasa asset package and overlay do not share the same OSS source"
+[[ "$asset_overlay_mount_fstype" == "$asset_package_mount_fstype" ]] ||
+    die "RoboCasa asset package and overlay do not share the same filesystem type"
 [[ -L "$PROJECT_ROOT/runs" ]] ||
     die "persistent runs root must be the controlled OSS symlink"
 [[ "$(realpath -e -- "$PROJECT_ROOT/runs")" == "$OSS_PROJECT_ROOT/runs" ]] ||
@@ -423,8 +442,10 @@ export EGL_MATRIX_OVERRIDE
 export S1_R14_MATCHED_HELPER
 export COSMOS_ENV_ARCHIVE_METADATA_HELPER
 export ROBOCASA_ASSET_SOURCE_PACKAGE="$SOURCE_ROBOCASA_ASSET_PACKAGE"
+export ROBOCASA_ASSET_OVERLAY="$SOURCE_ROBOCASA_ASSET_OVERLAY"
 export ROBOCASA_ASSET_PACKAGE_HELPER
 export EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840
+export EXPECTED_ROBOCASA_ASSET_OVERLAY_BYTES=2181120
 export EVAL_CONTROL_COMMIT
 export R14_BASELINE_ARGS
 export R14_BASELINE_RESULTS
