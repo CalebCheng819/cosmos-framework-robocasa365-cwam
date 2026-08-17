@@ -21,7 +21,9 @@
 - R6 fix3 计划：exclusive forward 继续不使用两个 absolute-memory 参数的数值，但向 action 输出加入严格为零的 graph anchor，使它们在 FSDP 分片中获得存在且全零的梯度，从而保持与 R5 相同的 forward/backward/optimizer/EMA 参数参与布局。单测必须同时证明两个梯度全零，且任意改变参数值都不会改变 R6 输出；通过后重新执行 8-rank 2-step optimizer/EMA 门禁。
 - R6 fix3 结果：commit `4340ae2a38362171d0cdbf9aab6ed783cd2e8674` 在生产环境完成 28 个聚焦测试。R6-A 与 R6-B 均通过 8-rank B200、2-step BF16 门禁，连续跨过 backward、TE FusedAdam、EMA 与 batch-end，退出码均为 0 且无 OOM。R6-A 每步检查 199,967,573 个 active elements，R6-B 检查 225,174,357 个，均为 0 non-finite；第二步 nonzero gradient elements 分别为 195,711,436 与有效 action 参数集合内的有限梯度。R6-A/R6-B 稳态单步约 4.32/4.56 秒。正式 500-step 运行额外要求 2048-sample initial validation 出现非零 temporal-pair/object-delta 证据；若全零则在继续训练前停止。
 - 变更：实现 R5 matched contribution decomposition；新增 R6-A/R6-B dynamic-exclusive 配置、精确 zero mask、action-gradient fail-closed gate；Fix3 通过严格为零的 graph anchor 保持 legacy 参数的 FSDP/optimizer/EMA 布局，同时证明其数值不影响输出且梯度严格为零。
-- 结果：R5 的 gate-residual interaction 为主要贡献但 full 因果效应仍低于 1%；R6 Fix3 聚焦测试 28 passed，R6-A/R6-B 的 8-rank 两步 optimizer/EMA 门禁均通过；两个正式 500-step probe 与 matched interventions 待运行。
-- 决策：拒绝 R5 单一路径贡献主导假设；Fix3 已满足正式 500-step 重试的分布式运行门禁。任一 500-step 验收门槛失败均不扩展到 20k。
-- 下一步：依次运行 Fix3 R6-A 500-step 与 matched none/zero/shuffle validation，再运行 Fix3 R6-B 对应实验，最后更新 Notion 和本地终态记录。
+- R6-A 终态：Fix3 正式任务完成 500 个有限 optimizer steps，训练与三个 matched validation 容器均 exit 0。step-500 checkpoint 的 model/optim/scheduler/trainer 各含 8 个 distcp 分片和 1 个 metadata，总计 93,930,528,009 bytes。终态 slot abs cosine 0.06062；positive/object-negative/episode-negative similarity 为 0.76801/0.01792/0.05722，对应 margins 0.75009/0.71079；main memory context tokens 与 delta-conditioned layers 均为 0，zero intervention 下所有 delta main metrics 精确为 0。
+- R6-A matched 结果：none/zero/shuffle action loss 为 0.0082571125/0.0082990089/0.0082693556；aligned 相对 zero 改善 0.50484%，相对 shuffle 改善 0.14805%。表示未坍缩且 delta 有方向正确的小幅作用，但两个效应均低于预注册的 1% 门槛。
+- 结果：R5 的 gate-residual interaction 为主要贡献但 full 因果效应仍低于 1%；R6 Fix3 聚焦测试 28 passed，R6-A/R6-B 的 8-rank 两步 optimizer/EMA 门禁均通过；R6-A 正式 probe 稳定完成但未通过两个 1% 因果门槛；R6-B 正式 probe 待运行。
+- 决策：拒绝 R5 单一路径贡献主导假设；R6-A 不扩展到 20k。继续执行已预注册的 R6-B 500-step 分层 delta conditioning probe，仍按相同门槛独立判定。
+- 下一步：运行 Fix3 R6-B 500-step 与 matched none/zero/shuffle validation，更新 R6-B Notion 和本地终态记录，并比较 final-only 与 four-layer delta conditioning 的增益。
 - 记录人：Codex

@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-20260817",
+  "attempt_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "completed",
+  "notion_page_id": "3bf21e77-89cc-81ef-bbf6-dd1a4470338c",
+  "hypothesis": "When absolute object-memory bypasses are removed, the final object-local delta gate and residual become causally necessary and improve aligned-history sensitivity.",
+  "baseline_checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+  "git": {
+    "code_commit": "4340ae2a38362171d0cdbf9aab6ed783cd2e8674",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817",
+    "dirty_at_launch": false,
+    "pushed_at_launch": true
+  },
+  "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-FIX3-GIT-20260817",
+  "run_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-FIX3-20260817",
+  "wandb_offline_id": "fkruu5jl",
+  "job_id": "cwam-b5-vom-probe-r6a-fix3",
+  "started_at": "2026-08-17T18:16:23+08:00",
+  "completed_at": "2026-08-17T18:51:15+08:00",
+  "actual_runtime_seconds_including_matched_validation": 2092,
+  "optimizer_steps": 500,
+  "exit_code": 0,
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64/rank; global batch 512",
+  "checkpoint": {
+    "path": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-FIX3-20260817/checkpoints/iter_000000500",
+    "total_bytes": 93930528009,
+    "model": {"distcp_files": 8, "metadata_files": 1, "bytes": 92320246544},
+    "optim": {"distcp_files": 8, "metadata_files": 1, "bytes": 1610075995},
+    "scheduler": {"distcp_files": 8, "metadata_files": 1, "bytes": 9803},
+    "trainer": {"distcp_files": 8, "metadata_files": 1, "bytes": 195667}
+  },
+  "terminal_validation": {
+    "samples": 2048,
+    "unique_samples": 2048,
+    "unstable_count": 0,
+    "main_context_tokens": 0.0,
+    "delta_conditioning_layers": 0.0,
+    "applied_delta_rms": 0.09542237222194672,
+    "delta_base_ratio": 0.08253654837608337,
+    "slot_abs_cosine": 0.06062082573771477,
+    "positive_similarity": 0.7680128216743469,
+    "object_negative_similarity": 0.01792123354971409,
+    "episode_negative_similarity": 0.05722450837492943,
+    "object_contrastive_margin": 0.7500915881246328,
+    "episode_contrastive_margin": 0.7107883132994175
+  },
+  "matched_action_loss": {
+    "none": 0.008257112465798855,
+    "zero": 0.008299008943140507,
+    "shuffle": 0.00826935563236475,
+    "absolute_gain_over_zero": 0.000041896477341651917,
+    "relative_gain_over_zero_fraction": 0.00504837115235081,
+    "absolute_gain_over_shuffle": 0.00001224316656589508,
+    "relative_gain_over_shuffle_fraction": 0.0014805466242106652
+  },
+  "acceptance": {
+    "finite_500_steps": true,
+    "complete_8_rank_checkpoint": true,
+    "exact_zero_intervention": true,
+    "slot_abs_cosine_below_0_95": true,
+    "both_contrastive_margins_above_0_05": true,
+    "aligned_at_least_1_percent_below_zero": false,
+    "aligned_at_least_1_percent_below_shuffle": false,
+    "all_gates_passed": false,
+    "authorize_20k": false
+  },
+  "matched_run_ids": [
+    "CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-VAL-NONE-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-VAL-ZERO-20260817",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-VAL-SHUFFLE-20260817"
+  ],
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-FIX3-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-VAL-NONE-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-VAL-ZERO-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX3-VAL-SHUFFLE-20260817"
+  ],
+  "conclusion": "R6-A completed cleanly and removed every absolute object-memory main-policy bypass, but the final-only dynamic delta remained a weak causal input. Aligned action loss improved by 0.50484 percent over exact zero and 0.14805 percent over shuffle. The representation stayed non-collapsed and both contrastive margins were large, so the failure is insufficient policy dependence rather than slot collapse. R6-A fails the preregistered one-percent causal gates and is not authorized for 20k training.",
+  "failure_reason": null
+}

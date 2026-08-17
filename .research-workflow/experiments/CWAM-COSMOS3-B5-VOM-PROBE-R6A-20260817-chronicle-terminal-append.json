@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R6-A 500-step probe completed; one-percent gate failed"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Fix3 R6-A completed 500 finite optimizer steps on 8 B200s, exited 0, validated 2048/2048 samples with unstable_count 0, and saved a complete 8-rank 93,930,528,009-byte checkpoint. Matched none/zero/shuffle action losses were 0.0082571125/0.0082990089/0.0082693556, giving aligned improvements of 0.50484% and 0.14805%. Absolute-memory main context tokens and delta-conditioned layers stayed at zero; exact-zero intervention removed the full delta contribution. Slot absolute cosine was 0.06062 and object/episode contrastive margins were 0.75009/0.71079, rejecting collapse as the cause. Decision: R6-A is a stable positive but insufficient causal effect and fails both preregistered one-percent gates; do not launch 20k. Continue only to the planned R6-B four-layer delta-conditioning probe."}}]}}
+  ]
+}

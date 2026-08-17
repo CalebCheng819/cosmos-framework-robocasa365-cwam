@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Succeeded"}},
+    "Completed At": {"date": {"start": "2026-08-17T18:51:15+08:00"}},
+    "Actual Runtime": {"number": 0.58},
+    "Current ETA": {"date": {"start": "2026-08-17T18:51:15+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T18:16:23+08:00", "end": "2026-08-17T18:51:15+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r6a-fix3; 500-step train plus three sequential matched validation jobs; all exit 0"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "formal R6A-R4WARM-500S-FIX3; W&B fkruu5jl; matched R6A-FIX3-VAL-{NONE,ZERO,SHUFFLE}; each validation 2048/2048, unstable 0"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "500 finite steps; complete 8-rank 93,930,528,009-byte checkpoint. none/zero/shuffle action loss 0.0082571125/0.0082990089/0.0082693556; aligned gains 0.50484%/0.14805%. Main memory context tokens 0; delta layers 0; applied delta RMS 0.09542; slot abs cosine 0.06062; object/episode margins 0.75009/0.71079; exact-zero intervention passed."}}]},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "Execution succeeded, but the hypothesis gate failed. Dynamic-exclusive final-only delta is causally positive yet weak: neither aligned-vs-zero nor aligned-vs-shuffle reaches 1%. The representation is non-collapsed, so the limitation is insufficient policy dependence rather than slot collapse. Do not extend R6-A to 20k; proceed only with the preregistered R6-B layered probe."}}]}
+  }
+}
