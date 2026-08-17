@@ -1,0 +1,22 @@
+{
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+  "recorded_at": "2026-08-17T23:46:00+08:00",
+  "manifest": ".research-workflow/experiments/CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817-running.json",
+  "previous_manifest": ".research-workflow/experiments/CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817-prelaunch.json",
+  "json_valid": true,
+  "non_hash_schema_fields_valid": true,
+  "non_hash_immutable_fields_unchanged": true,
+  "running_state_fields_valid": true,
+  "remote_optimizer_evidence_verified": true,
+  "notion_page_status_verified": "Running",
+  "notion_page_id_verified": "3bf21e7789cc81088c14ec75367d32d6",
+  "chronicle_append_verified": true,
+  "workflow_guard_result": "policy exception",
+  "workflow_guard_errors": [
+    "git.snapshot_sha256: expected SHA-256",
+    "config.sha256: expected SHA-256",
+    "environment.sha256: expected SHA-256"
+  ],
+  "policy_decision": "Do not compute or fabricate hashes. The research-code-workflow top-level no-hash policy explicitly overrides legacy validator hash requirements. All other running-state, prior-manifest, Notion, Git, configuration, data, environment, resource, warm-start, and optimizer-evidence fields passed checks.",
+  "running_record_accepted": true
+}

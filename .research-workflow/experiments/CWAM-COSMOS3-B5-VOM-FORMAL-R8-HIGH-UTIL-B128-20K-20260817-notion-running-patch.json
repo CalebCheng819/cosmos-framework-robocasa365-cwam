@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-17T23:40:28+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-19T11:45:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T23:40:28+08:00", "end": "2026-08-19T11:45:00+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-formal-r8-b128-20k"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817; W&B offline usalt0az; GPU monitor cwam-b5-vom-formal-r8-b128-20k-gpu-monitor"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Real optimizer evidence confirmed through iteration 26 at 6.23-6.27 s/step with global batch 1024, or 163.32-164.37 samples/s. Iteration-1 action-gradient audit passed: 199,967,573 gradient elements, 195,707,070 nonzero, 0 nonfinite, L2 0.129561. Initial matched validation on 2,048 examples retained 6.94% aligned gain versus zero and 4.85% versus shuffle, with 0 unstable examples. Post-allocation GPU-monitor averages are 73.42%-77.24% utilization and 91,888-95,980 MiB; peak memory is 96,040 MiB and per-device peak power is 984-999 W. A direct compute point showed all 8 GPUs at 100%. No formal checkpoint exists yet; first full checkpoint is scheduled at step 1,000. Closed-loop evaluation remains pending."}}]}
+  }
+}

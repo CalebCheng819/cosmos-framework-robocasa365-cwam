@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R8 B128 formal 20k entered verified optimizer training"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "The formal 8-B200 run started at 2026-08-17 23:40:28 +08:00 from the R4 step-500 model-only warm start with fresh optimizer, scheduler, and trainer state. Optimizer progress was verified through iteration 26 at 6.23-6.27 s/step with global batch 1,024; iteration-1 action gradients contained 199,967,573 elements, 195,707,070 nonzero, and 0 nonfinite. Initial matched validation on 2,048 examples showed aligned/zero/shuffle action losses 0.00828946/0.00890787/0.00871177, equivalent to 6.94% and 4.85% aligned gains. GPU-monitor averages after allocation are 73.42%-77.24% utilization and 91,888-95,980 MiB, with 96,040 MiB peak memory and 984-999 W per-device peak power; one direct compute point showed all devices at 100%. No checkpoint is claimed yet; the first complete checkpoint is due at step 1,000, validation runs every 500 steps, and closed-loop policy evaluation remains a separate pending result."}}]}}
+  ]
+}
