@@ -1,0 +1,31 @@
+{
+  "parent": {"type": "data_source_id", "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"},
+  "properties": {
+    "Name": {"type": "title", "title": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817 - final-delta contribution decomposition"}}]},
+    "Experiment ID": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817"}}]},
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "exploratory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Decompose the R5 final object-delta action update into the unchanged R5 base path, raw-delta multiplicative gate, learned directional residual, and their full composition to identify which path contributes useful aligned-history sensitivity."}}]},
+    "Acceptance Criterion": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "All 12 validation-only cells complete on the identical 2048-sample held-out stream and seed; every cell records action loss, applied delta RMS, delta/base RMS ratio, and delta-base cosine; base, gate-only, residual-only, and full compositions obey their exact component semantics; zero intervention yields exactly zero final-delta contribution. This is diagnostic and does not by itself authorize 20k training."}}]},
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/3bf21e7789cc81979149f18040656e96"},
+    "Estimated Runtime": {"type": "number", "number": 2.0},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-17T18:50:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-17T18:50:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T16:50:00+08:00", "end": "2026-08-17T18:50:00+08:00"}},
+    "Git Commit": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7 (pushed, clean)"}}]},
+    "Artifact URL": {"type": "url", "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7"},
+    "Config": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "R5 exact checkpoint; validation only; final residual component in {base, gate, residual, full}; memory intervention in {none, zero, shuffle}; 4 x 3 factorial; batch 64/rank; DP8; max_val_iter=8."}}]},
+    "Data Version": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed held-out stream and cached triple-view latents/history sidecar; same 2048 samples, packing, and validation seed as the R5 terminal comparison."}}]},
+    "Environment": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; pyrogpucompute1; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; fixed Git snapshot under /data0/wam/cwam-b5/source."}}]},
+    "Command": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": ".research-workflow/launchers/launch_b5_vom_r5_decomposition.sh <component> <intervention>; run all 12 cells sequentially on eight B200 GPUs."}}]},
+    "Hardware": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; validation-only DP8."}}]},
+    "Seeds": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "4242 validation loader; identical ordering across all cells"}}]},
+    "Run IDs": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-R5-DECOMP-{BASE,GATE,RESIDUAL,FULL}-{NONE,ZERO,SHUFFLE}-20260817"}}]},
+    "Primary Metrics": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Main action loss; applied delta RMS; delta/base RMS ratio; delta-base cosine; raw gate deviation; raw residual RMS; aligned versus zero/shuffle loss gains by component."}}]}
+  },
+  "children": [
+    {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Factorial contribution decomposition"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "This reuses R5 iter_000000500 without optimization. The base cell removes only the final object-delta update while retaining R5 absolute-memory context and conditioners; gate and residual cells add one final path at a time; full reproduces R5. None, zero, and shuffle are matched interventions on the same held-out examples."}}]}}
+  ]
+}

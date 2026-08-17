@@ -1,0 +1,31 @@
+{
+  "parent": {"type": "data_source_id", "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"},
+  "properties": {
+    "Name": {"type": "title", "title": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-20260817 - layered dynamic-exclusive delta probe"}}]},
+    "Experiment ID": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-20260817"}}]},
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "exploratory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Test whether exact-zero-masked object-delta cross-attention and FiLM at all four action layers provides enough depth for dynamic-exclusive memory to affect denoising, while retaining the same final gate/residual and eliminating every absolute-memory main-policy bypass."}}]},
+    "Acceptance Criterion": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Eight-B200 training completes 500 finite optimizer steps and saves a complete 8-rank checkpoint; absolute-memory main context and conditioned RMS remain exactly zero; four delta-conditioned layers are active for aligned history and all new paths are exactly zero under zero intervention; slot cosine is below 0.95 and both contrastive margins exceed 0.05; aligned main action loss is at least 1% lower than both zero and shuffle on the matched 2048-sample validation. No 20k unless every gate passes."}}]},
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/3bf21e7789cc81979149f18040656e96"},
+    "Estimated Runtime": {"type": "number", "number": 2.5},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-17T23:50:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-17T23:50:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T21:20:00+08:00", "end": "2026-08-17T23:50:00+08:00"}},
+    "Git Commit": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7 (pushed, clean)"}}]},
+    "Artifact URL": {"type": "url", "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7"},
+    "Config": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "R4 model-only warm start; train complete strong_action_expert; absolute visual-memory main context and conditioners disabled; exact-zero-masked object-delta cross-attention plus FiLM at all 4 action layers; same final delta gate/residual as R6-A; 500 steps; batch 64/rank; DP8; matched validation."}}]},
+    "Data Version": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and episode-safe t-36/t-24/t-12 visual-history sidecar; same data and held-out stream as R6-A; no future lookup."}}]},
+    "Environment": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; pyrogpucompute1; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; offline model assets."}}]},
+    "Command": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": ".research-workflow/launchers/launch_b5_vom_probe_r6_8gpu.sh r6b, then launch_b5_vom_matched_val_r6.sh r6b {none,zero,shuffle}."}}]},
+    "Hardware": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; effective global batch 512."}}]},
+    "Seeds": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "42 training; 4242 validation loader"}}]},
+    "Run IDs": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-R4WARM-500S-20260817; validation suffixes R6B-VAL-NONE/ZERO/SHUFFLE"}}]},
+    "Primary Metrics": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Aligned/zero/shuffle main action losses and gains; main context token count; delta-conditioned layer count/RMS; applied delta RMS and ratio; slot cosine; contrastive margins; action-gradient validity; step time; GPU memory/utilization/power."}}]}
+  },
+  "children": [
+    {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "R6-B layered dynamic conditioning"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "R6-B differs from R6-A only by exposing the same object-local delta tokens through cross-attention and FiLM after each of four action layers. Exact masking makes every added update identically zero when no valid temporal delta exists, preserving a clean none/zero/shuffle intervention."}}]}}
+  ]
+}

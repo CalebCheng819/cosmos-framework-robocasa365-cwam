@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R5 final-delta contribution decomposition"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Experiment CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817 evaluated the exact R5 iter-500 checkpoint on a 4-component x 3-intervention factorial matrix, with 2048 identical held-out samples per cell and all 12 retry1 runs at exit 0. Aligned action loss for base/gate-only/residual-only/full was 0.008303430/0.008301578/0.008344762/0.008263416. Gate-only improved 0.02231% from base, residual-only regressed 0.49777%, and full improved 0.48190%; the inferred gate-residual interaction was 0.95736% of base loss. Full none/zero/shuffle loss was 0.008263416/0.008293392/0.008271596, only 0.36145% and 0.09890% aligned gains. Decision: reject the single-path hypothesis; cooperative gate-plus-residual composition is necessary but remains weak. Continue with R6-A/R6-B dynamic-exclusive 500-step probes. The initial non-PROBE launcher-guard failure was preserved. Notion page: 3bf21e77-89cc-815a-ab4a-d3b5b2ae687a."}}]}}
+  ]
+}

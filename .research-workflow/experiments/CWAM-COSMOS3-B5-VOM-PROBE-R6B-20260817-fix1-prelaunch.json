@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-20260817",
+  "attempt_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-FIX1-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "planned",
+  "notion_page_id": "3bf21e77-89cc-812d-846b-d7aa87dff6c1",
+  "hypothesis": "Four exact-zero-masked object-delta conditioning layers give dynamic-exclusive memory more influence than the R6-A final-only delta update.",
+  "objective": "Train 500 finite optimizer steps from the same R4 model checkpoint and run the same 2048-sample none, zero, and shuffle validation. Require exact dynamic-only semantics and at least 1 percent aligned action-loss gain over both interventions.",
+  "baseline_checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+  "estimated_runtime_seconds": 3000,
+  "current_eta": "2026-08-17T19:15:00+08:00",
+  "git": {
+    "commit": "a8681df43d240cd56d86627b7677d7b9dbc78f1c",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817",
+    "dirty": false,
+    "pushed": true
+  },
+  "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-FIX1-GIT-20260817",
+  "run_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-R4WARM-500S-FIX1-20260817",
+  "job_id": "cwam-b5-vom-probe-r6b-fix1",
+  "config": "R4 model-only warm start; strong_action_expert scope; dynamic-exclusive object memory; exact-zero delta cross-attention plus FiLM at all 4 action layers and final delta update; 500 steps; batch 64/rank; DP8",
+  "data": "Identical fixed RoboCasa365 data and cached history stream used by R6-A",
+  "environment": "cwam-b4-runtime:ngc25.09-ffmpeg6 plus /data0/wam/cwam-b4/env/cosmos-cu130",
+  "preflight": {
+    "focused_tests": "22 passed in the production environment",
+    "gpu_smoke": "Eight-rank B200 BF16 pass; finite loss 2.2443354; gradient valid fraction 1.0; main context tokens 0; delta layers 4; conditioned RMS 0.1119676; applied delta RMS 0.2241366; exact-zero checks pass; peak allocation 1076.66 MiB/rank",
+    "gradient_gate_fix": "Same exact two unreachable legacy parameters as R6-A are frozen and excluded; all active action parameters remain fail-closed."
+  },
+  "acceptance": "Same gates as R6-A, using identical validation stream and checkpoint initialization",
+  "started_at": null,
+  "completed_at": null,
+  "failure_reason": null
+}

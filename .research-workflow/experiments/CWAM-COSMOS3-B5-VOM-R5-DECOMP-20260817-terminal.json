@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "completed",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-815a-ab4a-d3b5b2ae687a",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817-final-delta-contribution-decomposition-3bf21e7789cc815aab4ad3b5b2ae687a"
+  },
+  "hypothesis": "R5's small aligned-history gain is concentrated in either the fixed multiplicative gate or the learned directional residual rather than requiring both paths.",
+  "objective": "Evaluate base, gate-only, residual-only, and full final residual compositions under matched none, zero, and shuffle interventions on the same 2048 held-out samples, recording both action loss and direct residual contribution metrics.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817",
+    "checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R5-R4WARM-500S-20260817/checkpoints/iter_000000500"
+  },
+  "estimated_runtime_seconds": 7200,
+  "initial_eta": "2026-08-17T18:50:00+08:00",
+  "current_eta": "2026-08-17T17:10:08+08:00",
+  "experiment_window": {
+    "start": "2026-08-17T16:45:47+08:00",
+    "end": "2026-08-17T17:10:08+08:00"
+  },
+  "git": {
+    "commit": "70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R5 exact checkpoint; validation only; component={base,gate,residual,full}; intervention={none,zero,shuffle}; batch 64/rank; DP8; max_val_iter=8"
+  },
+  "data": {
+    "version": "RoboCasa365 B4 held-out validation stream",
+    "revision": "same 2048 samples, packing, and seed 4242 for all 12 cells"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130",
+    "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"
+  },
+  "command": ".research-workflow/launchers/launch_b5_vom_r5_decomposition.sh <component> <intervention>; 12 sequential validation-only cells",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64/rank; DP8",
+  "seeds": [4242],
+  "started_at": "2026-08-17T16:45:47+08:00",
+  "completed_at": "2026-08-17T17:10:08+08:00",
+  "actual_runtime_seconds": 1461,
+  "job_id": "cwam-b5-r5-decomp-{component}-{intervention}",
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-R5-DECOMP-BASE-NONE-20260817 (launcher guard failure before validation; preserved)",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R5-DECOMP-{BASE,GATE,RESIDUAL,FULL}-{NONE,ZERO,SHUFFLE}-RETRY1-20260817"
+  ],
+  "primary_metrics": {
+    "terminal_exit_zero_cells": 12,
+    "held_out_samples_per_cell": 2048,
+    "action_loss": {
+      "base": {"none": 0.008303429931402206, "zero": 0.008293392136693, "shuffle": 0.008298393338918686},
+      "gate": {"none": 0.008301577530801296, "zero": 0.008294496685266495, "shuffle": 0.008311236277222633},
+      "residual": {"none": 0.008344762027263641, "zero": 0.008290070109069347, "shuffle": 0.008346755988895893},
+      "full": {"none": 0.008263415656983852, "zero": 0.008293392136693, "shuffle": 0.008271596394479275}
+    },
+    "aligned_signed_improvement_from_base": {
+      "gate": 0.00000185240060091019,
+      "residual": -0.0000413320958614349,
+      "full": 0.000040014274418354,
+      "gate_residual_interaction": 0.0000794939696788788
+    },
+    "aligned_signed_improvement_fraction_from_base": {
+      "gate": 0.0002230886,
+      "residual": -0.0049777136,
+      "full": 0.0048190055,
+      "gate_residual_interaction": 0.0095736305
+    },
+    "full_aligned_gain_over_zero_fraction": 0.00361450166772188,
+    "full_aligned_gain_over_shuffle_fraction": 0.000989015554589009,
+    "full_none_applied_delta_rms": 0.06745611876249313,
+    "full_none_delta_base_ratio": 0.05830993130803108,
+    "full_none_delta_base_cosine": 0.41986966133117676,
+    "gate_none_applied_delta_rms": 0.0448087602853775,
+    "residual_none_applied_delta_rms": 0.059748563915491104,
+    "zero_applied_delta_rms": 0.0,
+    "zero_gate_deviation": 0.0,
+    "zero_residual_rms": 0.0,
+    "main_context_tokens": 8,
+    "acceptance": {
+      "complete_factorial_matrix": true,
+      "same_held_out_samples": true,
+      "all_cells_exit_zero": true,
+      "full_path_reproduces_r5_aligned": true,
+      "single_path_explains_gain": false,
+      "interaction_required": true,
+      "r5_one_percent_causal_gate": false
+    }
+  },
+  "artifact_urls": [
+    "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7"
+  ],
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-GIT-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R5-DECOMP-*-RETRY1-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-R5-DECOMP-BASE-NONE-20260817"
+  ],
+  "conclusion": "The preregistered single-path hypothesis was rejected. On aligned history, gate-only improved action loss by only 0.02231 percent from base and residual-only regressed by 0.49777 percent, while the full composition improved by 0.48190 percent. The inferred gate-residual interaction was 0.95736 percent of base loss, larger than either marginal contribution. The full path reproduced R5's weak causal sensitivity: aligned beat zero by 0.36145 percent and shuffle by 0.09890 percent, both below the original 1 percent gate. R5 therefore depends on cooperative gate-plus-residual composition while its eight original memory context tokens still remain available; this motivates the dynamic-exclusive R6 probes.",
+  "failure_reason": null,
+  "prior_failed_attempt": {
+    "run_id": "CWAM-COSMOS3-B5-VOM-R5-DECOMP-BASE-NONE-20260817",
+    "reason": "RUN_NAME lacked the mandatory PROBE marker for model-only warm start; failed before validation and was preserved under its original evidence path."
+  }
+}

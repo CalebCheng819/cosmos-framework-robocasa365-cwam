@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-20260817",
+  "attempt_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-ATTEMPT0-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "failed",
+  "notion_page_id": "3bf21e77-89cc-81ef-bbf6-dd1a4470338c",
+  "git": {
+    "commit": "70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817",
+    "dirty": false,
+    "pushed": true
+  },
+  "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-GIT-20260817",
+  "run_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-20260817",
+  "job_id": "cwam-b5-vom-probe-r6a",
+  "started_at": "2026-08-17T17:13:48+08:00",
+  "completed_at": "2026-08-17T17:16:07+08:00",
+  "actual_runtime_seconds": 139,
+  "optimizer_steps": 0,
+  "exit_code": 1,
+  "initial_validation": {
+    "samples": 2048,
+    "main_action_loss": 0.008289460092782974,
+    "final_loss": 0.7375108003616333,
+    "memory_only_action_loss": 0.3021544814109802,
+    "main_context_tokens": 0.0,
+    "applied_delta_rms": 0.06663203984498978,
+    "object_delta_rms": 0.10223987698554993,
+    "slot_mean_abs_offdiag_cosine": 0.2091563194990158
+  },
+  "failure_reason": "The fail-closed action-gradient gate counted two intentionally unreachable legacy absolute-memory context parameters in dynamic-exclusive mode. Exactly 1,025 of 199,968,598 strong_action_expert parameter elements had no gradient: visual_memory_context_embed (1,024) and visual_memory_gate_logit (1). The run stopped before the first optimizer step.",
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-20260817/docker-inspect-start.json",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-20260817/docker-inspect-end.json",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-20260817/docker.log",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-20260817/gpu.csv"
+  ],
+  "remediation": "Freeze only the two unreachable legacy parameters and declare their exact names to ActionGradientEvidence. Keep all active action parameters under the original optimizer and finite non-zero gradient gates. Retry under a new Run ID and fixed source revision."
+}

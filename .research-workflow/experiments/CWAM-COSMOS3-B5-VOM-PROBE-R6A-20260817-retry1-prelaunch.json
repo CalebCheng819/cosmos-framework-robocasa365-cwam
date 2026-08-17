@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-20260817",
+  "attempt_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-RETRY1-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "planned",
+  "notion_page_id": "3bf21e77-89cc-81ef-bbf6-dd1a4470338c",
+  "hypothesis": "When absolute object-memory bypasses are removed, the final object-local delta gate and residual become causally necessary and improve aligned-history sensitivity.",
+  "objective": "Train 500 finite optimizer steps from the R4 model checkpoint and run 2048-sample none, zero, and shuffle validation. Require exact dynamic-only semantics and at least 1 percent aligned action-loss gain over both interventions.",
+  "baseline_checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+  "estimated_runtime_seconds": 3000,
+  "current_eta": "2026-08-17T18:25:00+08:00",
+  "git": {
+    "commit": "a8681df43d240cd56d86627b7677d7b9dbc78f1c",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817",
+    "dirty": false,
+    "pushed": true
+  },
+  "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-FIX1-GIT-20260817",
+  "run_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-R4WARM-500S-RETRY1-20260817",
+  "job_id": "cwam-b5-vom-probe-r6a-retry1",
+  "config": "R4 model-only warm start; strong_action_expert scope; dynamic-exclusive object memory; final delta only; 500 steps; batch 64/rank; DP8",
+  "data": "RoboCasa365 fixed 1,143,698-record split; episode-safe t-36/t-24/t-12 cached visual history; no future lookup",
+  "environment": "cwam-b4-runtime:ngc25.09-ffmpeg6 plus /data0/wam/cwam-b4/env/cosmos-cu130",
+  "preflight": {
+    "focused_tests": "22 passed in the production environment: 6 action-gradient evidence tests and 16 StrongActionExpert tests",
+    "gpu_smoke": "Eight-rank B200 BF16 pass; finite loss 2.2056811; gradient valid fraction 1.0; main context tokens 0; delta layers/RMS 0/0; applied delta RMS 0.2221023; exact-zero checks pass; peak allocation 978.37 MiB/rank",
+    "gradient_gate_fix": "Only visual_memory_context_embed (1,024 elements) and visual_memory_gate_logit (1 element) are frozen and excluded because dynamic-exclusive forward never reads them. Active strong_action_expert parameters remain fail-closed."
+  },
+  "acceptance": "500 finite steps; complete 8-rank checkpoint; exact-zero dynamic path; slot cosine below 0.95; both contrastive margins above 0.05; aligned loss at least 1 percent below zero and shuffle",
+  "started_at": null,
+  "completed_at": null,
+  "failure_reason": null
+}

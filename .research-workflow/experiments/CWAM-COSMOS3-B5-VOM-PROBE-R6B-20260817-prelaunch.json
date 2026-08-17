@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6B-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "planned",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-812d-846b-d7aa87dff6c1",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R6B-20260817-layered-dynamic-exclusive-delta-probe-3bf21e7789cc812d846bd7aa87dff6c1"
+  },
+  "hypothesis": "Injecting exact-zero-masked object-local deltas at all four action layers gives dynamic-exclusive memory sufficient depth to influence denoising more strongly than a final-only update.",
+  "objective": "Train 500 finite steps from the same R4 model checkpoint and evaluate none, zero, and shuffle on the same held-out stream; require exact dynamic-only semantics and at least 1 percent aligned loss gain over both interventions.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R6A-20260817",
+    "checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500"
+  },
+  "estimated_runtime_seconds": 9000,
+  "initial_eta": "2026-08-17T23:50:00+08:00",
+  "current_eta": "2026-08-17T23:50:00+08:00",
+  "experiment_window": {"start": "2026-08-17T21:20:00+08:00", "end": "2026-08-17T23:50:00+08:00"},
+  "git": {"commit": "70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7", "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817", "dirty": false, "pushed": true, "patch_path": null, "untracked_files": [], "untracked_bundle_path": null},
+  "config": {"path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml", "overrides": "R4 model-only warm start; strong_action_expert scope; dynamic-exclusive object memory; exact-zero-masked delta cross-attention plus FiLM at all four action layers and final delta update; 500 steps; batch64/rank; DP8"},
+  "data": {"version": "RoboCasa365 B4 processed split plus cached triple-view Wan latents and visual-history sidecar", "revision": "1,143,698 fixed records; episode-safe t-36/t-24/t-12 history; no future lookup; identical to R6-A"},
+  "environment": {"lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130", "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"},
+  "command": ".research-workflow/launchers/launch_b5_vom_probe_r6_8gpu.sh r6b followed by matched none/zero/shuffle validation",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64/rank; global batch 512",
+  "seeds": [42, 4242],
+  "preflight": {
+    "focused_tests": "22 passed in 8.70 seconds in the production container",
+    "gpu_smoke": "Eight-rank B200 BF16 pass; finite loss 2.2443354; gradient valid fraction 1.0; main absolute-memory context tokens 0; delta layers 4; delta-conditioned RMS 0.1119676; applied delta RMS 0.2241366; zero checks exact; peak allocation 1076.66 MiB",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-GIT-20260817",
+    "checkpoint_scope": "Model-only R4 warm start; visual_memory_delta_main and all four delta conditioners skipped; optimizer/scheduler/trainer state not restored; new absolute target is 500 steps"
+  },
+  "validation": {"policy": "git-run-path-timestamp-no-file-hashes", "result": "pass", "checked_fields": "unique Notion page; pushed clean commit; detached clean source; R4 checkpoint; launcher syntax; focused tests; eight-rank GPU smoke; exact-zero assertions"},
+  "started_at": null,
+  "completed_at": null,
+  "actual_runtime_seconds": null,
+  "job_id": null,
+  "run_ids": [],
+  "primary_metrics": {},
+  "artifact_urls": [],
+  "conclusion": null,
+  "failure_reason": null
+}

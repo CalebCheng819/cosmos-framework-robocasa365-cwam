@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "running",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-815a-ab4a-d3b5b2ae687a",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-R5-DECOMP-20260817-final-delta-contribution-decomposition-3bf21e7789cc815aab4ad3b5b2ae687a"
+  },
+  "hypothesis": "R5's small aligned-history gain is concentrated in either the fixed multiplicative gate or the learned directional residual rather than requiring both paths.",
+  "objective": "Evaluate base, gate-only, residual-only, and full final residual compositions under matched none, zero, and shuffle interventions on the same 2048 held-out samples, recording both action loss and direct residual contribution metrics.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817",
+    "checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R5-R4WARM-500S-20260817/checkpoints/iter_000000500"
+  },
+  "estimated_runtime_seconds": 7200,
+  "initial_eta": "2026-08-17T18:50:00+08:00",
+  "current_eta": "2026-08-17T18:50:00+08:00",
+  "experiment_window": {"start": "2026-08-17T16:45:47+08:00", "end": "2026-08-17T18:50:00+08:00"},
+  "git": {
+    "commit": "70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r6-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R5 exact checkpoint; validation only; component={base,gate,residual,full}; intervention={none,zero,shuffle}; batch 64/rank; DP8; max_val_iter=8"
+  },
+  "data": {"version": "RoboCasa365 B4 held-out validation stream", "revision": "same 2048 samples, packing, and seed 4242 as R5 terminal validation"},
+  "environment": {"lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130", "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"},
+  "command": ".research-workflow/launchers/launch_b5_vom_r5_decomposition.sh <component> <intervention>; 12 sequential validation-only cells",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64/rank; DP8",
+  "seeds": [4242],
+  "preflight": {
+    "focused_tests": "22 passed in 8.70 seconds in the production container",
+    "gpu_smoke": "R6 instrumentation passed eight-rank B200 BF16 forward/backward; component-composition unit tests and exact-zero masking passed",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R6-GIT-20260817",
+    "checkpoint_scope": "Read-only exact R5 iter_000000500 model; no optimizer, scheduler, or trainer state; no training"
+  },
+  "validation": {"policy": "git-run-path-timestamp-no-file-hashes", "result": "pass", "checked_fields": "unique Notion page; pushed clean commit; detached clean source snapshot; exact R5 checkpoint; launch syntax; matched factorial configuration"},
+  "started_at": "2026-08-17T16:45:47+08:00",
+  "completed_at": null,
+  "actual_runtime_seconds": null,
+  "job_id": "cwam-b5-r5-decomp-{component}-{intervention}",
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-R5-DECOMP-BASE-NONE-20260817 (pre-validation launcher guard failure; preserved)",
+    "CWAM-COSMOS3-B5-VOM-PROBE-R5-DECOMP-{BASE,GATE,RESIDUAL,FULL}-{NONE,ZERO,SHUFFLE}-RETRY1-20260817"
+  ],
+  "primary_metrics": {},
+  "artifact_urls": [],
+  "conclusion": null,
+  "failure_reason": null
+}

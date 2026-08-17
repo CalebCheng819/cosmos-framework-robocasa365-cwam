@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Succeeded"}},
+    "Completed At": {"date": {"start": "2026-08-17T17:10:08+08:00"}},
+    "Actual Runtime": {"number": 0.41},
+    "Current ETA": {"date": {"start": "2026-08-17T17:10:08+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T16:45:47+08:00", "end": "2026-08-17T17:10:08+08:00"}},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "12 retry1 cells: component base/gate/residual/full x intervention none/zero/shuffle; all exit 0. Initial BASE-NONE launcher-guard failure preserved separately."}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "2048 samples/cell. Aligned action loss base/gate/residual/full: 0.008303430/0.008301578/0.008344762/0.008263416. Marginal change from base: gate +0.02231%, residual -0.49777%, full +0.48190%; inferred interaction +0.95736%. Full none/zero/shuffle: 0.008263416/0.008293392/0.008271596; gains 0.36145%/0.09890%, below 1%."}}]},
+    "Artifact URL": {"url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/70a3fe623ccfd3a77386e34b85bcfc7d84e98eb7"},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "Completed factorial decomposition. The single-path hypothesis is rejected: gate-only is nearly neutral and residual-only hurts, while their full composition helps through a strong interaction. R5 retains weak causal sensitivity to aligned memory but still misses both 1% gates. Proceed to R6 dynamic-exclusive probes; no closed-loop claim."}}]}
+  }
+}
