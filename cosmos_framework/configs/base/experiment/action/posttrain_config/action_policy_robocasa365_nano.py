@@ -518,3 +518,77 @@ cs.store(
     name="action_policy_robocasa365_b2_nano",
     node=action_policy_robocasa365_b2_nano,
 )
+
+
+def _action_policy_robocasa365_causal_state_nano_model_config() -> dict:
+    """Replace B2's parallel action branches with one online causal state path."""
+    cfg = _action_policy_robocasa365_strong_nano_model_config()
+    cfg.update(
+        action_relevance_enabled=False,
+        strong_action_expert_enabled=False,
+        causal_action_state_enabled=True,
+        causal_action_state_model_dim=1024,
+        causal_action_state_num_heads=16,
+        causal_action_state_encoder_layers=4,
+        causal_action_state_slots=32,
+        causal_action_state_action_layers=4,
+        causal_action_state_dynamics_layers=2,
+        causal_action_state_ffn_multiplier=4,
+        causal_action_state_dim=16,
+        causal_action_state_history_action_dim=10,
+        causal_action_state_proprio_history_length=4,
+        causal_action_state_proprio_history_stride=12,
+        causal_action_state_history_length=16,
+        causal_action_state_memory_layers=2,
+        causal_action_state_memory_tokens=4,
+        causal_action_state_num_views=3,
+        causal_action_state_view_token_width=8,
+        causal_action_state_dynamics_loss_weight=0.25,
+        causal_action_state_dynamics_warmup_iters=1000,
+        causal_action_state_variance_loss_weight=0.01,
+        causal_action_state_input_resolution="480",
+    )
+    return cfg
+
+
+action_policy_robocasa365_causal_state_nano = copy.deepcopy(action_policy_robocasa365_strong_nano)
+action_policy_robocasa365_causal_state_nano.job.name = "action_policy_robocasa365_causal_state_nano"
+action_policy_robocasa365_causal_state_nano.model.config = (
+    _action_policy_robocasa365_causal_state_nano_model_config()
+)
+action_policy_robocasa365_causal_state_nano.optimizer.keys_to_select = [
+    key
+    for key in action_policy_robocasa365_causal_state_nano.optimizer.keys_to_select
+    if key not in {"strong_action_expert", "moe_gen", "llm2vae"}
+]
+action_policy_robocasa365_causal_state_nano.optimizer.keys_to_select.append("causal_action_state")
+del action_policy_robocasa365_causal_state_nano.optimizer.lr_multipliers["strong_action_expert"]
+action_policy_robocasa365_causal_state_nano.optimizer.lr_multipliers["causal_action_state"] = 5.0
+causal_gradient_families = (
+    action_policy_robocasa365_causal_state_nano.trainer.callbacks.action_gradient_evidence.families
+)
+action_policy_robocasa365_causal_state_nano.trainer.callbacks.action_gradient_evidence.families = [
+    family for family in causal_gradient_families if family != "strong_action_expert"
+]
+action_policy_robocasa365_causal_state_nano.trainer.callbacks.action_gradient_evidence.families.append(
+    "causal_action_state"
+)
+causal_memory_gate = (
+    action_policy_robocasa365_causal_state_nano.trainer.callbacks.production_batch_memory_gate
+)
+causal_memory_gate.allowed_world_sizes = [6]
+action_policy_robocasa365_causal_state_nano.checkpoint.keys_to_skip_loading = [
+    key
+    for key in action_policy_robocasa365_causal_state_nano.checkpoint.keys_to_skip_loading
+    if key != "strong_action_expert"
+]
+action_policy_robocasa365_causal_state_nano.checkpoint.keys_to_skip_loading.append(
+    "causal_action_state"
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_causal_state_nano",
+    node=action_policy_robocasa365_causal_state_nano,
+)

@@ -253,6 +253,23 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_num_views=self.config.strong_action_num_views,
                 strong_action_view_token_width=self.config.strong_action_view_token_width,
                 strong_action_initial_gate=self.config.strong_action_initial_gate,
+                causal_action_state_enabled=self.config.causal_action_state_enabled,
+                causal_action_state_model_dim=self.config.causal_action_state_model_dim,
+                causal_action_state_num_heads=self.config.causal_action_state_num_heads,
+                causal_action_state_encoder_layers=self.config.causal_action_state_encoder_layers,
+                causal_action_state_slots=self.config.causal_action_state_slots,
+                causal_action_state_action_layers=self.config.causal_action_state_action_layers,
+                causal_action_state_dynamics_layers=self.config.causal_action_state_dynamics_layers,
+                causal_action_state_ffn_multiplier=self.config.causal_action_state_ffn_multiplier,
+                causal_action_state_dim=self.config.causal_action_state_dim,
+                causal_action_state_history_action_dim=self.config.causal_action_state_history_action_dim,
+                causal_action_state_proprio_history_length=self.config.causal_action_state_proprio_history_length,
+                causal_action_state_proprio_history_stride=self.config.causal_action_state_proprio_history_stride,
+                causal_action_state_history_length=self.config.causal_action_state_history_length,
+                causal_action_state_memory_layers=self.config.causal_action_state_memory_layers,
+                causal_action_state_memory_tokens=self.config.causal_action_state_memory_tokens,
+                causal_action_state_num_views=self.config.causal_action_state_num_views,
+                causal_action_state_view_token_width=self.config.causal_action_state_view_token_width,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -1058,6 +1075,12 @@ class OmniMoTModel(ImaginaireModel):
             sigmas_sound=sigmas_sound,
             iteration=noise_iteration,
         )
+        if self.config.causal_action_state_enabled:
+            # Preserve clean training targets before the denoising inputs are
+            # replaced by x_t. These fields are not populated during inference.
+            packed_sequence.clean_vision_tokens = gen_data_clean.x0_tokens_vision
+            packed_sequence.clean_action_tokens = gen_data_clean.x0_tokens_action
+            packed_sequence.num_vision_items_per_sample = gen_data_clean.num_vision_items_per_sample
         self._replace_clean_with_noised(packed_sequence, gen_data_noised)
 
         # Move packed sequence to CUDA
@@ -1104,7 +1127,7 @@ class OmniMoTModel(ImaginaireModel):
             "x0": gen_data_clean.x0_tokens_vision,
             "xt": gen_data_noised.xt_tokens_vision,
             "sigma": sigmas_vision,  # [B_items, T_vis]
-            "model_pred": out_net["preds_vision"],
+            "model_pred": out_net.get("preds_vision"),
             "condition_mask_vision": packed_sequence.vision.condition_mask if packed_sequence.vision else None,
             "condition_mask_action": packed_sequence.action.condition_mask if packed_sequence.action else None,
             "und_token_length": packed_sequence.text_indexes.shape[0],
@@ -1204,7 +1227,8 @@ class OmniMoTModel(ImaginaireModel):
 
         rf_cfg = self.config.rectified_flow_training_config
         normalize_by_active = rf_cfg.normalize_loss_by_active
-        if self.config.vision_gen:
+        train_vision = self.config.vision_gen and not self.config.causal_action_state_enabled
+        if train_vision:
             assert data_batch_packed.vision is not None, "Vision packed data required when vision_gen is True"
             assert isinstance(data_batch_packed.vision.condition_mask, list), (
                 "Vision condition mask must be a list of tensors for loss computation"
@@ -1228,6 +1252,10 @@ class OmniMoTModel(ImaginaireModel):
             losses_dict["flow_matching_loss_vision_per_instance"] = fm_loss_vision_per_instance
         else:
             losses_dict["flow_matching_loss_vision"] = torch.tensor(0.0, **self.tensor_kwargs_fp32)
+            losses_dict["flow_matching_loss_vision_per_instance"] = torch.zeros(
+                timesteps.shape[0],
+                **self.tensor_kwargs_fp32,
+            )
 
         if self.config.action_gen:
             if data_batch_packed.action is not None:
@@ -1344,6 +1372,43 @@ class OmniMoTModel(ImaginaireModel):
             if missing_metrics:
                 raise ValueError(f"Strong action expert output is missing metrics: {missing_metrics}")
             losses_dict.update({name: out_net[name] for name in required_metrics})
+
+        if self.config.causal_action_state_enabled:
+            required_metrics = (
+                "causal_action_state_dynamics_loss",
+                "causal_action_state_variance_loss",
+                "causal_action_state_dynamics_cosine",
+                "causal_action_state_state_std",
+                "causal_action_state_state_rms",
+                "causal_action_state_state_attention_entropy",
+                "causal_action_state_action_attention_entropy",
+                "causal_action_state_dynamics_attention_entropy",
+            )
+            missing_metrics = [name for name in required_metrics if name not in out_net]
+            if missing_metrics:
+                raise ValueError(f"Causal action-state output is missing metrics: {missing_metrics}")
+            dynamics_weight = self.config.causal_action_state_dynamics_loss_weight
+            dynamics_warmup = self.config.causal_action_state_dynamics_warmup_iters
+            variance_weight = self.config.causal_action_state_variance_loss_weight
+            if dynamics_weight < 0.0 or dynamics_warmup < 0 or variance_weight < 0.0:
+                raise ValueError("Causal action-state loss weights and warmup must be non-negative")
+            warmup_fraction = 1.0 if dynamics_warmup == 0 else min((iteration + 1) / dynamics_warmup, 1.0)
+            effective_dynamics_weight = dynamics_weight * warmup_fraction
+            dynamics_loss = out_net["causal_action_state_dynamics_loss"]
+            variance_loss = out_net["causal_action_state_variance_loss"]
+            total_loss += dynamics_loss * effective_dynamics_weight
+            total_loss += variance_loss * variance_weight
+            losses_dict.update({name: out_net[name] for name in required_metrics})
+            losses_dict.update(
+                causal_action_state_dynamics_weight=torch.tensor(
+                    effective_dynamics_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+                causal_action_state_variance_weight=torch.tensor(
+                    variance_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+            )
 
         if self.config.sound_gen:
             if data_batch_packed.sound is not None:
@@ -4542,6 +4607,7 @@ class OmniMoTModel(ImaginaireModel):
                 - "action_relevance_*": routing losses and diagnostics (if enabled).
                 - "preds_action_relevance_only": B2 auxiliary action prediction (if enabled).
                 - "strong_action_*": strong action expert diagnostics (if enabled).
+                - "causal_action_state_*": C1 state and dynamics diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
         """
@@ -4552,7 +4618,8 @@ class OmniMoTModel(ImaginaireModel):
             video_temporal_causal=video_temporal_causal,
         )
         output_dict = dict()
-        output_dict["preds_vision"] = out_net["preds_vision"]
+        if "preds_vision" in out_net:
+            output_dict["preds_vision"] = out_net["preds_vision"]
         if self.config.action_gen and "preds_action" in out_net:
             output_dict["preds_action"] = out_net["preds_action"]
         if self.config.action_relevance_enabled and "preds_action_relevance_only" in out_net:
@@ -4560,7 +4627,7 @@ class OmniMoTModel(ImaginaireModel):
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
-            if key.startswith(("action_relevance_", "strong_action_")) or "lbl_metadata_" in key:
+            if key.startswith(("action_relevance_", "strong_action_", "causal_action_state_")) or "lbl_metadata_" in key:
                 output_dict[key] = value
 
         return output_dict

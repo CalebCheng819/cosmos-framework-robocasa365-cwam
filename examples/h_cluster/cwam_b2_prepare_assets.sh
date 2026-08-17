@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-# Prepare the immutable B2 inputs on the allocated worker NVMe. The rclone
+# Prepare immutable experiment inputs on the allocated worker NVMe. The rclone
 # credential is handed to the worker as an encrypted CMS envelope and remains
 # only in /dev/shm after decryption.
 
@@ -10,6 +10,7 @@ set -Eeuo pipefail
 umask 077
 
 : "${PERSONAL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao}"
+: "${EXPERIMENT_LABEL:=B2}"
 : "${CONTROL_ROOT:=$PERSONAL_ROOT/experiments/cwam-b2-20260811/control}"
 : "${SOURCE_ROOT:=$PERSONAL_ROOT/code/cwam-cosmos3-b2-20260811/source}"
 : "${COSMOS_ENV:=$PERSONAL_ROOT/envs/cosmos-framework-09f23119-cu128-train}"
@@ -24,7 +25,7 @@ umask 077
 PYTHON_BIN="$COSMOS_ENV/bin/python"
 : "${RCLONE_BIN:=$PERSONAL_ROOT/tools/rclone}"
 OPENSSL_BIN="/usr/bin/openssl"
-SECRET_ROOT="/dev/shm/cwam-b2-rclone"
+: "${SECRET_ROOT:=/dev/shm/cwam-b2-rclone}"
 HANDOFF_ROOT="$CONTROL_ROOT/rclone-handoff"
 CONTROL_CACHE_ROOT="$B2_INPUT_ROOT/control-cache"
 LATENT_CACHE_ROOT="$B2_INPUT_ROOT/latent-cache"
@@ -191,4 +192,4 @@ PY
 
 df -hT /nvme
 cat "$CONTROL_ROOT/results/assets-ready.json"
-echo "B2_ASSETS_READY control=$CONTROL_CACHE_ROOT latent=$LATENT_CACHE_ROOT"
+echo "${EXPERIMENT_LABEL}_ASSETS_READY control=$CONTROL_CACHE_ROOT latent=$LATENT_CACHE_ROOT"

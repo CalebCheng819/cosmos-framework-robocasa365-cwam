@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: OpenMDW-1.1
+
+# C1: online pre-action state slots from the current observation, task,
+# proprioception, and executed-action history. The action tower reads only
+# these state slots. Future visual latents are training-only stop-gradient
+# targets for action-conditioned state dynamics.
+
+[job]
+task         = "vfm"
+experiment   = "action_policy_robocasa365_causal_state_nano"
+project      = "cosmos3_action_robocasa365"
+group        = "action_sft"
+name         = "action_policy_robocasa365_causal_state_nano"
+wandb_mode   = "offline"
+
+[model]
+precision = "bfloat16"
+max_num_tokens_after_packing = 74000
+
+[model.parallelism]
+data_parallel_shard_degree     = 6
+data_parallel_replicate_degree = 1
+
+[model.activation_checkpointing]
+mode           = "${oc.env:CWAM_ACTIVATION_CHECKPOINTING_MODE,selective}"
+save_ops_regex = ["fmha"]
+
+[model.tokenizer]
+vae_path = "${oc.env:WAN_VAE_PATH}"
+
+[optimizer]
+lr = 5.0e-05
+
+[scheduler]
+cycle_lengths = [20000]
+warm_up_steps = [500]
+
+[trainer]
+max_iter        = 20000
+logging_iter    = 10
+grad_accum_iter = 2
+
+[checkpoint]
+load_path = "${oc.env:BASE_CHECKPOINT_PATH}"
+save_iter = 500

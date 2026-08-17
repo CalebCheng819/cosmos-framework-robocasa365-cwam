@@ -15,6 +15,7 @@ from cosmos_framework.model.generator.mot.action_relevance import (
     ActionRelevanceAdapter,
     conditioned_vision_token_indexes,
 )
+from cosmos_framework.model.generator.mot.causal_action_state import CausalActionStateExpert
 from cosmos_framework.model.generator.mot.attention import SplitInfo, build_packed_sequence
 from cosmos_framework.model.generator.mot.context_parallel_utils import (
     get_context_parallel_last_hidden_state,
@@ -72,6 +73,23 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_num_views=3,
         strong_action_view_token_width=8,
         strong_action_initial_gate=0.01,
+        causal_action_state_enabled=False,
+        causal_action_state_model_dim=1024,
+        causal_action_state_num_heads=16,
+        causal_action_state_encoder_layers=4,
+        causal_action_state_slots=32,
+        causal_action_state_action_layers=4,
+        causal_action_state_dynamics_layers=2,
+        causal_action_state_ffn_multiplier=4,
+        causal_action_state_dim=16,
+        causal_action_state_history_action_dim=10,
+        causal_action_state_proprio_history_length=4,
+        causal_action_state_proprio_history_stride=12,
+        causal_action_state_history_length=16,
+        causal_action_state_memory_layers=2,
+        causal_action_state_memory_tokens=4,
+        causal_action_state_num_views=3,
+        causal_action_state_view_token_width=8,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -129,6 +147,23 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_num_views = strong_action_num_views
         self.strong_action_view_token_width = strong_action_view_token_width
         self.strong_action_initial_gate = strong_action_initial_gate
+        self.causal_action_state_enabled = causal_action_state_enabled
+        self.causal_action_state_model_dim = causal_action_state_model_dim
+        self.causal_action_state_num_heads = causal_action_state_num_heads
+        self.causal_action_state_encoder_layers = causal_action_state_encoder_layers
+        self.causal_action_state_slots = causal_action_state_slots
+        self.causal_action_state_action_layers = causal_action_state_action_layers
+        self.causal_action_state_dynamics_layers = causal_action_state_dynamics_layers
+        self.causal_action_state_ffn_multiplier = causal_action_state_ffn_multiplier
+        self.causal_action_state_dim = causal_action_state_dim
+        self.causal_action_state_history_action_dim = causal_action_state_history_action_dim
+        self.causal_action_state_proprio_history_length = causal_action_state_proprio_history_length
+        self.causal_action_state_proprio_history_stride = causal_action_state_proprio_history_stride
+        self.causal_action_state_history_length = causal_action_state_history_length
+        self.causal_action_state_memory_layers = causal_action_state_memory_layers
+        self.causal_action_state_memory_tokens = causal_action_state_memory_tokens
+        self.causal_action_state_num_views = causal_action_state_num_views
+        self.causal_action_state_view_token_width = causal_action_state_view_token_width
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
@@ -137,6 +172,12 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
             raise ValueError("action_relevance_enabled=True requires action_gen=True")
         if self.strong_action_expert_enabled and not self.action_gen:
             raise ValueError("strong_action_expert_enabled=True requires action_gen=True")
+        if self.causal_action_state_enabled and not self.action_gen:
+            raise ValueError("causal_action_state_enabled=True requires action_gen=True")
+        if self.causal_action_state_enabled and (
+            self.action_relevance_enabled or self.strong_action_expert_enabled
+        ):
+            raise ValueError("Causal action state cannot be combined with the existing action expert branches")
         if self.strong_action_expert_enabled:
             strong_positive_values = {
                 "model_dim": self.strong_action_expert_model_dim,
@@ -160,6 +201,30 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError("Strong action expert model_dim must be divisible by num_heads")
             if not 0.0 < float(self.strong_action_initial_gate) < 1.0:
                 raise ValueError("Strong action expert initial gate must be strictly between zero and one")
+        if self.causal_action_state_enabled:
+            causal_positive_values = {
+                "model_dim": self.causal_action_state_model_dim,
+                "num_heads": self.causal_action_state_num_heads,
+                "encoder_layers": self.causal_action_state_encoder_layers,
+                "state_slots": self.causal_action_state_slots,
+                "action_layers": self.causal_action_state_action_layers,
+                "dynamics_layers": self.causal_action_state_dynamics_layers,
+                "ffn_multiplier": self.causal_action_state_ffn_multiplier,
+                "state_dim": self.causal_action_state_dim,
+                "history_action_dim": self.causal_action_state_history_action_dim,
+                "proprio_history_length": self.causal_action_state_proprio_history_length,
+                "proprio_history_stride": self.causal_action_state_proprio_history_stride,
+                "action_history_length": self.causal_action_state_history_length,
+                "memory_layers": self.causal_action_state_memory_layers,
+                "memory_tokens": self.causal_action_state_memory_tokens,
+                "num_views": self.causal_action_state_num_views,
+                "view_token_width": self.causal_action_state_view_token_width,
+            }
+            invalid = {name: value for name, value in causal_positive_values.items() if int(value) < 1}
+            if invalid:
+                raise ValueError(f"Causal action-state dimensions must be positive: {invalid}")
+            if self.causal_action_state_model_dim % self.causal_action_state_num_heads:
+                raise ValueError("Causal action-state model_dim must be divisible by num_heads")
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -256,6 +321,27 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     view_token_width=config.strong_action_view_token_width,
                     initial_residual_gate=config.strong_action_initial_gate,
                 )
+            if config.causal_action_state_enabled:
+                self.causal_action_state = CausalActionStateExpert(
+                    hidden_size=self.hidden_size,
+                    model_dim=config.causal_action_state_model_dim,
+                    num_heads=config.causal_action_state_num_heads,
+                    state_layers=config.causal_action_state_encoder_layers,
+                    state_slots=config.causal_action_state_slots,
+                    action_layers=config.causal_action_state_action_layers,
+                    dynamics_layers=config.causal_action_state_dynamics_layers,
+                    ffn_multiplier=config.causal_action_state_ffn_multiplier,
+                    state_dim=config.causal_action_state_dim,
+                    history_action_dim=config.causal_action_state_history_action_dim,
+                    target_action_dim=config.action_dim,
+                    proprio_history_length=config.causal_action_state_proprio_history_length,
+                    proprio_history_stride=config.causal_action_state_proprio_history_stride,
+                    action_history_length=config.causal_action_state_history_length,
+                    memory_layers=config.causal_action_state_memory_layers,
+                    memory_tokens=config.causal_action_state_memory_tokens,
+                    num_views=config.causal_action_state_num_views,
+                    view_token_width=config.causal_action_state_view_token_width,
+                )
 
         if config.sound_gen:
             self.sound_dim = config.sound_dim
@@ -298,6 +384,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                 self.action_relevance.init_weights()
             if self.config.strong_action_expert_enabled:
                 self.strong_action_expert.init_weights()
+            if self.config.causal_action_state_enabled:
+                self.causal_action_state.init_weights()
 
         if self.config.sound_gen:
             # sound2llm: input_size=sound_dim, output_size=hidden_size
@@ -727,6 +815,66 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         )
         return original_latent_shapes
 
+    def _encode_clean_future_vision(
+        self,
+        packed_seq: PackedSequence,
+        target_dtype: torch.dtype,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]] | None:
+        """Project clean future latents for the training-only state target."""
+        if packed_seq.clean_vision_tokens is None:
+            return None
+        if packed_seq.vision is None:
+            raise ValueError("Clean future-state targets require packed vision metadata")
+        vision = packed_seq.vision
+        if len(packed_seq.clean_vision_tokens) != len(vision.token_shapes):
+            raise ValueError("Clean future vision items must align with packed token shapes")
+        if len(vision.condition_mask) != len(vision.token_shapes):
+            raise ValueError("Vision condition masks must align with packed token shapes")
+
+        patches, _ = self.patchify_and_pack_latents(
+            packed_seq.clean_vision_tokens,
+            vision.token_shapes,
+        )
+        embedded = self.vae2llm(patches.to(target_dtype))
+        item_tokens: list[torch.Tensor] = []
+        item_views: list[torch.Tensor] = []
+        cursor = 0
+        num_views = self.config.causal_action_state_num_views
+        view_width = self.config.causal_action_state_view_token_width
+        for token_shape, condition_mask in zip(vision.token_shapes, vision.condition_mask, strict=True):
+            latent_t, latent_h, latent_w = (int(value) for value in token_shape)
+            item_length = latent_t * latent_h * latent_w
+            item = embedded[cursor : cursor + item_length]
+            if item.shape[0] != item_length:
+                raise ValueError("Clean future vision patches ended before token_shapes")
+            frame_is_conditioned = condition_mask.reshape(latent_t, -1).amax(dim=1) > 0
+            future_mask = (~frame_is_conditioned).to(item.device)
+            future_mask = future_mask[:, None].expand(latent_t, latent_h * latent_w).reshape(-1)
+            horizontal = torch.arange(latent_w, device=item.device).repeat(latent_t * latent_h)
+            views = torch.div(horizontal, view_width, rounding_mode="floor").clamp_(0, num_views - 1)
+            item_tokens.append(item[future_mask])
+            item_views.append(views[future_mask])
+            cursor += item_length
+        if cursor != embedded.shape[0]:
+            raise ValueError("Clean future token shapes do not cover projected patches")
+
+        counts = packed_seq.num_vision_items_per_sample
+        if counts is None:
+            counts = [1] * len(packed_seq.sample_lens)
+        counts = [int(count) for count in counts]
+        if len(counts) != len(packed_seq.sample_lens) or sum(counts) != len(item_tokens):
+            raise ValueError("Vision-item counts must align with packed samples and clean vision items")
+        grouped_tokens: list[torch.Tensor] = []
+        grouped_views: list[torch.Tensor] = []
+        cursor = 0
+        for count in counts:
+            grouped_tokens.append(torch.cat(item_tokens[cursor : cursor + count], dim=0))
+            grouped_views.append(torch.cat(item_views[cursor : cursor + count], dim=0))
+            cursor += count
+        if any(group.shape[0] < 1 for group in grouped_tokens):
+            raise ValueError("Every causal state target requires at least one future visual token")
+        return grouped_tokens, grouped_views
+
     def _decode_vision(
         self,
         packed_seq: PackedSequence,
@@ -836,6 +984,59 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             packed_tokens_action  # [B_action*T_action,hidden_size] scattered into [N_total,hidden_size]
         )
 
+    def _forward_causal_action_state(
+        self,
+        packed_seq: PackedSequence,
+        packed_sequence: torch.Tensor,
+        action_seed_hidden: torch.Tensor | None,
+        target_dtype: torch.dtype,
+    ) -> dict:
+        """Run the online state-only action path without the joint video transformer."""
+        if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+            raise ValueError("Causal action state requires packed action tokens")
+        if packed_seq.vision is None:
+            raise ValueError("Causal action state requires packed vision tokens")
+        if not isinstance(packed_seq.text_indexes, torch.Tensor):
+            raise TypeError("Causal action state requires finalized text indexes")
+        if not isinstance(packed_seq.position_ids, torch.Tensor):
+            raise TypeError("Causal action state requires finalized position IDs")
+        if action_seed_hidden is None:
+            raise RuntimeError("Causal action-state seed was not captured before the transformer")
+        if self.config.sound_gen or self.predict_text_tokens:
+            raise ValueError("Causal action state supports action-only generation")
+
+        clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
+        with torch.no_grad():
+            clean_future = self._encode_clean_future_vision(packed_seq, target_dtype)
+        future_vision_groups, future_view_groups = clean_future or (None, None)
+        causal_action_hidden, causal_metrics = self.causal_action_state(
+            packed_sequence,
+            action_seed_hidden=action_seed_hidden,
+            action_indexes=packed_seq.action.sequence_indexes,
+            text_indexes=packed_seq.text_indexes,
+            vision_indexes=clean_vision_indexes,
+            position_ids=packed_seq.position_ids,
+            sample_lens=packed_seq.sample_lens,
+            proprio_history=packed_seq.control_proprio_history,
+            proprio_history_mask=packed_seq.control_proprio_history_mask,
+            action_history=packed_seq.control_action_history,
+            action_history_mask=packed_seq.control_action_history_mask,
+            future_vision_groups=future_vision_groups,
+            future_view_groups=future_view_groups,
+            clean_actions=packed_seq.clean_action_tokens if clean_future is not None else None,
+        )
+        output_dict = {
+            f"causal_action_state_{name}": value for name, value in causal_metrics.items()
+        }
+        self._decode_ordered_action_hidden(
+            packed_seq,
+            causal_action_hidden,
+            output_dict,
+            output_key="preds_action",
+        )
+        output_dict["last_hidden_state"] = packed_sequence
+        return output_dict
+
     def _decode_action(
         self,
         packed_seq: PackedSequence,
@@ -891,13 +1092,15 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             preds_action = self.unpack_action(preds_action, action.token_shapes, action.noisy_frame_indexes)
             output_dict.update(preds_action=preds_action)
 
-    def _decode_action_relevance_only(
+    def _decode_ordered_action_hidden(
         self,
         packed_seq: PackedSequence,
         action_hidden_states: torch.Tensor,
         output_dict: dict,
+        *,
+        output_key: str,
     ) -> None:
-        """Decode the B2 auxiliary prediction from action-order hidden states."""
+        """Decode action-order hidden states without reading joint-transformer action tokens."""
         action = packed_seq.action
         if action is None or action.tokens is None:
             raise ValueError("relevance-only action decoding requires action tokens")
@@ -913,7 +1116,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             preds = [torch.zeros_like(tokens) for tokens in action.tokens]
             if preds:
                 preds[0] = preds[0] + graph_anchor
-            output_dict["preds_action_relevance_only"] = preds
+            output_dict[output_key] = preds
             return
 
         local_noisy_indexes: list[torch.Tensor] = []
@@ -931,10 +1134,24 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         noisy_hidden = action_hidden_states[torch.cat(local_noisy_indexes)]
         per_token_domain_id = torch.cat(domain_ids)
         preds = self.llm2action(noisy_hidden, per_token_domain_id)
-        output_dict["preds_action_relevance_only"] = self.unpack_action(
+        output_dict[output_key] = self.unpack_action(
             preds,
             action.token_shapes,
             action.noisy_frame_indexes,
+        )
+
+    def _decode_action_relevance_only(
+        self,
+        packed_seq: PackedSequence,
+        action_hidden_states: torch.Tensor,
+        output_dict: dict,
+    ) -> None:
+        """Decode the B2 auxiliary prediction from action-order hidden states."""
+        self._decode_ordered_action_hidden(
+            packed_seq,
+            action_hidden_states,
+            output_dict,
+            output_key="preds_action_relevance_only",
         )
 
     def _encode_sound(
@@ -1081,17 +1298,25 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         action_seed_hidden: torch.Tensor | None = None
         if self.config.action_gen:
             self._encode_action(packed_seq, packed_sequence, target_dtype)
-            if self.config.action_relevance_enabled:
+            if self.config.action_relevance_enabled or self.config.causal_action_state_enabled:
                 if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
-                    raise ValueError("action relevance requires packed action tokens")
-                # Keep an immutable, action-order-aligned copy before the joint
-                # transformer. B2 uses it as the only action-side input to the
-                # relevance-only auxiliary prediction.
+                    raise ValueError("decoupled action state requires packed action tokens")
+                # Keep the denoising query in action order before the joint
+                # transformer. C1's action tower reads this query and state slots
+                # only, so joint visual/text hidden states cannot bypass S_t.
                 action_seed_hidden = packed_sequence[packed_seq.action.sequence_indexes].clone()
 
         # encode sound tokens
         if self.config.sound_gen:
             self._encode_sound(packed_seq, packed_sequence, target_dtype)
+
+        if self.config.causal_action_state_enabled:
+            return self._forward_causal_action_state(
+                packed_seq,
+                packed_sequence,
+                action_seed_hidden,
+                target_dtype,
+            )
 
         assert packed_seq.attn_modes is not None
         assert packed_seq.split_lens is not None

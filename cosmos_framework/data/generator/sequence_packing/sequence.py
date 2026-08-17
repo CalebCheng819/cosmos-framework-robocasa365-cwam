@@ -949,6 +949,12 @@ class PackedSequence:
     control_action_history: list[torch.Tensor] | None = None
     control_action_history_mask: list[torch.Tensor] | None = None
 
+    # Training-only clean targets for causal state prediction. They are attached
+    # by OmniMoTModel after packing and are never populated by inference.
+    clean_vision_tokens: list[torch.Tensor] | None = None
+    clean_action_tokens: list[torch.Tensor] | None = None
+    num_vision_items_per_sample: list[int] | None = None
+
     def __post_init__(self) -> None:
         assert isinstance(self.text_ids, torch.Tensor), "PackedSequence.text_ids must be finalized"
         assert isinstance(self.text_indexes, torch.Tensor), "PackedSequence.text_indexes must be finalized"
@@ -986,6 +992,8 @@ class PackedSequence:
             "control_proprio_history_mask",
             "control_action_history",
             "control_action_history_mask",
+            "clean_vision_tokens",
+            "clean_action_tokens",
         ):
             values = getattr(self, field_name)
             if values is not None:

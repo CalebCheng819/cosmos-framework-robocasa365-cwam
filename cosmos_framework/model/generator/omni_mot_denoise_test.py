@@ -88,3 +88,76 @@ def test_denoise_preserves_action_relevance_metrics() -> None:
         memory=memory,
         video_temporal_causal=None,
     )
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_denoise_accepts_causal_state_without_video_prediction() -> None:
+    state_metrics = {
+        "causal_action_state_dynamics_loss": torch.tensor(0.1),
+        "causal_action_state_variance_loss": torch.tensor(0.2),
+    }
+    network_output = {
+        "preds_action": [torch.ones(1)],
+        "last_hidden_state": torch.randn(2, 4),
+        **state_metrics,
+    }
+    harness = SimpleNamespace(
+        net=MagicMock(return_value=network_output),
+        config=SimpleNamespace(action_gen=True, action_relevance_enabled=False, sound_gen=False),
+    )
+
+    output = OmniMoTModel.denoise(harness, data_batch_packed=object())
+
+    assert "preds_vision" not in output
+    assert output["preds_action"] is network_output["preds_action"]
+    for name, value in state_metrics.items():
+        assert output[name] is value
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_causal_state_loss_skips_video_prediction() -> None:
+    metric_names = (
+        "causal_action_state_dynamics_loss",
+        "causal_action_state_variance_loss",
+        "causal_action_state_dynamics_cosine",
+        "causal_action_state_state_std",
+        "causal_action_state_state_rms",
+        "causal_action_state_state_attention_entropy",
+        "causal_action_state_action_attention_entropy",
+        "causal_action_state_dynamics_attention_entropy",
+    )
+    out_net = {name: torch.tensor(1.0) for name in metric_names}
+    config = SimpleNamespace(
+        vision_gen=True,
+        action_gen=False,
+        action_relevance_enabled=False,
+        strong_action_expert_enabled=False,
+        causal_action_state_enabled=True,
+        causal_action_state_dynamics_loss_weight=0.25,
+        causal_action_state_dynamics_warmup_iters=1000,
+        causal_action_state_variance_loss_weight=0.01,
+        sound_gen=False,
+        rectified_flow_training_config=SimpleNamespace(normalize_loss_by_active=False),
+        lbl=SimpleNamespace(coeff_und=0.0, coeff_gen=0.0, method="uniform"),
+    )
+    harness = SimpleNamespace(
+        config=config,
+        tensor_kwargs_fp32={"device": torch.device("cpu"), "dtype": torch.float32},
+        parallel_dims=None,
+    )
+
+    loss, losses = OmniMoTModel._compute_losses(
+        harness,
+        out_net=out_net,
+        data_batch_packed=SimpleNamespace(),
+        gen_data_noised=SimpleNamespace(),
+        timesteps=torch.zeros(2, 1),
+        is_image_batch=False,
+        iteration=0,
+    )
+
+    assert loss.item() == pytest.approx(0.01025)
+    assert losses["flow_matching_loss_vision"].item() == 0.0
+    assert losses["flow_matching_loss_vision_per_instance"].shape == (2,)

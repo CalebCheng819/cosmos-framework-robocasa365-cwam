@@ -433,11 +433,11 @@ def _validate_packed_batch(
     }
 
 
-def _validate_loader_config(config: Any, *, strong: bool) -> dict[str, Any]:
+def _validate_loader_config(config: Any, *, control_history: bool) -> dict[str, Any]:
     train = config.dataloader_train
     max_samples = int(train.max_samples_per_batch)
     max_sequence = train.max_sequence_length
-    expected_samples = _STRONG_SAMPLE_COUNT if strong else _PRODUCTION_SAMPLE_COUNT
+    expected_samples = _STRONG_SAMPLE_COUNT if control_history else _PRODUCTION_SAMPLE_COUNT
     if max_samples != expected_samples:
         raise AssertionError(
             f"Production max_samples_per_batch drifted: expected {expected_samples}, got {max_samples}."
@@ -459,28 +459,30 @@ def _validate_loader_config(config: Any, *, strong: bool) -> dict[str, Any]:
     latent_cache_root = dataset.latent_cache_root
     action_relevance_enabled = bool(config.model.config.get("action_relevance_enabled", False))
     strong_action_enabled = bool(config.model.config.get("strong_action_expert_enabled", False))
-    if strong_action_enabled != strong:
+    causal_action_state_enabled = bool(config.model.config.get("causal_action_state_enabled", False))
+    if (strong_action_enabled or causal_action_state_enabled) != control_history:
         raise AssertionError(
-            f"Strong-v1 TOML/config mismatch: requested={strong}, model_enabled={strong_action_enabled}."
+            "Causal-control TOML/config mismatch: "
+            f"requested={control_history}, strong={strong_action_enabled}, causal={causal_action_state_enabled}."
         )
-    if action_relevance_enabled or strong_action_enabled:
+    if action_relevance_enabled or strong_action_enabled or causal_action_state_enabled:
         if latent_cache_mode != "required" or not latent_cache_root:
             raise AssertionError("Specialized policy validation requires its audited latent cache.")
         tokenizer_target = str(config.model.config.tokenizer.get("_target_", ""))
         if not tokenizer_target.endswith(".PrecomputedWan2pt2LatentTokenizer"):
             raise AssertionError("Specialized policy validation requires the metadata-only Wan tokenizer.")
-    if strong_action_enabled:
+    if control_history:
         if str(dataset.camera_mode) != "triple_view" or str(dataset.resolution) != "480":
-            raise AssertionError("Strong-v1 requires triple_view and the 480 model-resolution tier.")
+            raise AssertionError("Causal-control training requires triple_view and the 480 model-resolution tier.")
         if not dataset.control_cache_root:
-            raise AssertionError("Strong-v1 requires the immutable control cache.")
+            raise AssertionError("Causal-control training requires the immutable control cache.")
         history_contract = (
             int(dataset.proprio_history_length),
             int(dataset.proprio_history_stride),
             int(dataset.action_history_length),
         )
         if history_contract != (4, 12, 16):
-            raise AssertionError(f"Strong-v1 history contract drifted: {history_contract}")
+            raise AssertionError(f"Causal-control history contract drifted: {history_contract}")
     elif str(dataset.camera_mode) != "concat_view" or dataset.resolution is not None:
         raise AssertionError("Historical baseline/S1 loader camera or resolution contract drifted.")
 
@@ -497,8 +499,11 @@ def _validate_loader_config(config: Any, *, strong: bool) -> dict[str, Any]:
         "in_order": bool(inner.in_order),
         "latent_cache_mode": latent_cache_mode,
         "latent_cache_root": latent_cache_root,
-        "metadata_only_video_tokenizer": action_relevance_enabled or strong_action_enabled,
+        "metadata_only_video_tokenizer": (
+            action_relevance_enabled or strong_action_enabled or causal_action_state_enabled
+        ),
         "strong_action_expert_enabled": strong_action_enabled,
+        "causal_action_state_enabled": causal_action_state_enabled,
         "camera_mode": str(dataset.camera_mode),
         "resolution": dataset.resolution,
         "control_cache_root": dataset.control_cache_root,
@@ -507,8 +512,12 @@ def _validate_loader_config(config: Any, *, strong: bool) -> dict[str, Any]:
 
 def main() -> None:
     args = _parse_args()
-    strong = args.toml.name == "action_policy_robocasa365_strong_nano.toml"
-    _configure_runtime(args, strong=strong)
+    control_history = args.toml.name in {
+        "action_policy_robocasa365_strong_nano.toml",
+        "action_policy_robocasa365_b2_nano.toml",
+        "action_policy_robocasa365_causal_state_nano.toml",
+    }
+    _configure_runtime(args, strong=control_history)
 
     # Import only after the CPU/training flags and all TOML interpolations are fixed.
     from cosmos_framework.configs.toml_config.sft_config import load_experiment_from_toml
@@ -519,11 +528,11 @@ def main() -> None:
     config_started = time.perf_counter()
     config = load_experiment_from_toml(args.toml)
     config_seconds = time.perf_counter() - config_started
-    resolved_loader = _validate_loader_config(config, strong=strong)
-    expected_sample_count = _STRONG_SAMPLE_COUNT if strong else _PRODUCTION_SAMPLE_COUNT
-    expected_video_shape = _STRONG_VIDEO_SHAPE if strong else _PRODUCTION_VIDEO_SHAPE
+    resolved_loader = _validate_loader_config(config, control_history=control_history)
+    expected_sample_count = _STRONG_SAMPLE_COUNT if control_history else _PRODUCTION_SAMPLE_COUNT
+    expected_video_shape = _STRONG_VIDEO_SHAPE if control_history else _PRODUCTION_VIDEO_SHAPE
     expected_video_latent_shape = (
-        _STRONG_VIDEO_LATENT_SHAPE if strong else _PRODUCTION_VIDEO_LATENT_SHAPE
+        _STRONG_VIDEO_LATENT_SHAPE if control_history else _PRODUCTION_VIDEO_LATENT_SHAPE
     )
 
     with _single_process_gloo():
@@ -548,7 +557,7 @@ def main() -> None:
             expected_video_latent_shape=expected_video_latent_shape,
             expected_action_shape=_PRODUCTION_ACTION_SHAPE,
             expected_raw_action_shape=_PRODUCTION_RAW_ACTION_SHAPE,
-            require_strong_control=strong,
+            require_strong_control=control_history,
         )
 
     elapsed_seconds = time.perf_counter() - total_started
@@ -566,7 +575,8 @@ def main() -> None:
             "checkpoint_save_resume",
         ],
         "toml": str(args.toml),
-        "strong_v1": strong,
+        "strong_v1": bool(config.model.config.get("strong_action_expert_enabled", False)),
+        "causal_action_state": bool(config.model.config.get("causal_action_state_enabled", False)),
         "gloo_world_size": 1,
         "loader": resolved_loader,
         "sample_count": batch_metrics["sample_count"],

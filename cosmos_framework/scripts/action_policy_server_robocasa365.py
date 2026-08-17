@@ -632,28 +632,35 @@ class RoboCasa365PolicyService(ActionModelService):
         super().__init__(args)
 
         self.strong_action_enabled = bool(getattr(self.model.config, "strong_action_expert_enabled", False))
-        if getattr(self, "strong_action_enabled", False):
-            expected_strong_config = {
-                "strong_action_state_dim": 16,
-                "strong_action_history_action_dim": 10,
-                "strong_action_proprio_history_length": 4,
-                "strong_action_proprio_history_stride": 12,
-                "strong_action_history_length": 16,
-                "strong_action_num_views": 3,
-                "strong_action_view_token_width": 8,
-                "strong_action_input_resolution": "480",
+        self.causal_action_state_enabled = bool(
+            getattr(self.model.config, "causal_action_state_enabled", False)
+        )
+        self.control_history_enabled = self.strong_action_enabled or self.causal_action_state_enabled
+        if self.strong_action_enabled and self.causal_action_state_enabled:
+            raise RuntimeError("Strong-v1 and causal action-state serving modes are mutually exclusive")
+        if self.control_history_enabled:
+            prefix = "causal_action_state" if self.causal_action_state_enabled else "strong_action"
+            expected_control_config = {
+                f"{prefix}_state_dim": 16,
+                f"{prefix}_history_action_dim": 10,
+                f"{prefix}_proprio_history_length": 4,
+                f"{prefix}_proprio_history_stride": 12,
+                f"{prefix}_history_length": 16,
+                f"{prefix}_num_views": 3,
+                f"{prefix}_view_token_width": 8,
+                f"{prefix}_input_resolution": "480",
             }
-            actual_strong_config = {
-                key: getattr(self.model.config, key, None) for key in expected_strong_config
+            actual_control_config = {
+                key: getattr(self.model.config, key, None) for key in expected_control_config
             }
-            if actual_strong_config != expected_strong_config:
+            if actual_control_config != expected_control_config:
                 raise RuntimeError(
-                    "Loaded Strong-v1 model config does not match the serving contract: "
-                    f"expected={expected_strong_config}, actual={actual_strong_config}"
+                    "Loaded causal-control model config does not match the serving contract: "
+                    f"expected={expected_control_config}, actual={actual_control_config}"
                 )
-            if self.open_loop_horizon != expected_strong_config["strong_action_proprio_history_stride"]:
+            if self.open_loop_horizon != expected_control_config[f"{prefix}_proprio_history_stride"]:
                 raise RuntimeError(
-                    "Strong-v1 serving requires open_loop_horizon=12 so online state history matches training"
+                    "Causal-control serving requires open_loop_horizon=12 so online state history matches training"
                 )
         # Three committed replans plus the current observation produce the
         # training-time [t-36, t-24, t-12, t] state window.
@@ -717,7 +724,7 @@ class RoboCasa365PolicyService(ActionModelService):
     def _build_json_prompt(self, prompt: str, *, video: torch.Tensor, image_size: torch.Tensor) -> str:
         camera_description = (
             _STRONG_CAMERA_DESCRIPTION
-            if getattr(self, "strong_action_enabled", False)
+            if getattr(self, "control_history_enabled", False)
             else _TRAINING_CAMERA_DESCRIPTION
         )
         data_dict: dict[str, Any] = {
@@ -742,7 +749,7 @@ class RoboCasa365PolicyService(ActionModelService):
         """Validate the wire observation and build the checkpoint-specific request."""
         if not isinstance(obs, dict):
             raise TypeError(f"RoboCasa365 observation must be a dict, got {type(obs).__name__}")
-        if getattr(self, "strong_action_enabled", False):
+        if getattr(self, "control_history_enabled", False):
             image, prompt, current_state = _extract_strong_observation(
                 obs,
                 camera_height=self.camera_height,
@@ -801,7 +808,7 @@ class RoboCasa365PolicyService(ActionModelService):
                 f"Cosmos policy returned {actions.shape[0]} actions; expected {self.cfg.action_chunk_size}"
             )
         response: dict[str, Any] = {"actions": actions}
-        if getattr(self, "strong_action_enabled", False):
+        if getattr(self, "control_history_enabled", False):
             executed = torch.from_numpy(raw_actions[: self.open_loop_horizon])
             normalized = self._action_normalizer.normalize_action(executed)
             if normalized.shape != (self.open_loop_horizon, _RAW_ACTION_DIM):
@@ -817,7 +824,7 @@ class RoboCasa365PolicyService(ActionModelService):
     def _commit_strong_history(self, request: dict[str, Any], response: dict[str, Any]) -> None:
         """Commit memory only after a complete model response succeeds."""
         normalized_actions = response.pop(_STRONG_ACTION_HISTORY_RESPONSE_KEY, None)
-        if not getattr(self, "strong_action_enabled", False):
+        if not getattr(self, "control_history_enabled", False):
             if normalized_actions is not None:
                 raise RuntimeError("Baseline response unexpectedly contained Strong-v1 history")
             return
@@ -1021,7 +1028,7 @@ class RoboCasa365PolicyService(ActionModelService):
 
     def _reset_local_state(self) -> None:
         """Clear all episode-scoped Strong-v1 control memory."""
-        if getattr(self, "strong_action_enabled", False):
+        if getattr(self, "control_history_enabled", False):
             self._proprio_history.clear()
             self._normalized_action_history.clear()
 
@@ -1071,6 +1078,8 @@ class RoboCasa365PolicyService(ActionModelService):
     def metadata(self) -> dict[str, Any]:
         source_module_path = Path(__file__).resolve()
         strong_action_enabled = getattr(self, "strong_action_enabled", False)
+        causal_action_state_enabled = getattr(self, "causal_action_state_enabled", False)
+        control_history_enabled = getattr(self, "control_history_enabled", False)
         metadata = {
             "schema_version": 1,
             "service": "cwam_cosmos3_robocasa365",
@@ -1089,10 +1098,11 @@ class RoboCasa365PolicyService(ActionModelService):
             "wire_inputs": [*_CAMERA_KEYS, _STATE_KEY, "prompt"],
             "conditioning_views": (
                 list(_CAMERA_KEYS)
-                if strong_action_enabled
+                if control_history_enabled
                 else ["observation/agentview_left", "observation/eye_in_hand"]
             ),
-            "state_conditioning": strong_action_enabled,
+            "state_conditioning": control_history_enabled,
+            "causal_action_state_enabled": causal_action_state_enabled,
             "model_action": "[dpos3,rot6d_columns6,gripper1]",
             "output_action": "[dpos3,axisangle3,gripper1]",
             "gripper_transform": "identity",
@@ -1141,6 +1151,18 @@ class RoboCasa365PolicyService(ActionModelService):
                     "context_relation_bias": True,
                     "per_view_latent_width": 16,
                 },
+            }
+        if causal_action_state_enabled:
+            metadata["causal_action_state_contract"] = {
+                "schema_version": 1,
+                "online_inputs": ["task", "three_view_observation", "proprio_history", "action_history"],
+                "state_slots": 32,
+                "state_encoder_layers": 4,
+                "state_only_action_layers": 4,
+                "controlled_dynamics_layers": 2,
+                "future_target": "shared_encoder_stop_gradient_training_only",
+                "direct_action_context_bypass": False,
+                "episode_history_reset": True,
             }
         return metadata
 

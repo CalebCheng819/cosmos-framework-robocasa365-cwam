@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_robocasa365_nano import (
     action_policy_robocasa365_b2_nano,
+    action_policy_robocasa365_causal_state_nano,
     action_policy_robocasa365_nano,
     action_policy_robocasa365_s1_nano,
     action_policy_robocasa365_strong_nano,
@@ -113,4 +114,49 @@ def test_b2_gradient_evidence_covers_both_action_branches() -> None:
         "action_modality_embed",
         "strong_action_expert",
         "action_relevance",
+    ]
+
+
+def test_causal_state_recipe_has_one_state_only_action_path() -> None:
+    causal = action_policy_robocasa365_causal_state_nano
+
+    assert causal.model.config.causal_action_state_enabled is True
+    assert causal.model.config.strong_action_expert_enabled is False
+    assert causal.model.config.action_relevance_enabled is False
+    assert causal.model.config.causal_action_state_slots == 32
+    assert causal.model.config.causal_action_state_encoder_layers == 4
+    assert causal.model.config.causal_action_state_action_layers == 4
+    assert causal.model.config.causal_action_state_dynamics_layers == 2
+    assert causal.model.config.causal_action_state_dynamics_loss_weight == 0.25
+    assert causal.dataloader_train.max_samples_per_batch == 32
+    assert causal.trainer.grad_accum_iter == 2
+    assert list(causal.trainer.callbacks.production_batch_memory_gate.allowed_world_sizes) == [6]
+    assert "causal_action_state" in causal.optimizer.keys_to_select
+    assert "strong_action_expert" not in causal.optimizer.keys_to_select
+    assert "moe_gen" not in causal.optimizer.keys_to_select
+    assert "llm2vae" not in causal.optimizer.keys_to_select
+    assert list(causal.optimizer.keys_to_select) == [
+        "time_embedder",
+        "vae2llm",
+        "action2llm",
+        "llm2action",
+        "action_modality_embed",
+        "causal_action_state",
+    ]
+    assert causal.optimizer.lr_multipliers.causal_action_state == 5.0
+    assert "strong_action_expert" not in causal.optimizer.lr_multipliers
+    assert "causal_action_state" in causal.checkpoint.keys_to_skip_loading
+    assert "strong_action_expert" not in causal.checkpoint.keys_to_skip_loading
+
+
+def test_causal_state_gradient_evidence_covers_state_and_action_heads() -> None:
+    families = list(
+        action_policy_robocasa365_causal_state_nano.trainer.callbacks.action_gradient_evidence.families
+    )
+
+    assert families == [
+        "action2llm",
+        "llm2action",
+        "action_modality_embed",
+        "causal_action_state",
     ]

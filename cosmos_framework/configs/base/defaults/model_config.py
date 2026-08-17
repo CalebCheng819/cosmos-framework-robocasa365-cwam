@@ -282,6 +282,31 @@ class OmniMoTModelConfig:
     strong_action_initial_gate: float = 0.01
     strong_action_input_resolution: str = "480"
 
+    # C1: online causal state slots are the only conditional context read by
+    # the action decoder. A controlled dynamics model predicts the same shared
+    # encoder's stop-gradient future state during training.
+    causal_action_state_enabled: bool = False
+    causal_action_state_model_dim: int = 1024
+    causal_action_state_num_heads: int = 16
+    causal_action_state_encoder_layers: int = 4
+    causal_action_state_slots: int = 32
+    causal_action_state_action_layers: int = 4
+    causal_action_state_dynamics_layers: int = 2
+    causal_action_state_ffn_multiplier: int = 4
+    causal_action_state_dim: int = 16
+    causal_action_state_history_action_dim: int = 10
+    causal_action_state_proprio_history_length: int = 4
+    causal_action_state_proprio_history_stride: int = 12
+    causal_action_state_history_length: int = 16
+    causal_action_state_memory_layers: int = 2
+    causal_action_state_memory_tokens: int = 4
+    causal_action_state_num_views: int = 3
+    causal_action_state_view_token_width: int = 8
+    causal_action_state_dynamics_loss_weight: float = 0.25
+    causal_action_state_dynamics_warmup_iters: int = 1000
+    causal_action_state_variance_loss_weight: float = 0.01
+    causal_action_state_input_resolution: str = "480"
+
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens
     sound_tokenizer: LazyDict | None = None  # Sound tokenizer config (e.g., AVAE)
