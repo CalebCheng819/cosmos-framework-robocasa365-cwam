@@ -1,0 +1,31 @@
+{
+  "parent": {"type": "data_source_id", "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"},
+  "properties": {
+    "Name": {"type": "title", "title": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817 - aligned-memory policy ranking"}}]},
+    "Experiment ID": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817"}}]},
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "exploratory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Test whether paired intervention ranking on action denoising error makes the policy depend causally on correctly aligned object-memory history instead of merely learning a non-collapsed memory representation."}}]},
+    "Acceptance Criterion": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Eight-B200 training completes 500 finite optimizer steps and saves a complete 8-rank checkpoint; aligned, zero, and shuffle branches share samples, noise, timestep, target, and non-memory conditions; zero/shuffle predictions have no gradient; zero intervention gives exactly zero object-delta main contribution; matched 2048-sample validation shows aligned main action loss at least 1% lower than both zero and shuffle. No 20k unless every gate passes."}}]},
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R6A-20260817-dynamic-exclusive-final-delta-probe-3bf21e7789cc81efbbf6dd1a4470338c"},
+    "Estimated Runtime": {"type": "number", "number": 2.5},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-17T23:05:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-17T23:05:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-17T20:35:00+08:00", "end": "2026-08-17T23:05:00+08:00"}},
+    "Git Commit": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "324ace63f3e665ed7226371db67863aee2cde503 (pushed, clean immutable training source)"}}]},
+    "Artifact URL": {"type": "url", "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/324ace63f3e665ed7226371db67863aee2cde503"},
+    "Config": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "R4 model-only warm start; R6-A dynamic-exclusive full final-delta architecture; train complete strong_action_expert; paired aligned/zero/shuffle policy branches after one shared 5B backbone pass; counterfactual branches stop-gradient; rank loss weight=1.0, relative margin=1%, warmup=50; 500 steps; batch 64/rank; DP8; matched none/zero/shuffle validation."}}]},
+    "Data Version": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "RoboCasa365 B4 processed split plus 1,143,698-record triple-view Wan latent cache and episode-safe t-36/t-24/t-12 visual-history sidecar; same data and held-out stream as R4/R6; no future lookup."}}]},
+    "Environment": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "wam@208.64.254.190; pyrogpucompute1; cwam-b4-runtime:ngc25.09-ffmpeg6; /data0/wam/cwam-b4/env/cosmos-cu130; offline model assets."}}]},
+    "Command": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": ".research-workflow/launchers/launch_b5_vom_probe_r7_8gpu.sh, then matched 2048-sample none/zero/shuffle validation."}}]},
+    "Hardware": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; effective global batch 512."}}]},
+    "Seeds": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "42 training; 4242 validation loader"}}]},
+    "Run IDs": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817; validation suffixes R7-VAL-NONE/ZERO/SHUFFLE"}}]},
+    "Primary Metrics": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "Aligned/zero/shuffle main action losses and relative gains; ranking loss and violation fractions; effective rank weight; main context token count; applied delta RMS and ratio; slot cosine; contrastive margins; action-gradient validity; step time; GPU memory/utilization/power."}}]}
+  },
+  "children": [
+    {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "R7 paired policy-intervention objective"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "The 5B joint transformer runs once. The same pre-action hidden state is decoded through aligned, zero-memory, and shuffled-memory Action Expert branches using identical targets and diffusion conditions. Only the aligned branch receives gradients. Per sample, the new objective averages relu(L_aligned - 0.99 * stopgrad(L_zero)) and relu(L_aligned - 0.99 * stopgrad(L_shuffle)), so optimization rewards a policy whose correct temporal history is specifically useful."}}]}}
+  ]
+}
