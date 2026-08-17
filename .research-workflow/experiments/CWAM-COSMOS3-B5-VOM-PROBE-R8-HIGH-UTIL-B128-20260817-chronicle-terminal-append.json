@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R8 B128 utilization probe passed with marginal throughput gain"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "The B128/rank, global-1024 probe completed 100 finite steps on 8 B200s and exited 0. Mean throughput was 163.535 samples/s versus the approximately 160 samples/s R7 reference; peak memory reached 96,500 MiB per GPU while average GPU utilization remained 63.01%-67.31%. The complete 8-rank step-100 checkpoint is 93,930,527,997 bytes. Terminal aligned/zero/shuffle action losses were 0.0083108954/0.0093276529/0.0091043524, so correct aligned history improved action loss by 10.90046%/8.71514%. All gates passed, but the throughput increase was only marginal; one bounded B192 probe will determine whether higher occupancy improves useful throughput before the 20k formal configuration is fixed."}}]}}
+  ]
+}

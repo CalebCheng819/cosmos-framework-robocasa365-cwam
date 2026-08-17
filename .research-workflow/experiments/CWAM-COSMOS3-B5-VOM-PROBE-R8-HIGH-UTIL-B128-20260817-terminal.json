@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "completed",
+  "notion_page_id": "3bf21e77-89cc-81a2-8e39-fae2251c171a",
+  "hypothesis": "Disabling activation checkpointing and increasing the per-rank batch from 64 to 128 will improve sustained sample throughput and B200 memory utilization while retaining stable gradients and aligned-memory intervention dependence.",
+  "baseline_checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+  "git": {
+    "code_commit": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+    "launcher_commit": "1fe84a6",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r7-20260817",
+    "dirty_at_launch": false,
+    "pushed_at_launch": true
+  },
+  "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-FORMAL-R7-GIT-20260817",
+  "run_id": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+  "wandb_offline_id": "q44f94ks",
+  "job_id": "cwam-b5-vom-probe-r8-b128",
+  "started_at": "2026-08-17T22:50:20+08:00",
+  "completed_at": "2026-08-17T23:03:48+08:00",
+  "actual_runtime_seconds": 808,
+  "optimizer_steps": 100,
+  "exit_code": 0,
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 128/rank; global batch 1024; activation checkpointing disabled",
+  "throughput": {
+    "steady_samples": 97,
+    "mean_seconds_per_step": 6.261649,
+    "median_seconds_per_step": 6.24,
+    "p95_seconds_per_step": 6.41,
+    "mean_samples_per_second": 163.535,
+    "median_samples_per_second": 164.103,
+    "r7_reference_samples_per_second": 160.0,
+    "relative_mean_gain_over_r7_fraction": 0.0221
+  },
+  "gradient_evidence": {
+    "iteration": 100,
+    "status": "passed",
+    "gradient_elements": 199967573,
+    "nonzero_gradient_elements": 195693793,
+    "nonfinite_gradient_elements": 0,
+    "gradient_l2_norm": 2.7195231372134008
+  },
+  "checkpoint": {
+    "path": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817/checkpoints/iter_000000100",
+    "latest_pointer": "iter_000000100",
+    "total_bytes": 93930527997,
+    "model": {"distcp_files": 8, "metadata_files": 1, "bytes": 92320246541},
+    "optim": {"distcp_files": 8, "metadata_files": 1, "bytes": 1610075992},
+    "scheduler": {"distcp_files": 8, "metadata_files": 1, "bytes": 9800},
+    "trainer": {"distcp_files": 8, "metadata_files": 1, "bytes": 195664}
+  },
+  "terminal_validation": {
+    "samples": 2048,
+    "unique_samples": 2048,
+    "unstable_count": 0,
+    "final_loss": 1.4067896604537964,
+    "aligned_action_loss": 0.008310895413160324,
+    "zero_action_loss": 0.009327652864158154,
+    "shuffle_action_loss": 0.009104352444410324,
+    "relative_gain_over_zero_fraction": 0.10900464091076513,
+    "relative_gain_over_shuffle_fraction": 0.08715139666381744,
+    "policy_rank_loss": 0.00011233752593398094,
+    "zero_violation_fraction": 0.078125,
+    "shuffle_violation_fraction": 0.09423828125
+  },
+  "gpu_monitor": {
+    "path": "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817/gpu.csv",
+    "active_samples_per_gpu": [151, 152, 152, 152, 152, 152, 152, 152],
+    "average_utilization_percent_per_gpu": [63.01, 65.82, 67.31, 65.84, 64.21, 64.88, 63.63, 65.03],
+    "average_memory_mib_per_gpu": [86249.3, 89684.2, 86474.0, 86085.5, 86061.7, 89659.6, 89405.4, 86130.2],
+    "maximum_memory_mib": 96500,
+    "maximum_memory_fraction": 0.5263,
+    "average_power_watts_per_gpu": [636.35, 636.97, 631.94, 642.18, 646.68, 635.64, 642.19, 626.42],
+    "maximum_power_watts": 1010.51
+  },
+  "acceptance": {
+    "finite_100_steps": true,
+    "complete_8_rank_checkpoint": true,
+    "peak_memory_below_90_percent": true,
+    "steady_throughput_above_160_samples_per_second": true,
+    "aligned_at_least_1_percent_below_zero": true,
+    "aligned_at_least_1_percent_below_shuffle": true,
+    "all_gates_passed": true
+  },
+  "artifact_paths": [
+    "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817",
+    "/data0/wam/cwam-b5/runs/logs/CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817.log"
+  ],
+  "conclusion": "B128 completed all 100 finite steps, exited 0, produced a complete 8-rank checkpoint, and retained strong aligned-memory dependence: aligned action loss was 10.90046% below exact-zero memory and 8.71514% below shuffled memory. Peak memory increased to 96,500 MiB per GPU, but average GPU utilization remained about 65% and mean throughput improved only marginally to 163.535 samples/s. The configuration passes all preregistered gates, while the small throughput gain justifies one bounded B192 probe before choosing the 20k formal batch."
+}

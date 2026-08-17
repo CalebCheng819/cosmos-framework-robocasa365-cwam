@@ -1,0 +1,79 @@
+{
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B192-20260817",
+  "recorded_at": "2026-08-17T23:09:30+08:00",
+  "status": "Planned",
+  "mode": "exploratory",
+  "notion": {
+    "sync_state": "synced",
+    "page_id": "3bf21e77-89cc-81c3-a2b0-c2823a1cbad2",
+    "page_url": "https://app.notion.com/p/CWAM-B5-VOM-R8-high-utilization-B192-probe-3bf21e7789cc81c3a2b0c2823a1cbad2",
+    "experiment_id_verified": true,
+    "status_verified": "Planned",
+    "truncated": false,
+    "unknown_block_ids": []
+  },
+  "source": {
+    "repository": "CalebCheng819/cosmos-framework-robocasa365-cwam",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r7-20260817",
+    "training_commit": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+    "launcher_commit": "1fe84a6",
+    "remote_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-FORMAL-R7-GIT-20260817",
+    "remote_clean": true,
+    "remote_commit_verified": true
+  },
+  "warm_start": {
+    "path": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+    "distcp_files": 8,
+    "scope": "model-only",
+    "source_run_step": 500,
+    "optimizer_state_restored": false,
+    "scheduler_state_restored": false,
+    "trainer_state_restored": false
+  },
+  "resources": {
+    "host": "pyrogpucompute1",
+    "gpus": "8 x NVIDIA B200 183359 MiB",
+    "gpu_compute_processes_before_launch": 0,
+    "data0_available": "4.9 TiB",
+    "run_directory_absent": true,
+    "job_and_monitor_names_absent": true
+  },
+  "configuration": {
+    "optimizer_step_start": 0,
+    "optimizer_step_target": 100,
+    "samples_per_rank": 192,
+    "world_size": 8,
+    "gradient_accumulation": 1,
+    "effective_global_batch": 1536,
+    "max_num_tokens_after_packing": 444000,
+    "activation_checkpointing": "none",
+    "train_scope": "strong_action_expert",
+    "visual_memory_intervention": "none",
+    "delta_component": "full",
+    "exclusive_dynamic": true,
+    "delta_conditioning_layers": 0,
+    "policy_rank_weight": 1.0,
+    "policy_rank_relative_margin": 0.01,
+    "policy_rank_warmup_iters": 50,
+    "validation_iterations": [0, 100],
+    "checkpoint_iteration": 100
+  },
+  "selection_rule": {
+    "b128_mean_samples_per_second": 163.535,
+    "b128_peak_memory_mib": 96500,
+    "select_b192_only_if": "stable samples/s materially exceeds B128 while all safety and intervention gates pass",
+    "otherwise": "use B128 for the fixed 20,000-step formal run"
+  },
+  "gates": {
+    "b128_terminal_recorded": true,
+    "b128_all_gates_passed": true,
+    "formal_page_exists": true,
+    "prelaunch_gates_passed": true,
+    "launch_allowed": true
+  },
+  "provenance_policy": {
+    "code_identity": "Git commit plus branch",
+    "run_identity": "experiment ID plus container name plus artifact path plus timestamps",
+    "content_hashes_required": false
+  }
+}

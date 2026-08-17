@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Succeeded"}},
+    "Completed At": {"date": {"start": "2026-08-17T23:03:48+08:00"}},
+    "Actual Runtime": {"number": 0.2244},
+    "Current ETA": {"date": {"start": "2026-08-17T23:03:48+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T22:50:20+08:00", "end": "2026-08-17T23:03:48+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r8-b128; 8-B200 B128 high-utilization probe; exit 0"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B128-20260817; W&B offline q44f94ks; GPU monitor cwam-b5-vom-probe-r8-b128-gpu-monitor"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "100 finite steps; mean/median 6.261649/6.24 s per step; mean/median 163.535/164.103 samples/s. Peak memory 96,500/183,359 MiB (52.63%); per-GPU average utilization 63.01%-67.31%. Aligned/zero/shuffle loss 0.0083108954/0.0093276529/0.0091043524; gains 10.90046%/8.71514%. Complete 8-rank 93,930,527,997-byte checkpoint."}}]},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "All preregistered stability, checkpoint, memory, throughput, and intervention gates passed. Disabling checkpointing and using B128 raised peak memory substantially, but mean throughput improved only about 2.2% over the approximately 160 samples/s R7 reference and average GPU utilization remained about 65%. Run one bounded B192 probe before selecting the 20k configuration; optimize for samples/s and formal wall-clock, not allocated memory alone."}}]}
+  }
+}
