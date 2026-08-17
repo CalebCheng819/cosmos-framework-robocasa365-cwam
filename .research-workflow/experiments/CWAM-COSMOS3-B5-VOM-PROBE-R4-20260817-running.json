@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "running",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-8101-b426-f3c606cd1395",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817-object-local-contrastive-memory-probe-3bf21e7789cc8101b426f3c606cd1395"
+  },
+  "hypothesis": "Token-to-slot competition, local assignment structure, cross-object and cross-episode negatives, and main-action-gradient supervision will prevent R3's predictive auxiliaries from being solved by a shared collapsed representation and make aligned cross-replan memory causally useful.",
+  "objective": "Complete 500 finite optimizer steps and save the full checkpoint; keep slot mean absolute off-diagonal cosine below 0.95; make positive temporal similarity exceed both cross-object and cross-episode negative similarity by at least 0.05; retain a positive action-gradient valid fraction with finite gradients; and make aligned-history held-out main action loss at least 1 percent lower than both zero-history and batch-shuffled-history interventions. Do not launch 20k unless every gate passes.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817",
+    "run_ids": [
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-B4WARM-500S-20260817",
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-VAL-NONE-20260817",
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-VAL-ZERO-20260817",
+      "CWAM-COSMOS3-B5-VOM-PROBE-R3-VAL-SHUFFLE-20260817"
+    ]
+  },
+  "estimated_runtime_seconds": 18000,
+  "initial_eta": "2026-08-17T16:31:10+08:00",
+  "current_eta": "2026-08-17T12:12:00+08:00",
+  "experiment_window": {
+    "start": "2026-08-17T11:40:01+08:00",
+    "end": "2026-08-17T12:12:00+08:00"
+  },
+  "git": {
+    "commit": "0169f11f719b4abb5b4b3580e0131406872d5b04",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r4-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R3 fixed-scale 0.25 memory cross-attention plus FiLM after every action layer; eight competitive object slots; diversity 0.20; assignment entropy, usage balance, and spatial compactness 0.05 each; temporal correspondence 0.02; cross-object and cross-episode contrastive 0.10 each at temperature 0.07; local action-gradient alignment 0.05; memory-only future-action auxiliary 0.25; B4 warm start; train strong_action_expert; 500 steps; batch 64 per rank; DP8; accumulation 1; maximum 8 validation batches"
+  },
+  "data": {
+    "version": "RoboCasa365 B4 processed split plus Wan latent cache and visual-history sidecar",
+    "revision": "1,143,698 fixed records; 280 shards; same-physical-episode t-36/t-24/t-12 visual-history lookup; scalar episode ID used only to exclude false negatives and form detached cross-rank negative prototypes; no future or cross-episode lookup"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130",
+    "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"
+  },
+  "command": "launch_b5_vom_probe_r4_8gpu.sh followed by launch_b5_vom_matched_val_r4.sh none, zero, and shuffle; formal 20k remains blocked unless every acceptance gate passes.",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; global batch 512",
+  "seeds": [
+    42,
+    4242
+  ],
+  "preflight": {
+    "focused_tests": "22 passed in the production container: 13 strong-action-expert tests and 9 action-config tests",
+    "gpu_smoke": "Two-rank NCCL B200 BF16 production-dimension forward/backward finite with loss 2.0586414 and peak allocation 907.19 MiB per rank; cross-episode negative fraction 1.0; action-gradient valid fraction 1.0; all six required parameter groups received finite nonzero gradients",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R4-GIT-20260817",
+    "base_checkpoint": "/data1/wam/cwam-b4/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B4-ADAPTIVE-DSELECT-R1-20260814/checkpoints/iter_000020000",
+    "import_path_guard": "Formal source imported the new action-gradient function from the immutable R4 path before launch"
+  },
+  "validation": {
+    "policy": "git-run-path-timestamp-no-file-hashes",
+    "result": "pass",
+    "legacy_validator": "The bundled validator still requires SHA-256 fields and is superseded by the workflow's higher-priority no-hash policy; immutable non-hash fields were compared with the prelaunch manifest using jq.",
+    "checked_fields": "prelaunch immutable fields plus actual start time, Current ETA, job ID, run ID, source path, and formal source import; optimizer step 1 gradient evidence passed and step 67 remained finite at about 3.05 seconds per step"
+  },
+  "started_at": "2026-08-17T11:40:01+08:00",
+  "completed_at": null,
+  "actual_runtime_seconds": null,
+  "job_id": "cwam-b5-vom-probe-r4",
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817",
+    "wandb-offline-3x3gvut0"
+  ],
+  "primary_metrics": {},
+  "artifact_urls": [
+    "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/0169f11f719b4abb5b4b3580e0131406872d5b04",
+    "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817"
+  ],
+  "conclusion": null,
+  "failure_reason": null
+}
