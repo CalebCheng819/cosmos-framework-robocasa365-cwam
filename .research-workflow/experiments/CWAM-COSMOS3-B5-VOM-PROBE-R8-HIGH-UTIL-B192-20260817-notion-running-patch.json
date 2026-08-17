@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-17T23:11:12+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-17T23:31:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T23:11:12+08:00", "end": "2026-08-17T23:31:00+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r8-b192; cwam-b5-vom-probe-r8-b192-gpu-monitor; 8 B200s"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R8-HIGH-UTIL-B192-20260817; W&B offline 2jvkmqy9"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Optimizer iteration 5 verified. Step-1 gradients: 195,705,609 nonzero of 199,967,573; nonfinite 0; L2 0.145554. Compute snapshot: all 8 GPUs 100%, 126,456-133,706 MiB, 956.81-989.03 W. Initial aligned/zero/shuffle loss 0.0082894601/0.0089078741/0.0087117748 on 2,048 unique samples; unstable 0."}}]},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "B192 is actively optimizing with finite gradients and substantially higher compute-phase memory occupancy. Early step timing is approximately 9-11 seconds, so useful throughput has not yet materially exceeded B128. Final selection waits for the stable 100-step window and terminal intervention/checkpoint gates."}}]}
+  }
+}
