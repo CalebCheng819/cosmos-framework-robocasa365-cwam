@@ -9,7 +9,11 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from cosmos_framework.model.generator.omni_mot_model import OmniMoTModel, action_relevance_aux_warmup_fraction
+from cosmos_framework.model.generator.omni_mot_model import (
+    OmniMoTModel,
+    action_relevance_aux_warmup_fraction,
+    intervention_policy_ranking_loss,
+)
 
 
 @pytest.mark.L0
@@ -43,6 +47,41 @@ def test_action_relevance_aux_warmup_fraction(
 def test_action_relevance_aux_warmup_rejects_negative_values() -> None:
     with pytest.raises(ValueError, match="non-negative"):
         action_relevance_aux_warmup_fraction(iteration=-1, start_iter=0, warmup_iters=1000)
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_intervention_policy_ranking_detaches_counterfactual_references() -> None:
+    aligned = torch.tensor([0.80, 0.95], requires_grad=True)
+    zero = torch.tensor([1.00, 1.00], requires_grad=True)
+    shuffle = torch.tensor([0.80, 1.10], requires_grad=True)
+
+    loss, metrics = intervention_policy_ranking_loss(
+        aligned,
+        zero,
+        shuffle,
+        relative_margin=0.10,
+    )
+    loss.backward()
+
+    assert loss.item() == pytest.approx(0.0325)
+    torch.testing.assert_close(aligned.grad, torch.tensor([0.25, 0.25]))
+    assert zero.grad is None
+    assert shuffle.grad is None
+    assert metrics["zero_violation_fraction"].item() == pytest.approx(0.5)
+    assert metrics["shuffle_violation_fraction"].item() == pytest.approx(0.5)
+    assert metrics["zero_relative_gain"].item() == pytest.approx(0.125)
+    assert metrics["shuffle_relative_gain"].item() == pytest.approx(0.0681818182)
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_intervention_policy_ranking_rejects_invalid_contracts() -> None:
+    vector = torch.ones(2)
+    with pytest.raises(ValueError, match="one-dimensional"):
+        intervention_policy_ranking_loss(vector[:, None], vector[:, None], vector[:, None], relative_margin=0.1)
+    with pytest.raises(ValueError, match="margin"):
+        intervention_policy_ranking_loss(vector, vector, vector, relative_margin=1.0)
 
 
 @pytest.mark.L0
@@ -97,3 +136,30 @@ def test_denoise_preserves_action_relevance_metrics() -> None:
         memory=memory,
         video_temporal_causal=None,
     )
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_denoise_preserves_visual_memory_policy_interventions() -> None:
+    network_output = {
+        "preds_vision": [torch.zeros(1)],
+        "preds_action": [torch.ones(1)],
+        "preds_action_visual_memory_only": [torch.full((1,), 2.0)],
+        "preds_action_visual_memory_policy_zero": [torch.full((1,), 3.0)],
+        "preds_action_visual_memory_policy_shuffle": [torch.full((1,), 4.0)],
+    }
+    harness = SimpleNamespace(
+        net=MagicMock(return_value=network_output),
+        config=SimpleNamespace(
+            action_gen=True,
+            action_relevance_enabled=False,
+            strong_action_visual_memory_enabled=True,
+            strong_action_visual_memory_policy_rank_enabled=True,
+            sound_gen=False,
+        ),
+    )
+
+    output = OmniMoTModel.denoise(harness, data_batch_packed=object())
+
+    for key, value in network_output.items():
+        assert output[key] is value

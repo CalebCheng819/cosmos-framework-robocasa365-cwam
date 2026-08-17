@@ -616,6 +616,23 @@ def _action_policy_robocasa365_b5_visual_object_memory_nano_model_config() -> di
         raise ValueError("CWAM_VISUAL_MEMORY_DELTA_CONDITIONING_LAYERS must be 0 or 4")
     if delta_conditioning_layers and not exclusive_dynamic:
         raise ValueError("Delta conditioning layers require exclusive dynamic memory")
+    policy_rank_enabled_raw = os.environ.get("CWAM_VISUAL_MEMORY_POLICY_RANK_ENABLED", "0")
+    if policy_rank_enabled_raw not in {"0", "1"}:
+        raise ValueError("CWAM_VISUAL_MEMORY_POLICY_RANK_ENABLED must be exactly 0 or 1")
+    policy_rank_enabled = policy_rank_enabled_raw == "1"
+    policy_rank_weight = float(os.environ.get("CWAM_VISUAL_MEMORY_POLICY_RANK_WEIGHT", "1.0"))
+    policy_rank_margin = float(os.environ.get("CWAM_VISUAL_MEMORY_POLICY_RANK_MARGIN", "0.01"))
+    policy_rank_warmup_iters = int(
+        os.environ.get("CWAM_VISUAL_MEMORY_POLICY_RANK_WARMUP_ITERS", "50")
+    )
+    if policy_rank_enabled and intervention != "none":
+        raise ValueError("Policy ranking requires CWAM_VISUAL_MEMORY_INTERVENTION=none")
+    if policy_rank_enabled and policy_rank_weight <= 0.0:
+        raise ValueError("Enabled policy ranking requires a positive weight")
+    if not 0.0 <= policy_rank_margin < 1.0:
+        raise ValueError("CWAM_VISUAL_MEMORY_POLICY_RANK_MARGIN must be in [0, 1)")
+    if policy_rank_warmup_iters < 0:
+        raise ValueError("CWAM_VISUAL_MEMORY_POLICY_RANK_WARMUP_ITERS must be non-negative")
     cfg.update(
         strong_action_visual_memory_enabled=True,
         strong_action_visual_history_length=3,
@@ -646,6 +663,10 @@ def _action_policy_robocasa365_b5_visual_object_memory_nano_model_config() -> di
         strong_action_visual_memory_action_aux_loss_weight=0.25,
         strong_action_visual_memory_action_aux_warmup_iters=50,
         strong_action_visual_memory_intervention=intervention,
+        strong_action_visual_memory_policy_rank_enabled=policy_rank_enabled,
+        strong_action_visual_memory_policy_rank_weight=policy_rank_weight,
+        strong_action_visual_memory_policy_rank_margin=policy_rank_margin,
+        strong_action_visual_memory_policy_rank_warmup_iters=policy_rank_warmup_iters,
     )
     return cfg
 

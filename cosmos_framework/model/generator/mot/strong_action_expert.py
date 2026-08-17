@@ -331,6 +331,7 @@ class VisualObjectMemory(nn.Module):
         history_latent: torch.Tensor,
         history_mask: torch.Tensor,
         episode_ids: torch.Tensor | None = None,
+        intervention_override: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         expected = (
             self.history_length,
@@ -347,10 +348,13 @@ class VisualObjectMemory(nn.Module):
             raise ValueError("Visual history mask must align with [B,R]")
         if episode_ids is not None and episode_ids.shape != history_latent.shape[:1]:
             raise ValueError("Visual memory episode IDs must align with the batch")
+        intervention = self.intervention if intervention_override is None else intervention_override
+        if intervention not in {"none", "zero", "shuffle"}:
+            raise ValueError(f"Unsupported visual memory intervention override={intervention!r}")
         history_mask = history_mask.bool()
-        if self.intervention == "zero":
+        if intervention == "zero":
             history_mask = torch.zeros_like(history_mask)
-        elif self.intervention == "shuffle" and history_latent.shape[0] > 1:
+        elif intervention == "shuffle" and history_latent.shape[0] > 1:
             history_latent = torch.roll(history_latent, shifts=1, dims=0)
             history_mask = torch.roll(history_mask, shifts=1, dims=0)
             if episode_ids is not None:
@@ -1278,6 +1282,7 @@ class StrongActionContextExpert(nn.Module):
         visual_history_mask: list[torch.Tensor] | None = None,
         episode_ids: list[torch.Tensor] | None = None,
         action_seed_hidden: torch.Tensor | None = None,
+        visual_memory_intervention_override: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor]]:
         control_fields = (proprio_history, proprio_history_mask, action_history, action_history_mask)
         if any(value is None for value in control_fields):
@@ -1349,6 +1354,7 @@ class StrongActionContextExpert(nn.Module):
                 visual_latent,
                 visual_valid,
                 visual_episode_ids,
+                intervention_override=visual_memory_intervention_override,
             )
 
         action_sample_ids = _sample_ids(action_indexes, sample_lens)

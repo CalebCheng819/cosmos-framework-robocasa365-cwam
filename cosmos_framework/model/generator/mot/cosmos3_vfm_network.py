@@ -111,6 +111,7 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_visual_memory_action_aux_loss_weight=0.25,
         strong_action_visual_memory_action_aux_warmup_iters=50,
         strong_action_visual_memory_intervention="none",
+        strong_action_visual_memory_policy_rank_enabled=False,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -225,6 +226,7 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_visual_memory_action_aux_loss_weight = strong_action_visual_memory_action_aux_loss_weight
         self.strong_action_visual_memory_action_aux_warmup_iters = strong_action_visual_memory_action_aux_warmup_iters
         self.strong_action_visual_memory_intervention = strong_action_visual_memory_intervention
+        self.strong_action_visual_memory_policy_rank_enabled = strong_action_visual_memory_policy_rank_enabled
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
@@ -342,6 +344,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError(
                     "strong_action_visual_memory_intervention must be none, zero, or shuffle"
                 )
+            if self.strong_action_visual_memory_policy_rank_enabled:
+                if not self.strong_action_visual_memory_enabled:
+                    raise ValueError("Visual-memory policy ranking requires visual memory")
+                if self.strong_action_visual_memory_intervention != "none":
+                    raise ValueError("Visual-memory policy ranking requires aligned intervention=none")
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -1473,6 +1480,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             parallel_dims=sequence_shard_parallel_dims,
         )  # [N_total,hidden_size]
         output_dict = dict()
+        policy_rank_action_hidden: dict[str, torch.Tensor] = {}
 
         if self.config.strong_action_expert_enabled:
             if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
@@ -1484,8 +1492,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             if not isinstance(packed_seq.position_ids, torch.Tensor):
                 raise TypeError("Strong action expert requires finalized position IDs")
             clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
-            last_hidden_state, visual_memory_action_hidden, strong_action_metrics = self.strong_action_expert(
-                last_hidden_state,
+            strong_action_kwargs = dict(
                 action_indexes=packed_seq.action.sequence_indexes,
                 text_indexes=packed_seq.text_indexes,
                 vision_indexes=clean_vision_indexes,
@@ -1500,7 +1507,23 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                 episode_ids=packed_seq.control_episode_id,
                 action_seed_hidden=action_seed_hidden,
             )
+            strong_action_base_hidden = last_hidden_state
+            last_hidden_state, visual_memory_action_hidden, strong_action_metrics = self.strong_action_expert(
+                strong_action_base_hidden,
+                **strong_action_kwargs,
+            )
             output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})
+            if self.config.strong_action_visual_memory_policy_rank_enabled:
+                for intervention in ("zero", "shuffle"):
+                    with torch.no_grad():
+                        intervention_hidden, _, _ = self.strong_action_expert(
+                            strong_action_base_hidden,
+                            visual_memory_intervention_override=intervention,
+                            **strong_action_kwargs,
+                        )
+                    policy_rank_action_hidden[intervention] = intervention_hidden[
+                        packed_seq.action.sequence_indexes
+                    ]
         else:
             visual_memory_action_hidden = None
 
@@ -1558,6 +1581,14 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     output_dict,
                     output_key="preds_action_visual_memory_only",
                 )
+            for intervention, intervention_hidden in policy_rank_action_hidden.items():
+                with torch.no_grad():
+                    self._decode_action_auxiliary(
+                        packed_seq,
+                        intervention_hidden,
+                        output_dict,
+                        output_key=f"preds_action_visual_memory_policy_{intervention}",
+                    )
 
         # decode sound tokens
         if self.config.sound_gen:

@@ -321,6 +321,10 @@ class OmniMoTModelConfig:
     strong_action_visual_memory_action_aux_loss_weight: float = 0.25
     strong_action_visual_memory_action_aux_warmup_iters: int = 50
     strong_action_visual_memory_intervention: str = "none"
+    strong_action_visual_memory_policy_rank_enabled: bool = False
+    strong_action_visual_memory_policy_rank_weight: float = 0.0
+    strong_action_visual_memory_policy_rank_margin: float = 0.01
+    strong_action_visual_memory_policy_rank_warmup_iters: int = 50
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

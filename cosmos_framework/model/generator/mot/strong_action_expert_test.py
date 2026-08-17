@@ -481,6 +481,43 @@ def test_visual_memory_zero_intervention_masks_history_from_action_context() -> 
         assert metrics_b[metric_name].item() == 0.0
 
 
+def test_visual_memory_intervention_override_is_per_call_and_non_mutating() -> None:
+    torch.manual_seed(17)
+    visual = _expert(visual_memory_enabled=True, visual_memory_intervention="none")
+    inputs_a = _inputs()
+    inputs_b = dict(inputs_a)
+    inputs_a.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6) for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        action_seed_hidden=torch.randn(6, 32),
+    )
+    inputs_b.update(
+        visual_history_latent=[torch.randn(3, 8, 3, 6) * 100 for _ in range(2)],
+        visual_history_mask=[torch.ones(3, dtype=torch.bool) for _ in range(2)],
+        action_seed_hidden=inputs_a["action_seed_hidden"],
+    )
+
+    zero_a, _, zero_metrics_a = visual(
+        **inputs_a,
+        visual_memory_intervention_override="zero",
+    )
+    zero_b, _, zero_metrics_b = visual(
+        **inputs_b,
+        visual_memory_intervention_override="zero",
+    )
+
+    torch.testing.assert_close(zero_a, zero_b)
+    assert zero_metrics_a["visual_memory_history_fraction"].item() == 0.0
+    assert zero_metrics_b["visual_memory_history_fraction"].item() == 0.0
+    assert visual.visual_object_memory.intervention == "none"
+    aligned_a, _, _ = visual(**inputs_a)
+    aligned_b, _, _ = visual(**inputs_b)
+    assert not torch.allclose(aligned_a, aligned_b)
+
+    with pytest.raises(ValueError, match="Unsupported visual memory intervention override"):
+        visual(**inputs_a, visual_memory_intervention_override="invalid")
+
+
 def test_action_gradient_alignment_supervises_attention_without_second_order_gradients() -> None:
     torch.manual_seed(23)
     slots = torch.randn(2, 3, 4, requires_grad=True)

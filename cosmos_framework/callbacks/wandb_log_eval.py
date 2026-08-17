@@ -67,6 +67,14 @@ _PROBE_METRIC_KEYS = (
     "strong_action_visual_memory_object_contrastive_loss_weight",
     "strong_action_visual_memory_episode_contrastive_loss_weight",
     "strong_action_visual_memory_action_gradient_loss_weight",
+    "flow_matching_loss_action_visual_memory_policy_zero",
+    "flow_matching_loss_action_visual_memory_policy_shuffle",
+    "strong_action_visual_memory_policy_rank_loss",
+    "strong_action_visual_memory_policy_rank_zero_relative_gain",
+    "strong_action_visual_memory_policy_rank_shuffle_relative_gain",
+    "strong_action_visual_memory_policy_rank_zero_violation_fraction",
+    "strong_action_visual_memory_policy_rank_shuffle_violation_fraction",
+    "strong_action_visual_memory_policy_rank_loss_weight",
 )
 
 

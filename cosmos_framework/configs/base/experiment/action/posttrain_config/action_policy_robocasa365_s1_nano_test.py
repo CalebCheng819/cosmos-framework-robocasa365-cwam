@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
+import pytest
 from omegaconf import OmegaConf
 
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_robocasa365_nano import (
+    _action_policy_robocasa365_b5_visual_object_memory_nano_model_config,
     action_policy_robocasa365_b2_nano,
     action_policy_robocasa365_b3_dselect_nano,
     action_policy_robocasa365_b4_adaptive_dselect_nano,
@@ -188,6 +190,10 @@ def test_b5_adds_visual_object_memory_without_changing_b4_router() -> None:
     assert b5.model.config.strong_action_visual_memory_action_aux_loss_weight == 0.25
     assert b5.model.config.strong_action_visual_memory_action_aux_warmup_iters == 50
     assert b5.model.config.strong_action_visual_memory_intervention == "none"
+    assert b5.model.config.strong_action_visual_memory_policy_rank_enabled is False
+    assert b5.model.config.strong_action_visual_memory_policy_rank_weight == 1.0
+    assert b5.model.config.strong_action_visual_memory_policy_rank_margin == 0.01
+    assert b5.model.config.strong_action_visual_memory_policy_rank_warmup_iters == 50
     assert b5.dataloader_train.max_samples_per_batch == b4.dataloader_train.max_samples_per_batch
     assert b5.trainer.grad_accum_iter == b4.trainer.grad_accum_iter
     dataset = b5.dataloader_train.dataloader.datasets.robocasa365.dataset
@@ -195,3 +201,21 @@ def test_b5_adds_visual_object_memory_without_changing_b4_router() -> None:
     assert unresolved["visual_history_cache_root"] == "${oc.env:ROBOCASA365_VISUAL_HISTORY_CACHE_ROOT}"
     assert dataset.visual_history_length == 3
     assert dataset.visual_history_stride == 12
+
+
+def test_b5_policy_ranking_env_is_explicit_and_requires_aligned_memory(monkeypatch) -> None:
+    monkeypatch.setenv("CWAM_VISUAL_MEMORY_POLICY_RANK_ENABLED", "1")
+    monkeypatch.setenv("CWAM_VISUAL_MEMORY_POLICY_RANK_WEIGHT", "2.0")
+    monkeypatch.setenv("CWAM_VISUAL_MEMORY_POLICY_RANK_MARGIN", "0.02")
+    monkeypatch.setenv("CWAM_VISUAL_MEMORY_POLICY_RANK_WARMUP_ITERS", "75")
+
+    config = _action_policy_robocasa365_b5_visual_object_memory_nano_model_config()
+
+    assert config["strong_action_visual_memory_policy_rank_enabled"] is True
+    assert config["strong_action_visual_memory_policy_rank_weight"] == 2.0
+    assert config["strong_action_visual_memory_policy_rank_margin"] == 0.02
+    assert config["strong_action_visual_memory_policy_rank_warmup_iters"] == 75
+
+    monkeypatch.setenv("CWAM_VISUAL_MEMORY_INTERVENTION", "zero")
+    with pytest.raises(ValueError, match="requires CWAM_VISUAL_MEMORY_INTERVENTION=none"):
+        _action_policy_robocasa365_b5_visual_object_memory_nano_model_config()

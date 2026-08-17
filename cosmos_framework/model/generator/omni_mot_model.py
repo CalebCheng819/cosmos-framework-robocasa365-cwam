@@ -95,6 +95,38 @@ def action_relevance_aux_warmup_fraction(*, iteration: int, start_iter: int, war
     return min((iteration - start_iter + 1) / warmup_iters, 1.0)
 
 
+def intervention_policy_ranking_loss(
+    aligned_loss: torch.Tensor,
+    zero_loss: torch.Tensor,
+    shuffle_loss: torch.Tensor,
+    *,
+    relative_margin: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Require the aligned policy loss to beat detached memory interventions."""
+    if aligned_loss.ndim != 1 or zero_loss.shape != aligned_loss.shape or shuffle_loss.shape != aligned_loss.shape:
+        raise ValueError("Intervention ranking losses must be aligned one-dimensional tensors")
+    if not 0.0 <= relative_margin < 1.0:
+        raise ValueError("Intervention ranking relative margin must be in [0, 1)")
+
+    aligned = aligned_loss.float()
+    zero_reference = zero_loss.detach().float()
+    shuffle_reference = shuffle_loss.detach().float()
+    target_scale = 1.0 - relative_margin
+    zero_violation = F.relu(aligned - target_scale * zero_reference)
+    shuffle_violation = F.relu(aligned - target_scale * shuffle_reference)
+    ranking_loss = 0.5 * (zero_violation.mean() + shuffle_violation.mean())
+    epsilon = torch.finfo(torch.float32).eps
+    metrics = {
+        "zero_relative_gain": (1.0 - aligned.detach() / zero_reference.clamp_min(epsilon)).mean(),
+        "shuffle_relative_gain": (
+            1.0 - aligned.detach() / shuffle_reference.clamp_min(epsilon)
+        ).mean(),
+        "zero_violation_fraction": (zero_violation.detach() > 0).float().mean(),
+        "shuffle_violation_fraction": (shuffle_violation.detach() > 0).float().mean(),
+    }
+    return ranking_loss, metrics
+
+
 def optional_model_config_value(config: Any, name: str, default: Any) -> Any:
     """Read a post-training option without breaking older published configs."""
     try:
@@ -355,6 +387,9 @@ class OmniMoTModel(ImaginaireModel):
                     self.config.strong_action_visual_memory_action_aux_warmup_iters
                 ),
                 strong_action_visual_memory_intervention=self.config.strong_action_visual_memory_intervention,
+                strong_action_visual_memory_policy_rank_enabled=(
+                    self.config.strong_action_visual_memory_policy_rank_enabled
+                ),
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -1306,6 +1341,7 @@ class OmniMoTModel(ImaginaireModel):
 
         rf_cfg = self.config.rectified_flow_training_config
         normalize_by_active = rf_cfg.normalize_loss_by_active
+        fm_loss_action_per_instance: torch.Tensor | None = None
         if self.config.vision_gen:
             assert data_batch_packed.vision is not None, "Vision packed data required when vision_gen is True"
             assert isinstance(data_batch_packed.vision.condition_mask, list), (
@@ -1337,7 +1373,7 @@ class OmniMoTModel(ImaginaireModel):
                     "Action condition mask must be a list of tensors for loss computation"
                 )
                 assert gen_data_noised.vt_target_action is not None, "Action targets required when action_gen is True"
-                fm_loss_action, _ = self._compute_flow_matching_loss(
+                fm_loss_action, fm_loss_action_per_instance = self._compute_flow_matching_loss(
                     pred=out_net["preds_action"],
                     target=gen_data_noised.vt_target_action,
                     condition_mask=data_batch_packed.action.condition_mask,
@@ -1637,6 +1673,106 @@ class OmniMoTModel(ImaginaireModel):
                         flow_matching_loss_action_visual_memory_only=visual_memory_action_loss,
                         strong_action_visual_memory_action_aux_loss_weight=torch.tensor(
                             effective_action_aux_weight,
+                            **self.tensor_kwargs_fp32,
+                        ),
+                    )
+
+                if self.config.strong_action_visual_memory_policy_rank_enabled:
+                    rank_weight = float(self.config.strong_action_visual_memory_policy_rank_weight)
+                    rank_margin = float(self.config.strong_action_visual_memory_policy_rank_margin)
+                    rank_warmup_iters = int(
+                        self.config.strong_action_visual_memory_policy_rank_warmup_iters
+                    )
+                    if rank_weight <= 0.0:
+                        raise ValueError("Enabled visual-memory policy ranking requires a positive weight")
+                    if not 0.0 <= rank_margin < 1.0:
+                        raise ValueError("Visual-memory policy ranking margin must be in [0, 1)")
+                    if rank_warmup_iters < 0:
+                        raise ValueError("Visual-memory policy ranking warmup must be non-negative")
+                    prediction_keys = {
+                        intervention: f"preds_action_visual_memory_policy_{intervention}"
+                        for intervention in ("zero", "shuffle")
+                    }
+                    missing_predictions = [
+                        key for key in prediction_keys.values() if key not in out_net
+                    ]
+                    if missing_predictions:
+                        raise ValueError(
+                            "Visual-memory policy ranking predictions are missing: "
+                            f"{missing_predictions}"
+                        )
+
+                    if data_batch_packed.action is not None:
+                        assert fm_loss_action_per_instance is not None
+                        assert isinstance(data_batch_packed.action.condition_mask, list)
+                        assert gen_data_noised.vt_target_action is not None
+                        intervention_losses: dict[str, torch.Tensor] = {}
+                        intervention_per_instance: dict[str, torch.Tensor] = {}
+                        for intervention, prediction_key in prediction_keys.items():
+                            intervention_loss, per_instance_loss = self._compute_flow_matching_loss(
+                                pred=out_net[prediction_key],
+                                target=gen_data_noised.vt_target_action,
+                                condition_mask=data_batch_packed.action.condition_mask,
+                                timesteps=ts_action,
+                                has_valid_tokens=has_noisy_tokens(data_batch_packed.action),
+                                rectified_flow=self.rectified_flow_action,
+                                raw_action_dim=data_batch_packed.action.raw_action_dim,
+                                normalize_by_active=normalize_by_active,
+                            )
+                            intervention_losses[intervention] = intervention_loss
+                            intervention_per_instance[intervention] = per_instance_loss
+                        policy_rank_loss, rank_metrics = intervention_policy_ranking_loss(
+                            fm_loss_action_per_instance,
+                            intervention_per_instance["zero"],
+                            intervention_per_instance["shuffle"],
+                            relative_margin=rank_margin,
+                        )
+                    else:
+                        policy_rank_loss = 0.0 * sum(
+                            prediction.sum() for prediction in out_net["preds_action"]
+                        )
+                        intervention_losses = {
+                            intervention: policy_rank_loss for intervention in prediction_keys
+                        }
+                        rank_metrics = {
+                            name: policy_rank_loss.detach()
+                            for name in (
+                                "zero_relative_gain",
+                                "shuffle_relative_gain",
+                                "zero_violation_fraction",
+                                "shuffle_violation_fraction",
+                            )
+                        }
+
+                    rank_warmup = action_relevance_aux_warmup_fraction(
+                        iteration=iteration,
+                        start_iter=0,
+                        warmup_iters=rank_warmup_iters,
+                    )
+                    effective_rank_weight = rf_cfg.action_loss_weight * rank_weight * rank_warmup
+                    total_loss += policy_rank_loss * effective_rank_weight
+                    losses_dict.update(
+                        flow_matching_loss_action_visual_memory_policy_zero=(
+                            intervention_losses["zero"]
+                        ),
+                        flow_matching_loss_action_visual_memory_policy_shuffle=(
+                            intervention_losses["shuffle"]
+                        ),
+                        strong_action_visual_memory_policy_rank_loss=policy_rank_loss,
+                        strong_action_visual_memory_policy_rank_zero_relative_gain=(
+                            rank_metrics["zero_relative_gain"]
+                        ),
+                        strong_action_visual_memory_policy_rank_shuffle_relative_gain=(
+                            rank_metrics["shuffle_relative_gain"]
+                        ),
+                        strong_action_visual_memory_policy_rank_zero_violation_fraction=(
+                            rank_metrics["zero_violation_fraction"]
+                        ),
+                        strong_action_visual_memory_policy_rank_shuffle_violation_fraction=(
+                            rank_metrics["shuffle_violation_fraction"]
+                        ),
+                        strong_action_visual_memory_policy_rank_loss_weight=torch.tensor(
+                            effective_rank_weight,
                             **self.tensor_kwargs_fp32,
                         ),
                     )
@@ -4940,6 +5076,7 @@ class OmniMoTModel(ImaginaireModel):
                 - "action_relevance_*": routing losses and diagnostics (if enabled).
                 - "preds_action_relevance_only": B2 auxiliary action prediction (if enabled).
                 - "preds_action_visual_memory_only": R3 memory-only future-action prediction (if enabled).
+                - "preds_action_visual_memory_policy_*": R7 zero/shuffle policy interventions (if enabled).
                 - "strong_action_*": strong action expert diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
@@ -4956,8 +5093,22 @@ class OmniMoTModel(ImaginaireModel):
             output_dict["preds_action"] = out_net["preds_action"]
         if self.config.action_relevance_enabled and "preds_action_relevance_only" in out_net:
             output_dict["preds_action_relevance_only"] = out_net["preds_action_relevance_only"]
-        if self.config.strong_action_visual_memory_enabled and "preds_action_visual_memory_only" in out_net:
+        visual_memory_enabled = optional_model_config_value(
+            self.config,
+            "strong_action_visual_memory_enabled",
+            False,
+        )
+        policy_rank_enabled = optional_model_config_value(
+            self.config,
+            "strong_action_visual_memory_policy_rank_enabled",
+            False,
+        )
+        if visual_memory_enabled and "preds_action_visual_memory_only" in out_net:
             output_dict["preds_action_visual_memory_only"] = out_net["preds_action_visual_memory_only"]
+        for intervention in ("zero", "shuffle"):
+            policy_key = f"preds_action_visual_memory_policy_{intervention}"
+            if policy_rank_enabled and policy_key in out_net:
+                output_dict[policy_key] = out_net[policy_key]
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
