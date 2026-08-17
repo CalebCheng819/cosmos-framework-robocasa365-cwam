@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "provenance_policy": "git-run-path-timestamp-no-file-hashes",
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "exploratory",
+  "status": "running",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3bf21e77-89cc-8197-9149-f18040656e96",
+    "page_url": "https://app.notion.com/p/CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817-memory-delta-main-residual-probe-3bf21e7789cc81979149f18040656e96"
+  },
+  "hypothesis": "Writing same-slot object-local memory deltas directly into the final action hidden-state residual through both a raw-delta multiplicative gate and a learned directional residual will convert R4's identifiable object memory into causal full-policy use.",
+  "objective": "Complete 500 finite optimizer steps and save the full checkpoint; keep zero intervention object-delta RMS, main gate deviation, and directional residual RMS exactly zero; keep slot mean absolute off-diagonal cosine below 0.95; make positive temporal similarity exceed both cross-object and cross-episode negative similarity by at least 0.05; and make aligned-history held-out main action loss at least 1 percent lower than both zero-history and batch-shuffled-history interventions. Do not launch 20k unless every gate passes.",
+  "baseline": {
+    "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817",
+    "checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+    "main_action_loss": {
+      "none": 0.008248425088822842,
+      "zero": 0.008245018310844898,
+      "shuffle": 0.008247644640505314
+    }
+  },
+  "estimated_runtime_seconds": 2100,
+  "initial_eta": "2026-08-17T16:30:00+08:00",
+  "current_eta": "2026-08-17T15:45:00+08:00",
+  "experiment_window": {
+    "start": "2026-08-17T15:09:49+08:00",
+    "end": "2026-08-17T15:45:00+08:00"
+  },
+  "git": {
+    "commit": "09f3791c3f30b902b7179a46ab3475493878567e",
+    "branch": "exp/cosmos3-b5-visual-object-memory-r5-20260817",
+    "dirty": false,
+    "pushed": true,
+    "patch_path": null,
+    "untracked_files": [],
+    "untracked_bundle_path": null
+  },
+  "config": {
+    "path": "examples/toml/sft_config/action_policy_robocasa365_b5_visual_object_memory_nano.toml",
+    "overrides": "R4 competitive visual object memory plus same-slot latest-minus-previous object delta; action-to-object-delta cross-attention; fixed raw-delta multiplicative gate scale 0.25; learned directional residual scale 0.25; R4 iter-500 model-only warm start; train complete strong_action_expert; 500 steps; batch 64 per rank; DP8; accumulation 1; maximum 8 validation batches"
+  },
+  "data": {
+    "version": "RoboCasa365 B4 processed split plus Wan latent cache and visual-history sidecar",
+    "revision": "1,143,698 fixed records; 280 shards; same-physical-episode t-36/t-24/t-12 visual-history lookup; same data, packing, and held-out stream as R4; no future or cross-episode lookup"
+  },
+  "environment": {
+    "lockfile": "/data0/wam/cwam-b4/env/cosmos-cu130",
+    "container": "cwam-b4-runtime:ngc25.09-ffmpeg6"
+  },
+  "command": "launch_b5_vom_probe_r5_8gpu.sh followed by launch_b5_vom_matched_val_r5.sh none, zero, and shuffle; formal 20k remains blocked unless every acceptance gate passes.",
+  "hardware": "pyrogpucompute1; 8 x NVIDIA B200 183359 MiB; batch 64 per rank; global batch 512",
+  "seeds": [
+    42,
+    4242
+  ],
+  "preflight": {
+    "focused_tests": "28 passed in the production container: strong-action-expert, action-config, and launcher tests",
+    "gpu_smoke": "Two-rank NCCL B200 BF16 production-dimension forward/backward finite with loss 2.0407572 and peak allocation 979.43 MiB per rank; object-delta RMS 1.2926080; active fraction 1.0; gate mean/deviation 1.2144434/0.2144435; directional residual RMS 0.0692056; zero hard checks passed; all eight required parameter groups received finite nonzero gradients",
+    "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R5-GIT-20260817",
+    "base_checkpoint": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R4-B4WARM-500S-20260817/checkpoints/iter_000000500",
+    "checkpoint_scope": "Model-only warm start; visual_memory_delta_main is the only skipped new prefix; optimizer, scheduler, and trainer state are not restored; absolute training target is a new 500-step probe"
+  },
+  "validation": {
+    "policy": "git-run-path-timestamp-no-file-hashes",
+    "result": "pass",
+    "legacy_validator": "The bundled validator still requires SHA-256 fields and is superseded by the workflow's higher-priority no-hash policy; immutable non-hash fields were compared with the prelaunch manifest using jq.",
+    "checked_fields": "Prelaunch immutable fields plus actual start time, source commit and clean worktree, model-only R4 load with only visual_memory_delta_main skipped, offline W&B ID, and optimizer step 1 gradient evidence; steps 2 through 4 remained finite at about 3.1 to 3.3 seconds per step"
+  },
+  "started_at": "2026-08-17T15:09:49+08:00",
+  "completed_at": null,
+  "actual_runtime_seconds": null,
+  "job_id": "cwam-b5-vom-probe-r5",
+  "run_ids": [
+    "CWAM-COSMOS3-B5-VOM-PROBE-R5-R4WARM-500S-20260817",
+    "wandb-offline-156zwi02"
+  ],
+  "primary_metrics": {
+    "initial_validation_main_action_loss": 0.008288055658340454,
+    "initial_validation_object_delta_rms": 0.10223987698554993,
+    "initial_validation_object_delta_active_fraction": 0.75830078125,
+    "initial_validation_main_gate_deviation": 0.02461056038737297,
+    "initial_validation_directional_residual_rms": 0.05943012237548828,
+    "initial_validation_slot_abs_cosine": 0.2091563194990158,
+    "initial_validation_positive_similarity": 0.7254456877708435,
+    "initial_validation_object_negative_similarity": 0.00840491522103548,
+    "initial_validation_episode_negative_similarity": 0.06186690181493759
+  },
+  "artifact_urls": [
+    "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/09f3791c3f30b902b7179a46ab3475493878567e",
+    "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-PROBE-R5-R4WARM-500S-20260817",
+    "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R5-R4WARM-500S-20260817"
+  ],
+  "conclusion": null,
+  "failure_reason": null
+}
