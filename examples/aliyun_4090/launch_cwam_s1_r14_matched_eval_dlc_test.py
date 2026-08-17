@@ -29,6 +29,7 @@ def test_bootstrap_requires_formal_ids_and_pins_r14_baseline() -> None:
     assert "EVAL_EXPERIMENT_ID has an invalid formal ID" in script
     assert "EVAL_LOGICAL_RUN_ID has an invalid formal ID" in script
     assert "readonly EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID" in script
+    assert 'readonly CONTROL_DEPLOY_ROOT="$PROJECT_ROOT/control/scripts/$EVAL_LOGICAL_RUN_ID"' in script
     assert "MATCHED2-R11-20260817" not in script
     assert "CWAM-DSW960-ROB365-COSMOS3-NANO-R14-EMA-340EP-S42-FRESH-RERUN2-20260809" in script
     assert 'readonly R14_BASELINE_ARGS="$R14_BASELINE_ROOT/args_shard0.json"' in script
