@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Succeeded"}},
+    "Completed At": {"date": {"start": "2026-08-17T19:28:50+08:00"}},
+    "Actual Runtime": {"number": 0.58},
+    "Current ETA": {"date": {"start": "2026-08-17T19:28:50+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T18:54:20+08:00", "end": "2026-08-17T19:28:50+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r6b-fix3; 500-step train plus three sequential matched validation jobs; all exit 0"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "formal R6B-R4WARM-500S-FIX3; W&B 8we1tbnp; matched R6B-FIX3-VAL-{NONE,ZERO,SHUFFLE}; each validation 2048/2048, unstable 0"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "500 finite steps; complete 8-rank 94,286,262,906-byte checkpoint. none/zero/shuffle action loss 0.0082417233/0.0082794763/0.0082497802; aligned gains 0.45598%/0.09766%. Main memory context tokens 0; delta layers 4; delta-conditioned RMS 0.16070; applied delta RMS 0.06751; slot abs cosine 0.06085; object/episode margins 0.75374/0.71386; exact-zero intervention passed."}}]},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "Execution succeeded, but the hypothesis gate failed. Four-layer delta conditioning lowered aligned loss by 0.18637% versus R6-A, yet causal gains over zero/shuffle were slightly weaker than R6-A and remained far below 1%. This is a general fit improvement, not stronger use of correctly aligned memory. Representation collapse is rejected. Do not extend R6-B to 20k."}}]}
+  }
+}

@@ -23,7 +23,9 @@
 - 变更：实现 R5 matched contribution decomposition；新增 R6-A/R6-B dynamic-exclusive 配置、精确 zero mask、action-gradient fail-closed gate；Fix3 通过严格为零的 graph anchor 保持 legacy 参数的 FSDP/optimizer/EMA 布局，同时证明其数值不影响输出且梯度严格为零。
 - R6-A 终态：Fix3 正式任务完成 500 个有限 optimizer steps，训练与三个 matched validation 容器均 exit 0。step-500 checkpoint 的 model/optim/scheduler/trainer 各含 8 个 distcp 分片和 1 个 metadata，总计 93,930,528,009 bytes。终态 slot abs cosine 0.06062；positive/object-negative/episode-negative similarity 为 0.76801/0.01792/0.05722，对应 margins 0.75009/0.71079；main memory context tokens 与 delta-conditioned layers 均为 0，zero intervention 下所有 delta main metrics 精确为 0。
 - R6-A matched 结果：none/zero/shuffle action loss 为 0.0082571125/0.0082990089/0.0082693556；aligned 相对 zero 改善 0.50484%，相对 shuffle 改善 0.14805%。表示未坍缩且 delta 有方向正确的小幅作用，但两个效应均低于预注册的 1% 门槛。
-- 结果：R5 的 gate-residual interaction 为主要贡献但 full 因果效应仍低于 1%；R6 Fix3 聚焦测试 28 passed，R6-A/R6-B 的 8-rank 两步 optimizer/EMA 门禁均通过；R6-A 正式 probe 稳定完成但未通过两个 1% 因果门槛；R6-B 正式 probe 待运行。
-- 决策：拒绝 R5 单一路径贡献主导假设；R6-A 不扩展到 20k。继续执行已预注册的 R6-B 500-step 分层 delta conditioning probe，仍按相同门槛独立判定。
-- 下一步：运行 Fix3 R6-B 500-step 与 matched none/zero/shuffle validation，更新 R6-B Notion 和本地终态记录，并比较 final-only 与 four-layer delta conditioning 的增益。
+- R6-B 终态：Fix3 正式任务完成 500 个有限 optimizer steps，step 1/50/100/.../500 共 11 个梯度检查全部通过且 non-finite 为 0；训练与三个 matched validation 容器均 exit 0。step-500 checkpoint 四类组件各含 8 个 distcp 分片和 metadata，总计 94,286,262,906 bytes。终态四层 delta-conditioned residual RMS 为 0.16070，final applied delta RMS 为 0.06751，main memory context tokens 为 0；slot abs cosine 0.06085，object/episode contrastive margins 为 0.75374/0.71386。zero intervention 下四层与最终 delta 主路径全部精确归零。
+- R6-B matched 结果：none/zero/shuffle action loss 为 0.0082417233/0.0082794763/0.0082497802；aligned 相对 zero 改善 0.45598%，相对 shuffle 改善 0.09766%，均低于 1%。R6-B 的 aligned loss 比 R6-A 低 0.18637%，但 causal gains 分别比 R6-A 低 0.04885/0.05039 percentage points，因此只是一般拟合改善，不是对正确对齐 memory 的依赖增强。
+- 结果：R5 的有效贡献主要来自 gate-residual cooperative interaction，单独 residual 反而退化；R6-A final-only 与 R6-B four-layer 两个 dynamic-exclusive 方案都稳定完成、表示未坍缩、干预精确，但对 aligned history 的 action-loss 因果效应都低于 1%。增加 conditioning 深度并未增强时间对齐特异性。
+- 决策：拒绝 R5 单一路径贡献主导假设；R6-A 与 R6-B 均不扩展到 20k。当前证据不支持继续仅增加 delta 注入深度，应改为让训练目标直接惩罚 aligned 与 zero/shuffle 的策略输出不敏感。
+- 下一步：设计新的短 probe，使主 action loss 对 same-object aligned delta 具有显式 intervention contrastive/ranking objective，并继续沿用 exact none/zero/shuffle 与 1% 门槛；在新实验预注册前不启动长训。
 - 记录人：Codex

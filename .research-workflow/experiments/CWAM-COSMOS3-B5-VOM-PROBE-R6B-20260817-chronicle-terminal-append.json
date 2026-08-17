@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R6-B 500-step layered-delta probe completed; one-percent gate failed"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Fix3 R6-B completed 500 finite optimizer steps on 8 B200s, exited 0, validated 2048/2048 samples with unstable_count 0, and saved a complete 8-rank 94,286,262,906-byte checkpoint. Matched none/zero/shuffle action losses were 0.0082417233/0.0082794763/0.0082497802, giving aligned improvements of 0.45598% and 0.09766%. The four delta-conditioning layers were active with terminal RMS 0.16070, while absolute-memory main context tokens stayed zero and exact-zero intervention removed every dynamic main contribution. Slot absolute cosine was 0.06085 and object/episode margins were 0.75374/0.71386. R6-B's aligned loss was 0.18637% below R6-A, but its intervention gains were weaker by 0.04885/0.05039 percentage points. Decision: layered conditioning improved general fit but not causal use of aligned history; R6-B fails both preregistered gates and is not authorized for 20k."}}]}}
+  ]
+}
