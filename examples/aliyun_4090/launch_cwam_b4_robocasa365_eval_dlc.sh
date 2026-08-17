@@ -17,10 +17,11 @@ readonly INPUT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs
 readonly OSS_ROOT=/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval
 readonly CHECKPOINT_NAME=B4-iter_000020000-serving-ema-bf16-metadata-v1
 readonly CHECKPOINT_SOURCE="$OSS_ROOT/inputs/checkpoints/$CHECKPOINT_NAME"
-readonly ENV_ARCHIVE="$INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
-readonly ENV_RECEIPT="$OSS_ROOT/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
-readonly ROBOCASA_ARCHIVE="$OSS_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
-readonly ROBOCASA_OVERLAY="$OSS_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-legacy-fixture-overlay-20260817.tar"
+readonly SOURCE_ENV_ARCHIVE="$OSS_ROOT/inputs/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+readonly PUBLICATION_ENV_ARCHIVE="$INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+readonly SOURCE_ENV_RECEIPT="$OSS_ROOT/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
+readonly SOURCE_ROBOCASA_ARCHIVE="$OSS_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
+readonly SOURCE_ROBOCASA_OVERLAY="$OSS_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-legacy-fixture-overlay-20260817.tar"
 readonly DEMIAN_REPO="$INPUT_ROOT/demian-2600ece5bf0e"
 readonly ROBOSUITE_REPO="$INPUT_ROOT/robosuite-232ce7d4a6ed"
 readonly ROBOCASA_ENV="$INPUT_ROOT/envs/robocasa-1.0.1-py311-mj331-rs232ce7-shared"
@@ -36,6 +37,10 @@ readonly ASSET_HELPER="$CONTROL_ROOT/cwam_robocasa_asset_source_package.py"
 readonly EGL_PROBE="$CONTROL_ROOT/probe_mujoco_egl_mapping.py"
 readonly SCRATCH_ROOT="/tmp/cwam_b4_eval_$EVAL_EXPERIMENT_ID"
 readonly COSMOS_ENV=/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs/envs/cosmos-framework-09f23119-cu128-train
+readonly LOCAL_ENV_ARCHIVE="$SCRATCH_ROOT/inputs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+readonly LOCAL_ENV_RECEIPT="$SCRATCH_ROOT/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
+readonly LOCAL_ROBOCASA_ARCHIVE="$SCRATCH_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
+readonly LOCAL_ROBOCASA_OVERLAY="$SCRATCH_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-legacy-fixture-overlay-20260817.tar"
 readonly ROBOCASA_REPO="$SCRATCH_ROOT/inputs/repos/robocasa-29f7ce8814c1"
 readonly CHECKPOINT_ARTIFACT_ROOT="$SCRATCH_ROOT/inputs/checkpoints/$CHECKPOINT_NAME"
 readonly SERVING_CHECKPOINT_PATH="$CHECKPOINT_ARTIFACT_ROOT/model"
@@ -48,6 +53,7 @@ readonly OUTPUT_FINAL="$OUTPUT_PARENT/$EVAL_LOGICAL_RUN_ID"
 readonly OUTPUT_STAGE="$OUTPUT_PARENT/.$EVAL_LOGICAL_RUN_ID.incomplete-${DLC_JOB_ID:-unknown}-$$"
 readonly EVAL_RUN_NAME=b4-iter20000-robocasa365-seed42
 readonly LAUNCHER_TERMINAL="$OUTPUT_STAGE/launcher-terminal.json"
+readonly REQUIRED_LOCAL_BYTES=161061273600
 
 OUTPUT_PUBLISHED=0
 STARTED_AT="$(date -u +%FT%TZ)"
@@ -64,6 +70,24 @@ require_file() {
 require_control_file() {
     require_file "$1"
     [[ "$(stat -c %a "$1")" == 444 ]] || die "control file must have mode 0444: $1"
+}
+
+copy_regular_file() {
+    local source="$1"
+    local destination="$2"
+    local expected_bytes="$3"
+    [[ -f "$source" && ! -L "$source" ]] || die "source file is missing or unsafe: $source"
+    [[ "$(stat -c %s -- "$source")" == "$expected_bytes" ]] ||
+        die "source file size mismatch: $source"
+    mkdir --parents --mode=0755 -- "$(dirname -- "$destination")"
+    [[ ! -e "$destination" && ! -L "$destination" ]] ||
+        die "refusing to replace local staged file: $destination"
+    cp --reflink=auto --sparse=always --no-preserve=ownership,mode,timestamps -- \
+        "$source" "$destination"
+    chmod 0444 -- "$destination"
+    [[ "$(stat -c %s -- "$destination")" == "$expected_bytes" ]] ||
+        die "local staged file size mismatch: $destination"
+    printf 'B4_LOCAL_FILE_READY bytes=%s destination=%s\n' "$expected_bytes" "$destination"
 }
 
 git_revision() {
@@ -134,29 +158,38 @@ trap 'exit 143' TERM
 for file in "$RUNNER" "$SHARD_GROUP_RUNNER" "$B4_EVAL_HELPER" "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE"; do
     require_control_file "$file"
 done
-for file in "$ENV_ARCHIVE" "$ENV_RECEIPT" "$ROBOCASA_ARCHIVE" "$ROBOCASA_OVERLAY" \
+for file in "$SOURCE_ENV_ARCHIVE" "$SOURCE_ENV_RECEIPT" \
+    "$SOURCE_ROBOCASA_ARCHIVE" "$SOURCE_ROBOCASA_OVERLAY" \
     "$ACTION_STATS" "$VAE_SOURCE" "$EGL_FRONTEND_SOURCE"; do
     require_file "$file"
 done
 for directory in "$CHECKPOINT_SOURCE" "$DEMIAN_REPO" "$ROBOSUITE_REPO" "$ROBOCASA_ENV" "$QWEN_SOURCE"; do
     [[ -d "$directory" && ! -L "$directory" ]] || die "missing input directory: $directory"
 done
-[[ "$(stat -c %s "$ENV_ARCHIVE")" == 14736947200 ]] || die "environment archive size mismatch"
-[[ "$(stat -c %s "$ENV_RECEIPT")" == 2124 ]] || die "environment receipt size mismatch"
-[[ "$(stat -c %s "$ROBOCASA_ARCHIVE")" == 11101859840 ]] || die "RoboCasa archive size mismatch"
-[[ "$(stat -c %s "$ROBOCASA_OVERLAY")" == 2181120 ]] || die "RoboCasa overlay size mismatch"
+[[ "$(stat -c %s "$SOURCE_ENV_ARCHIVE")" == 14736947200 ]] || die "environment archive size mismatch"
+[[ "$(stat -c %s "$SOURCE_ENV_RECEIPT")" == 2124 ]] || die "environment receipt size mismatch"
+[[ "$(stat -c %s "$SOURCE_ROBOCASA_ARCHIVE")" == 11101859840 ]] || die "RoboCasa archive size mismatch"
+[[ "$(stat -c %s "$SOURCE_ROBOCASA_OVERLAY")" == 2181120 ]] || die "RoboCasa overlay size mismatch"
 [[ "$(stat -c %s "$VAE_SOURCE")" == 2818839170 ]] || die "VAE size mismatch"
 [[ ! -e "$OUTPUT_FINAL" && ! -e "$OUTPUT_STAGE" ]] || die "formal output already exists"
 mkdir -p "$OUTPUT_PARENT" "$OUTPUT_STAGE"
 
 rm -rf "$SCRATCH_ROOT" /tmp/cwam_cosmos3_robocasa365_eval_nvme
+available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { print $1 }')"
+[[ "$available_local_bytes" =~ ^[0-9]+$ && "$available_local_bytes" -ge "$REQUIRED_LOCAL_BYTES" ]] ||
+    die "worker-local /tmp has less than 150 GiB available"
 mkdir -p "$SCRATCH_ROOT/inputs/repos" "$SCRATCH_ROOT/inputs/checkpoints" \
     "$(dirname "$WAN2PT2_VAE")" "$(dirname "$COSMOS_ENV")" "$EGL_ROOT"
 
+copy_regular_file "$SOURCE_ENV_ARCHIVE" "$LOCAL_ENV_ARCHIVE" 14736947200
+copy_regular_file "$SOURCE_ENV_RECEIPT" "$LOCAL_ENV_RECEIPT" 2124
+copy_regular_file "$SOURCE_ROBOCASA_ARCHIVE" "$LOCAL_ROBOCASA_ARCHIVE" 11101859840
+copy_regular_file "$SOURCE_ROBOCASA_OVERLAY" "$LOCAL_ROBOCASA_OVERLAY" 2181120
+
 python3 "$ENV_HELPER" verify-extract-metadata \
-    --archive "$ENV_ARCHIVE" \
-    --receipt "$ENV_RECEIPT" \
-    --expected-publication-archive "$ENV_ARCHIVE" \
+    --archive "$LOCAL_ENV_ARCHIVE" \
+    --receipt "$LOCAL_ENV_RECEIPT" \
+    --expected-publication-archive "$PUBLICATION_ENV_ARCHIVE" \
     --expected-archive-bytes 14736947200 \
     --expected-receipt-bytes 2124 \
     --expected-ready-marker-bytes 973 \
@@ -168,8 +201,8 @@ python3 "$ENV_HELPER" verify-extract-metadata \
     --stage "$COSMOS_ENV"
 
 python3 "$ASSET_HELPER" verify-extract \
-    --archive "$ROBOCASA_ARCHIVE" --expected-archive-bytes 11101859840 \
-    --overlay "$ROBOCASA_OVERLAY" --expected-overlay-bytes 2181120 \
+    --archive "$LOCAL_ROBOCASA_ARCHIVE" --expected-archive-bytes 11101859840 \
+    --overlay "$LOCAL_ROBOCASA_OVERLAY" --expected-overlay-bytes 2181120 \
     --stage "$ROBOCASA_REPO" \
     --receipt-output "$SCRATCH_ROOT/robocasa-asset-extraction.json"
 
