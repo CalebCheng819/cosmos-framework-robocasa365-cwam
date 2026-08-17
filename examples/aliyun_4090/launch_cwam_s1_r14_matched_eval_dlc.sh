@@ -326,8 +326,17 @@ prepare_nvidia_egl_runtime
     die "RoboCasa asset source package is not canonical"
 [[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 11101859840 ]] ||
     die "RoboCasa asset source package size mismatch"
-[[ "$(stat -c %a -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 444 ]] ||
-    die "RoboCasa asset source package must have mode 0444"
+asset_package_mount_target="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_PACKAGE" -o TARGET)" ||
+    die "could not resolve the RoboCasa asset package mount target"
+asset_package_mount_source="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_PACKAGE" -o SOURCE)" ||
+    die "could not resolve the RoboCasa asset package mount source"
+asset_package_mount_fstype="$(findmnt -n -T "$SOURCE_ROBOCASA_ASSET_PACKAGE" -o FSTYPE)" ||
+    die "could not resolve the RoboCasa asset package filesystem type"
+[[ "$asset_package_mount_target" == /oss-chengjuntao ]] ||
+    die "RoboCasa asset package does not resolve to the fixed OSS mount"
+asset_package_mount_identity="${asset_package_mount_source,,}:${asset_package_mount_fstype,,}"
+[[ "$asset_package_mount_identity" == *oss* ]] ||
+    die "RoboCasa asset package mount does not identify OSS"
 [[ -L "$PROJECT_ROOT/runs" ]] ||
     die "persistent runs root must be the controlled OSS symlink"
 [[ "$(realpath -e -- "$PROJECT_ROOT/runs")" == "$OSS_PROJECT_ROOT/runs" ]] ||

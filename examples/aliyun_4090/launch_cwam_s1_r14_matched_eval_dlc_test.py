@@ -124,7 +124,10 @@ def test_bootstrap_stages_large_assets_under_fixed_local_root() -> None:
     assert 'readonly SOURCE_ROBOCASA_ASSET_PACKAGE="$OSS_PROJECT_ROOT/inputs/archives/' in script
     assert "robocasa-29f7ce8814c1-assets-source-package-20260729.tar" in script
     assert '[[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 11101859840 ]]' in script
-    assert '[[ "$(stat -c %a -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 444 ]]' in script
+    assert 'findmnt -n -T "$SOURCE_ROBOCASA_ASSET_PACKAGE" -o TARGET' in script
+    assert '[[ "$asset_package_mount_target" == /oss-chengjuntao ]]' in script
+    assert '[[ "$asset_package_mount_identity" == *oss* ]]' in script
+    assert "RoboCasa asset source package must have mode 0444" not in script
     assert 'mv -T -- "$LOCAL_BUILD_ROOT" "$LOCAL_ASSET_ROOT"' in script
 
 

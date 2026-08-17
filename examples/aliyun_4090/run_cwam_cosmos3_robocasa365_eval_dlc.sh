@@ -389,8 +389,20 @@ if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
         robocasa_asset_source_package_observed_bytes \
         "$(stat -c %s -- "$ROBOCASA_ASSET_SOURCE_PACKAGE")" \
         "$PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES"
-    [[ "$(stat -c %a -- "$ROBOCASA_ASSET_SOURCE_PACKAGE")" == 444 ]] ||
-        die "RoboCasa asset source package must have mode 0444"
+    robocasa_asset_mount_target="$(
+        findmnt -n -T "$ROBOCASA_ASSET_SOURCE_PACKAGE" -o TARGET
+    )" || die "could not resolve the RoboCasa asset package mount target"
+    robocasa_asset_mount_source="$(
+        findmnt -n -T "$ROBOCASA_ASSET_SOURCE_PACKAGE" -o SOURCE
+    )" || die "could not resolve the RoboCasa asset package mount source"
+    robocasa_asset_mount_fstype="$(
+        findmnt -n -T "$ROBOCASA_ASSET_SOURCE_PACKAGE" -o FSTYPE
+    )" || die "could not resolve the RoboCasa asset package filesystem type"
+    [[ "$robocasa_asset_mount_target" == /oss-chengjuntao ]] ||
+        die "RoboCasa asset package does not resolve to the fixed OSS mount"
+    robocasa_asset_mount_identity="${robocasa_asset_mount_source,,}:${robocasa_asset_mount_fstype,,}"
+    [[ "$robocasa_asset_mount_identity" == *oss* ]] ||
+        die "RoboCasa asset package mount does not identify OSS"
     [[ "$(stat -c %a -- "$ROBOCASA_ASSET_PACKAGE_HELPER")" == 444 ]] ||
         die "immutable RoboCasa asset package helper must have mode 0444"
 fi

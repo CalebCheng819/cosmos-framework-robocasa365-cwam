@@ -169,6 +169,9 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "PINNED_COSMOS_ENV_SYMLINKS=4",
         "PINNED_COSMOS_ENV_REGULAR_FILE_BYTES=14660695665",
         "PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840",
+        'findmnt -n -T "$ROBOCASA_ASSET_SOURCE_PACKAGE" -o TARGET',
+        '[[ "$robocasa_asset_mount_target" == /oss-chengjuntao ]]',
+        '[[ "$robocasa_asset_mount_identity" == *oss* ]]',
         "cwam_cosmos_env_archive.py",
         "ROBOCASA_ASSET_PACKAGE_HELPER",
         "verify-extract-metadata",
@@ -211,6 +214,8 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "stage_directory cosmos_environment",
     ):
         assert forbidden not in script
+
+    assert "RoboCasa asset source package must have mode 0444" not in script
 
     assert 'PYTHONPATH="$PROVENANCE_PYTHONPATH:$EVAL_PYTHONPATH"' not in script
     assert script.count('PYTHONPATH="$EVAL_PYTHONPATH"') >= 2
