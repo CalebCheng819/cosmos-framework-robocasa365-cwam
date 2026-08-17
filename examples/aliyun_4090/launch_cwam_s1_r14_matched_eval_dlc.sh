@@ -39,6 +39,7 @@ readonly LOCAL_CHECKPOINT_STAGE="$LOCAL_CHECKPOINT_PARENT/.S1-R3-iter_000010000-
 readonly LOCAL_CHECKPOINT_ROOT="$LOCAL_CHECKPOINT_PARENT/S1-R3-iter_000010000-serving-ema-bf16-v1"
 readonly SOURCE_CHECKPOINT_ROOT="$OSS_PROJECT_ROOT/inputs/checkpoints/S1-R3-iter_000010000-serving-ema-bf16-v1"
 readonly SOURCE_ENV_ARCHIVE="$OSS_PROJECT_ROOT/inputs/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
+readonly SOURCE_ROBOCASA_ASSET_PACKAGE="$OSS_PROJECT_ROOT/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
 readonly SOURCE_ENV_RECEIPT="$OSS_PROJECT_ROOT/control/receipts/cosmos-framework-09f23119-cu128-train-r22-complete-archive-publication.json"
 readonly SOURCE_RUNTIME_RECEIPT="$OSS_PROJECT_ROOT/control/receipts/cosmos-r21-dlc-runtime-v1-publication-v2.json"
 readonly SOURCE_WAN_VAE="$OSS_PROJECT_ROOT/inputs/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
@@ -59,6 +60,7 @@ readonly CHECKPOINT_PUBLISHER="$CONTROL_DEPLOY_ROOT/publish_cwam_ema_checkpoint_
 readonly CHECKPOINT_CONTRACT="$CONTROL_DEPLOY_ROOT/cwam_s1_local_checkpoint_publication_contract.json"
 readonly PERSIST_OUTPUT_HELPER="$CONTROL_DEPLOY_ROOT/cwam_dlc_persist_eval_output.py"
 readonly SOURCE_STAGE_HELPER="$CONTROL_DEPLOY_ROOT/cwam_stage_source_snapshot.py"
+readonly ROBOCASA_ASSET_PACKAGE_HELPER="$CONTROL_DEPLOY_ROOT/cwam_robocasa_asset_source_package.py"
 readonly DLC_LOCAL_SCRATCH_ROOT=/tmp/cwam_cosmos3_robocasa365_eval
 readonly DLC_LOCAL_SOURCE_PARENT="$DLC_LOCAL_SCRATCH_ROOT/inputs/source"
 readonly SOURCE_SNAPSHOT_ROOT="$DLC_LOCAL_SOURCE_PARENT/CWAM-DLC-ROB365-COSMOS3-NANO-S1-20260803-dddd8fd3f61a"
@@ -305,6 +307,7 @@ for control_file in \
     "$CHECKPOINT_CONTRACT" \
     "$PERSIST_OUTPUT_HELPER" \
     "$SOURCE_STAGE_HELPER" \
+    "$ROBOCASA_ASSET_PACKAGE_HELPER" \
     "$R14_BASELINE_ARGS" \
     "$R14_BASELINE_RESULTS"; do
     require_control_file "$control_file"
@@ -317,6 +320,14 @@ prepare_nvidia_egl_runtime
     die "CPFS is not mounted at /mnt/workspace"
 [[ "$(findmnt -n -T /oss-chengjuntao -o TARGET)" == /oss-chengjuntao ]] ||
     die "OSS is not mounted at /oss-chengjuntao"
+[[ -f "$SOURCE_ROBOCASA_ASSET_PACKAGE" && ! -L "$SOURCE_ROBOCASA_ASSET_PACKAGE" ]] ||
+    die "RoboCasa asset source package is missing or unsafe"
+[[ "$(realpath -e -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == "$SOURCE_ROBOCASA_ASSET_PACKAGE" ]] ||
+    die "RoboCasa asset source package is not canonical"
+[[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 11101859840 ]] ||
+    die "RoboCasa asset source package size mismatch"
+[[ "$(stat -c %a -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 444 ]] ||
+    die "RoboCasa asset source package must have mode 0444"
 [[ -L "$PROJECT_ROOT/runs" ]] ||
     die "persistent runs root must be the controlled OSS symlink"
 [[ "$(realpath -e -- "$PROJECT_ROOT/runs")" == "$OSS_PROJECT_ROOT/runs" ]] ||
@@ -402,6 +413,9 @@ export FORMAL_RUNNER_OVERRIDE
 export EGL_MATRIX_OVERRIDE
 export S1_R14_MATCHED_HELPER
 export COSMOS_ENV_ARCHIVE_METADATA_HELPER
+export ROBOCASA_ASSET_SOURCE_PACKAGE="$SOURCE_ROBOCASA_ASSET_PACKAGE"
+export ROBOCASA_ASSET_PACKAGE_HELPER
+export EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840
 export EVAL_CONTROL_COMMIT
 export R14_BASELINE_ARGS
 export R14_BASELINE_RESULTS

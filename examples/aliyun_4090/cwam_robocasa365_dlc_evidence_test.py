@@ -27,6 +27,7 @@ RUNTIME_HELPER = HERE / "cwam_dlc_runtime_closure.py"
 RUNTIME_PUBLISHER = HERE / "publish_cwam_dlc_runtime_closure.sh"
 ENV_ARCHIVE_HELPER = HERE / "cwam_cosmos_env_archive.py"
 MATCHED_HELPER = HERE / "cwam_s1_r14_matched_eval.py"
+ASSET_PACKAGE_HELPER = HERE / "cwam_robocasa_asset_source_package.py"
 
 pytestmark = [pytest.mark.L0, pytest.mark.CPU]
 
@@ -167,8 +168,12 @@ def test_dlc_runner_pins_protocol_but_not_s1_export_hashes() -> None:
         "PINNED_COSMOS_ENV_DIRECTORIES=11389",
         "PINNED_COSMOS_ENV_SYMLINKS=4",
         "PINNED_COSMOS_ENV_REGULAR_FILE_BYTES=14660695665",
+        "PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840",
         "cwam_cosmos_env_archive.py",
+        "ROBOCASA_ASSET_PACKAGE_HELPER",
         "verify-extract-metadata",
+        "stage_robocasa_asset_source_package",
+        "robocasa-asset-source-package-extraction.json",
         "stage_cosmos_environment_archive",
         "cosmos_environment_archive_publication",
         "runtime_closure_source_pre",
@@ -349,5 +354,10 @@ def test_dlc_shell_scripts_parse(script: Path) -> None:
 
 
 def test_dlc_python_helpers_compile() -> None:
-    for helper in (RUNTIME_HELPER, ENV_ARCHIVE_HELPER, MATCHED_HELPER):
+    for helper in (
+        RUNTIME_HELPER,
+        ENV_ARCHIVE_HELPER,
+        MATCHED_HELPER,
+        ASSET_PACKAGE_HELPER,
+    ):
         subprocess.run([sys.executable, "-m", "py_compile", str(helper)], check=True)

@@ -124,6 +124,9 @@ case "$S1_R14_MATCHED_MODE" in
         : "${S1_R14_MATCHED_HELPER:?Set the immutable matched-comparison helper}"
         : "${EVAL_CONTROL_COMMIT:?Set the immutable evaluation-control commit}"
         : "${COSMOS_ENV_ARCHIVE_METADATA_HELPER:?Set the metadata-only environment archive helper}"
+        : "${ROBOCASA_ASSET_SOURCE_PACKAGE:?Set the complete RoboCasa asset source package}"
+        : "${ROBOCASA_ASSET_PACKAGE_HELPER:?Set the immutable RoboCasa asset package helper}"
+        : "${EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES:?Set the RoboCasa asset package byte size}"
         [[ "$FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE" == /tmp/cwam_s1_r14_matched_assets ]] || {
             printf 'ERROR matched local asset root must be /tmp/cwam_s1_r14_matched_assets\n' >&2
             exit 2
@@ -182,6 +185,8 @@ readonly FORMAL_NVME_INPUT_ROOT="/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs"
 readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/cosmos-framework-09f23119-cu128-train"
 readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_SOURCE="$FORMAL_INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
 readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
+readonly FORMAL_ROBOCASA_ASSET_SOURCE_PACKAGE="/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
+readonly FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT="$FORMAL_NVME_INPUT_ROOT/control/robocasa-asset-source-package-extraction.json"
 readonly FORMAL_CHECKPOINTS_ROOT="${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:-$FORMAL_INPUT_ROOT/checkpoints}"
 readonly FORMAL_RUNTIME_CLOSURE_ROOT="$FORMAL_INPUT_ROOT/runtime/cosmos-r21-dlc-runtime-v1"
 readonly FORMAL_RUNTIME_CLOSURE_MANIFEST="$FORMAL_INPUT_ROOT/config/cosmos-r21-dlc-runtime-v1-manifest.json"
@@ -209,6 +214,7 @@ readonly PINNED_COSMOS_ENV_REGULAR_FILES=72662
 readonly PINNED_COSMOS_ENV_DIRECTORIES=11389
 readonly PINNED_COSMOS_ENV_SYMLINKS=4
 readonly PINNED_COSMOS_ENV_REGULAR_FILE_BYTES=14660695665
+readonly PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840
 readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
 readonly PINNED_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"
 readonly PINNED_ROBOSUITE_COMMIT="232ce7d4a6ed89c949a9aba024a05c8c32fdd08b"
@@ -359,6 +365,8 @@ if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
     readonly COSMOS_ENV_ARCHIVE_HELPER="$(
         canonical_existing_file "$COSMOS_ENV_ARCHIVE_METADATA_HELPER"
     )"
+    ROBOCASA_ASSET_SOURCE_PACKAGE="$(canonical_existing_file "$ROBOCASA_ASSET_SOURCE_PACKAGE")"
+    ROBOCASA_ASSET_PACKAGE_HELPER="$(canonical_existing_file "$ROBOCASA_ASSET_PACKAGE_HELPER")"
 else
     readonly COSMOS_ENV_ARCHIVE_HELPER="$COSMOS_SOURCE/$COSMOS_ENV_ARCHIVE_HELPER_REL"
 fi
@@ -368,6 +376,24 @@ fi
     die "immutable Cosmos environment archive helper is missing"
 [[ "$(stat -c %a -- "$COSMOS_ENV_ARCHIVE_HELPER")" == 444 ]] ||
     die "immutable Cosmos environment archive helper must have mode 0444"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    require_exact_value \
+        robocasa_asset_source_package_path \
+        "$ROBOCASA_ASSET_SOURCE_PACKAGE" \
+        "$FORMAL_ROBOCASA_ASSET_SOURCE_PACKAGE"
+    require_exact_value \
+        robocasa_asset_source_package_bytes \
+        "$EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES" \
+        "$PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES"
+    require_exact_value \
+        robocasa_asset_source_package_observed_bytes \
+        "$(stat -c %s -- "$ROBOCASA_ASSET_SOURCE_PACKAGE")" \
+        "$PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES"
+    [[ "$(stat -c %a -- "$ROBOCASA_ASSET_SOURCE_PACKAGE")" == 444 ]] ||
+        die "RoboCasa asset source package must have mode 0444"
+    [[ "$(stat -c %a -- "$ROBOCASA_ASSET_PACKAGE_HELPER")" == 444 ]] ||
+        die "immutable RoboCasa asset package helper must have mode 0444"
+fi
 COSMOS_ENV_ARCHIVE="$(canonical_existing_file "$COSMOS_ENV_ARCHIVE")"
 COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT="$(
     canonical_existing_file "$COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT"
@@ -540,8 +566,43 @@ stage_cosmos_environment_archive() {
     echo "DLC_LOCAL_STAGE_READY label=cosmos_environment_archive source=$COSMOS_ENV_ARCHIVE destination=$destination"
 }
 
+stage_robocasa_asset_source_package() {
+    local destination="$FORMAL_ROBOCASA_REPO"
+    local parent
+    local receipt_parent
+    local stage
+
+    destination="$(realpath -m -- "$destination")"
+    parent="$(dirname -- "$destination")"
+    receipt_parent="$(dirname -- "$FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT")"
+    stage="${destination}.incomplete-${EVAL_EXPERIMENT_ID}-$$"
+    [[ ! -e "$destination" && ! -L "$destination" ]] ||
+        die "RoboCasa asset destination already exists: $destination"
+    [[ ! -e "$stage" && ! -L "$stage" ]] ||
+        die "RoboCasa asset stage already exists: $stage"
+    [[ ! -e "$FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT" && \
+        ! -L "$FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT" ]] ||
+        die "RoboCasa asset extraction receipt already exists"
+    mkdir --parents --mode=0755 -- "$parent" "$receipt_parent"
+    mkdir --mode=0755 -- "$stage"
+    python3 "$ROBOCASA_ASSET_PACKAGE_HELPER" verify-extract \
+        --archive "$ROBOCASA_ASSET_SOURCE_PACKAGE" \
+        --expected-archive-bytes "$PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES" \
+        --stage "$stage" \
+        --receipt-output "$FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT"
+    sync -f -- "$stage"
+    mv -T -- "$stage" "$destination"
+    [[ -d "$destination" && ! -L "$destination" ]] ||
+        die "RoboCasa asset package publication failed"
+    echo "DLC_LOCAL_STAGE_READY label=robocasa_asset_source_package source=$ROBOCASA_ASSET_SOURCE_PACKAGE destination=$destination"
+}
+
 stage_cosmos_environment_archive
-stage_directory robocasa_checkout "$FORMAL_ROBOCASA_REPO_SOURCE" "$FORMAL_ROBOCASA_REPO"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    stage_robocasa_asset_source_package
+else
+    stage_directory robocasa_checkout "$FORMAL_ROBOCASA_REPO_SOURCE" "$FORMAL_ROBOCASA_REPO"
+fi
 stage_directory \
     cosmos_private_glibc \
     "$FORMAL_RUNTIME_CLOSURE_ROOT/cosmos-r21-private-glibc235-v1" \
@@ -807,6 +868,11 @@ readonly CONTROL_DIR="$RESOLVED_EVAL_OUTPUT_ROOT/control"
 readonly RESULTS_ROOT="$RESOLVED_EVAL_OUTPUT_ROOT/results"
 readonly RESULTS_DIR="$RESULTS_ROOT/$EVAL_RUN_NAME"
 mkdir -- "$CONTROL_DIR" "$RESULTS_ROOT" "$RESULTS_DIR"
+if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+    install -m 0444 -- \
+        "$FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT" \
+        "$CONTROL_DIR/robocasa-asset-source-package-extraction.json"
+fi
 readonly SUMMARY_CSV="$RESULTS_DIR/summary.csv"
 readonly TASK_SUCCESS_RATES_CSV="$RESULTS_DIR/task_success_rates.csv"
 readonly EVIDENCE_JSON="$RESULTS_DIR/evaluation_evidence.json"

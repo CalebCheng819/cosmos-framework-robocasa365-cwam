@@ -121,6 +121,10 @@ def test_bootstrap_stages_large_assets_under_fixed_local_root() -> None:
     assert '"$SOURCE_WAN_VAE"' in script
     assert '"$SOURCE_QWEN_TOKENIZER"' in script
     assert '"$SOURCE_CHECKPOINT_ROOT"' in script
+    assert 'readonly SOURCE_ROBOCASA_ASSET_PACKAGE="$OSS_PROJECT_ROOT/inputs/archives/' in script
+    assert "robocasa-29f7ce8814c1-assets-source-package-20260729.tar" in script
+    assert '[[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 11101859840 ]]' in script
+    assert '[[ "$(stat -c %a -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 444 ]]' in script
     assert 'mv -T -- "$LOCAL_BUILD_ROOT" "$LOCAL_ASSET_ROOT"' in script
 
 
@@ -170,6 +174,9 @@ def test_bootstrap_uses_immutable_external_control_files() -> None:
     assert 'export EGL_MATRIX_OVERRIDE' in script
     assert 'export S1_R14_MATCHED_HELPER' in script
     assert 'export COSMOS_ENV_ARCHIVE_METADATA_HELPER' in script
+    assert 'readonly ROBOCASA_ASSET_PACKAGE_HELPER="$CONTROL_DEPLOY_ROOT/' in script
+    assert 'export ROBOCASA_ASSET_SOURCE_PACKAGE="$SOURCE_ROBOCASA_ASSET_PACKAGE"' in script
+    assert "export EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840" in script
     assert 'export EXPECTED_COSMOS_ENV_ARCHIVE_SHA256' not in script
     assert 'export EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256' not in script
     assert 'export EVAL_CONTROL_COMMIT' in script
