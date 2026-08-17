@@ -1,0 +1,63 @@
+{
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817",
+  "recorded_at": "2026-08-17T22:20:20+08:00",
+  "status": "Running",
+  "container": {
+    "job": "cwam-b5-vom-formal-r7-20k",
+    "monitor": "cwam-b5-vom-formal-r7-20k-gpu-monitor",
+    "host": "pyrogpucompute1",
+    "started_at": "2026-08-17T22:16:00+08:00",
+    "running": true,
+    "exit_code_field_while_running": 0
+  },
+  "training": {
+    "formal_optimizer_step_start": 0,
+    "formal_optimizer_step_target": 20000,
+    "latest_verified_iteration": 50,
+    "observed_seconds_per_step": [3.19, 3.37],
+    "latest_rank0_loss": 2.0362,
+    "wandb_mode": "offline",
+    "wandb_run_id": "elkgh6c6"
+  },
+  "gradient_evidence": {
+    "iteration": 50,
+    "status": "passed",
+    "family": "strong_action_expert",
+    "optimizer_gradient_elements": 199967573,
+    "nonzero_gradient_elements": 195698359,
+    "nonfinite_gradient_elements": 0,
+    "gradient_l2_norm": 4.81471711152661
+  },
+  "initial_matched_validation": {
+    "iteration": 0,
+    "examples": 2048,
+    "unstable_count": 0,
+    "aligned_action_loss": 0.00828871876001358,
+    "zero_action_loss": 0.008907519280910492,
+    "shuffle_action_loss": 0.008711375296115875,
+    "aligned_vs_zero_relative_gain": 0.06947,
+    "aligned_vs_shuffle_relative_gain": 0.04851,
+    "main_delta_rms": 0.06663204729557037,
+    "main_delta_base_ratio": 0.056486181914806366,
+    "policy_rank_zero_violation_fraction": 0.11279296875,
+    "policy_rank_shuffle_violation_fraction": 0.16162109375
+  },
+  "gpu_snapshot": {
+    "device_count": 8,
+    "utilization_percent_each": 100,
+    "memory_used_mib_min": 56704,
+    "memory_used_mib_max": 58976,
+    "memory_total_mib_each": 183359,
+    "monitor_path": "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817/gpu.csv"
+  },
+  "artifacts": {
+    "run_root": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817",
+    "log": "/data0/wam/cwam-b5/runs/logs/CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817.log",
+    "first_checkpoint_planned_iteration": 1000,
+    "checkpoint_interval": 1000
+  },
+  "eta": {
+    "current": "2026-08-18T17:16:00+08:00",
+    "basis": "approximately 3.2 seconds per optimizer step plus 40 matched validations, 20 full checkpoints, and startup overhead"
+  }
+}

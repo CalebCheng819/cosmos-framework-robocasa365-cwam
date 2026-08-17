@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-17T22:16:00+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-18T17:16:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T22:16:00+08:00", "end": "2026-08-18T17:16:00+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-formal-r7-20k"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817; W&B offline elkgh6c6; GPU monitor cwam-b5-vom-formal-r7-20k-gpu-monitor"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Optimizer evidence confirmed through iteration 50 at 3.19-3.37 s/step. Iteration-50 action-gradient audit passed: 199,967,573 optimizer gradient elements, 195,698,359 nonzero, 0 nonfinite. Eight B200s reached 100% utilization with 56,704-58,976 MiB allocated each. Pre-training matched validation over 2,048 samples: aligned/zero/shuffle action loss 0.00828872/0.00890752/0.00871138; aligned relative gain 6.95% versus zero and 4.85% versus shuffle. Final 20k validation and closed-loop evaluation remain pending."}}]}
+  }
+}
