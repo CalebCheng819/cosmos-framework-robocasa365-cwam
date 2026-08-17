@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R5 memory-delta main residual terminal result"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Experiment CWAM-COSMOS3-B5-VOM-PROBE-R5-20260817 used code commit 09f3791c3f30b902b7179a46ab3475493878567e and 8 B200 GPUs. It completed 500 finite steps and a complete iter_000000500, followed by identical 2048-sample none/zero/shuffle validations. Main action loss was 0.0082641309/0.0082933921/0.0082715964: aligned memory improved 0.35283% over zero and 0.09025% over shuffle, but both missed the 1% gates. Memory-only improvements were 31.94% and 5.66%; slot abs cosine was 0.060725; positive/object/episode similarities were 0.768886/0.016570/0.057256; zero intervention made object delta, gate deviation, and directional residual exactly zero. Decision: explicit main-path dependency produced a small causal effect, but it remains too weak and aligned R5 was 0.19041% worse than aligned R4. Do not launch 20k and do not claim closed-loop improvement. Notion experiment page: 3bf21e77-89cc-8197-9149-f18040656e96."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

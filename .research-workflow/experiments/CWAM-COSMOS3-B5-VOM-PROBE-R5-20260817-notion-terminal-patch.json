@@ -1,0 +1,56 @@
+{
+  "properties": {
+    "Status": {
+      "status": {
+        "name": "Failed"
+      }
+    },
+    "Completed At": {
+      "date": {
+        "start": "2026-08-17T15:50:08+08:00"
+      }
+    },
+    "Actual Runtime": {
+      "number": 0.67
+    },
+    "Experiment Window": {
+      "date": {
+        "start": "2026-08-17T15:09:49+08:00",
+        "end": "2026-08-17T15:50:08+08:00"
+      }
+    },
+    "Run IDs": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "train R4WARM-500S; matched validation VAL-NONE, VAL-ZERO, VAL-SHUFFLE; all four runs reached terminal Done"
+          }
+        }
+      ]
+    },
+    "Primary Metrics": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "500 finite steps; complete iter_000000500. Main action none/zero/shuffle: 0.0082641309/0.0082933921/0.0082715964; aligned gains 0.35283%/0.09025%, below 1%. Memory-only gains: 31.94%/5.66%. Slot abs cosine 0.060725; positive/object/episode similarities 0.768886/0.016570/0.057256. Zero delta/gate deviation/directional residual were exactly zero. Peak 59234 MiB/card."
+          }
+        }
+      ]
+    },
+    "Artifact URL": {
+      "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/09f3791c3f30b902b7179a46ab3475493878567e"
+    },
+    "Conclusion / Failure Reason": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "R5 successfully made the main action residual structurally depend on same-slot object-local memory deltas: aligned history now weakly beat both zero and shuffle, unlike R4. The effect remained far below the preregistered 1% causal-use gates and aligned R5 was 0.19041% worse than aligned R4. Memory remains informative in the auxiliary decoder but is weak relative to the original ActionDiT context. Do not launch 20k; no closed-loop success claim was made."
+          }
+        }
+      ]
+    }
+  }
+}
