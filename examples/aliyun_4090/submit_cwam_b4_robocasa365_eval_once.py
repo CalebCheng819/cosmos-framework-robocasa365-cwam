@@ -104,13 +104,22 @@ def all_jobs(client: Client) -> list[dict]:
         page += 1
 
 
-def verify_no_duplicate(client: Client) -> None:
+def stable_matching_jobs(client: Client) -> list[dict]:
     first = all_jobs(client)
     second = all_jobs(client)
     identity = lambda job: (str(job.get("JobId") or job.get("job_id")), str(job.get("DisplayName") or job.get("display_name")))
     require(sorted(map(identity, first)) == sorted(map(identity, second)), "ListJobs snapshot changed")
-    matches = [job for job in second if identity(job)[1] == DISPLAY_NAME or EXPERIMENT_ID in str(job.get("Description") or "")]
+    return [job for job in second if identity(job)[1] == DISPLAY_NAME or EXPERIMENT_ID in str(job.get("Description") or "")]
+
+
+def verify_no_duplicate(client: Client) -> None:
+    matches = stable_matching_jobs(client)
     require(not matches, f"matching DLC job already exists: {matches}")
+
+
+def get_job_readback(client: Client, identifier: str) -> dict:
+    request = models.GetJobRequest(need_detail=True)
+    return client.get_job(identifier, request).body.to_map()
 
 
 def mounted_target(path: pathlib.Path) -> str:
@@ -123,7 +132,7 @@ def control_commit() -> str:
     return value
 
 
-def validate_local() -> None:
+def validate_local(*, require_unsubmitted: bool) -> None:
     require(mounted_target(PROJECT_ROOT) == "/mnt/workspace", "CPFS mount missing")
     require(mounted_target(OSS_ROOT) == "/oss-chengjuntao", "OSS mount missing")
     require(SOURCE_ROOT.is_dir() and not SOURCE_ROOT.is_symlink(), "source snapshot missing")
@@ -162,9 +171,10 @@ def validate_local() -> None:
         metadata = os.stat(path, follow_symlinks=False)
         require(stat.S_ISREG(metadata.st_mode), f"control file is not regular: {path}")
         require(stat.S_IMODE(metadata.st_mode) == 0o444, f"control file mode is not 0444: {path}")
-    require(not os.path.lexists(OUTPUT_ROOT), f"output already exists: {OUTPUT_ROOT}")
     require(RECEIPT.parent.is_dir() and os.access(RECEIPT.parent, os.W_OK), "receipt parent unavailable")
-    require(not os.path.lexists(RECEIPT), f"submission receipt exists: {RECEIPT}")
+    if require_unsubmitted:
+        require(not os.path.lexists(OUTPUT_ROOT), f"output already exists: {OUTPUT_ROOT}")
+        require(not os.path.lexists(RECEIPT), f"submission receipt exists: {RECEIPT}")
 
 
 def request_body(commit: str) -> dict:
@@ -251,14 +261,69 @@ def write_receipt(path: pathlib.Path, payload: dict, *, exclusive: bool) -> None
     fsync_parent(path)
 
 
+def load_receipt(path: pathlib.Path) -> dict:
+    metadata = os.stat(path, follow_symlinks=False)
+    require(stat.S_ISREG(metadata.st_mode), f"submission receipt is not regular: {path}")
+    with path.open("r", encoding="utf-8") as stream:
+        payload = json.load(stream)
+    require(isinstance(payload, dict), "submission receipt is not a JSON object")
+    return payload
+
+
+def reconcile_existing(client: Client, base: dict) -> dict:
+    previous = load_receipt(RECEIPT)
+    allowed = {
+        "CREATE_REQUEST_FAILED",
+        "CREATE_ACCEPTED_READBACK_PENDING",
+        "CREATE_ACCEPTED_READBACK_FAILED",
+    }
+    require(previous.get("status") in allowed, f"receipt cannot be reconciled: {previous.get('status')}")
+    for key in (
+        "experiment_id",
+        "logical_run_id",
+        "display_name",
+        "workspace_id",
+        "resource_id",
+        "control_commit",
+        "source_commit",
+        "checkpoint_root",
+        "output_root",
+        "request",
+    ):
+        require(previous.get(key) == base[key], f"receipt identity mismatch: {key}")
+
+    matches = stable_matching_jobs(client)
+    require(len(matches) == 1, f"expected exactly one matching DLC job, found {len(matches)}: {matches}")
+    matched = matches[0]
+    identifier = str(matched.get("JobId") or matched.get("job_id") or "")
+    require(bool(identifier), f"matching job omitted JobId: {matched}")
+    previous_identifier = str(previous.get("job_id") or "")
+    require(not previous_identifier or previous_identifier == identifier, "receipt JobId differs from ListJobs")
+    readback = get_job_readback(client, identifier)
+    final = {
+        **base,
+        "status": "SUBMITTED",
+        "submitted_at_utc": previous.get("submitted_at_utc") or previous.get("created_at_utc"),
+        "job_id": identifier,
+        "create_response": previous.get("create_response"),
+        "get_job_readback": readback,
+        "reconciled_at_utc": utc_now(),
+        "reconciled_from_status": previous["status"],
+        "list_jobs_match": matched,
+    }
+    write_receipt(RECEIPT, final, exclusive=False)
+    return final
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--audit-only", action="store_true")
     mode.add_argument("--submit", action="store_true")
+    mode.add_argument("--reconcile", action="store_true")
     args = parser.parse_args()
     require(os.path.realpath(sys.executable) == os.path.realpath(SDK_PYTHON), f"wrong SDK Python: {sys.executable}")
-    validate_local()
+    validate_local(require_unsubmitted=not args.reconcile)
     commit = control_commit()
     body = request_body(commit)
     request = models.CreateJobRequest()
@@ -266,7 +331,6 @@ def main() -> int:
     request.validate()
     require(request.to_map() == body, "SDK request roundtrip changed payload")
     client = make_client()
-    verify_no_duplicate(client)
     base = {
         "schema_version": "metadata_no_hash_v1",
         "experiment_id": EXPERIMENT_ID,
@@ -280,20 +344,35 @@ def main() -> int:
         "output_root": str(OUTPUT_ROOT),
         "request": body,
     }
+    if args.reconcile:
+        final = reconcile_existing(client, base)
+        print(json.dumps(final, indent=2, sort_keys=True))
+        return 0
+    verify_no_duplicate(client)
     if args.audit_only:
         print(json.dumps({**base, "status": "AUDIT_PASSED", "audited_at_utc": utc_now()}, indent=2, sort_keys=True))
         return 0
     initial = {**base, "status": "CREATE_REQUEST_PENDING", "created_at_utc": utc_now()}
     write_receipt(RECEIPT, initial, exclusive=True)
+    response = None
+    identifier = ""
     try:
         response = client.create_job(request).body.to_map()
         identifier = str(response.get("JobId") or response.get("job_id") or "")
         require(bool(identifier), f"CreateJob omitted JobId: {response}")
-        readback = client.get_job(identifier).body.to_map()
+        accepted = {
+            **initial,
+            "status": "CREATE_ACCEPTED_READBACK_PENDING",
+            "submitted_at_utc": utc_now(),
+            "job_id": identifier,
+            "create_response": response,
+        }
+        write_receipt(RECEIPT, accepted, exclusive=False)
+        readback = get_job_readback(client, identifier)
         final = {
             **base,
             "status": "SUBMITTED",
-            "submitted_at_utc": utc_now(),
+            "submitted_at_utc": accepted["submitted_at_utc"],
             "job_id": identifier,
             "create_response": response,
             "get_job_readback": readback,
@@ -302,7 +381,16 @@ def main() -> int:
         print(json.dumps(final, indent=2, sort_keys=True))
         return 0
     except Exception as error:
-        failed = {**initial, "status": "CREATE_REQUEST_FAILED", "failed_at_utc": utc_now(), "error": repr(error)}
+        failed = {
+            **initial,
+            "status": "CREATE_ACCEPTED_READBACK_FAILED" if identifier else "CREATE_REQUEST_FAILED",
+            "failed_at_utc": utc_now(),
+            "error": repr(error),
+        }
+        if response is not None:
+            failed["create_response"] = response
+        if identifier:
+            failed["job_id"] = identifier
         write_receipt(RECEIPT, failed, exclusive=False)
         raise
 
