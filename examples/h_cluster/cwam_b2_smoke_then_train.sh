@@ -395,8 +395,13 @@ CURRENT_PHASE="preflight"
 mkdir -p "$EVIDENCE_DIR"
 rm -f "$UPLOADER_STOP"
 TRAPS_ACTIVE=1
-[[ "$(hostname -f)" == "$EXPECTED_HOST" ]] || {
-    echo "ERROR: expected $EXPECTED_HOST, got $(hostname -f)" >&2
+actual_node_name="${KUBEBRAIN_NODE_NAME:-}"
+[[ -n "$actual_node_name" ]] || {
+    echo "ERROR: scheduler-injected KUBEBRAIN_NODE_NAME is absent" >&2
+    exit 1
+}
+[[ "$actual_node_name" == "$EXPECTED_HOST" ]] || {
+    echo "ERROR: expected node $EXPECTED_HOST, got $actual_node_name" >&2
     exit 1
 }
 [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -eq "$WORLD_SIZE" ]] || {
