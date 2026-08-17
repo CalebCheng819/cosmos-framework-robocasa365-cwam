@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-17T20:39:32+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-17T21:15:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T20:39:32+08:00", "end": "2026-08-17T21:15:00+08:00"}},
+    "Job ID": {"rich_text": [{"type": "text", "text": {"content": "cwam-b5-vom-probe-r7"}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "CWAM-COSMOS3-B5-VOM-PROBE-R7-POLICY-RANK-20260817; W&B offline tg6brhvj; paired aligned/zero/shuffle branches are evaluated in the same forward pass"}}]},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Optimizer evidence confirmed through step 60: 3.23-3.35 s/step, finite gradients, 8 B200s at 100% utilization and about 57-59 GiB each. Iteration-50 audit: 199,967,573 optimizer gradient elements, 195,694,076 nonzero, 0 nonfinite. Pre-training matched validation over 2,048 samples: aligned/zero/shuffle action loss 0.00828946/0.00890787/0.00871177; final step-500 validation remains the acceptance evidence."}}]}
+  }
+}
