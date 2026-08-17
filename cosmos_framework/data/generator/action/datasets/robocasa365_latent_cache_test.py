@@ -17,6 +17,8 @@ import torch
 
 import cosmos_framework.data.generator.action.datasets.robocasa365_latent_cache as latent_cache_module
 from cosmos_framework.data.generator.action.datasets.robocasa365_latent_cache import (
+    CACHE_STAGE,
+    CACHE_STAGE_FULL_PADDING,
     OFFICIAL_WAN22_VAE_SHA256,
     WAN_CACHE_VAE_BEHAVIOR_CONTRACT,
     RoboCasa365LatentCache,
@@ -59,11 +61,18 @@ def _write_cache(
     records: list[torch.Tensor] | None = None,
     ordered_visual_identity_sha256: str = "d" * 64,
     source_split_manifest_sha256: str = "e" * 64,
+    latent_stage: str = CACHE_STAGE,
+    image_size: tuple[int, int, int, int] = (192, 320, 160, 320),
+    camera_mode: str = "concat_view",
+    camera_fields: tuple[str, ...] = ("robot0_agentview_left", "robot0_eye_in_hand"),
+    video_resize_resolution: str | None = None,
 ) -> tuple[dict[str, Any], list[torch.Tensor]]:
     cache_root.mkdir(parents=True)
+    spatial_shape = image_size[:2] if latent_stage == CACHE_STAGE_FULL_PADDING else image_size[2:]
+    shape = (48, 5, spatial_shape[0] // 16, spatial_shape[1] // 16)
     if records is None:
         records = [
-            (torch.arange(48 * 5 * 10 * 20, dtype=torch.float32).reshape(48, 5, 10, 20) / 128 + offset).to(
+            (torch.arange(np.prod(shape), dtype=torch.float32).reshape(shape) / 128 + offset).to(
                 torch.bfloat16
             )
             for offset in (0, 32)
@@ -78,7 +87,7 @@ def _write_cache(
     with shard_path.open("wb") as handle:
         for record in records:
             assert record.dtype == torch.bfloat16
-            assert tuple(record.shape) == (48, 5, 10, 20)
+            assert tuple(record.shape) == shape
             payload = record.contiguous().view(torch.uint8).numpy().tobytes()
             handle.write(payload)
             handle.write(b"\0" * (record_stride_bytes - len(payload)))
@@ -98,23 +107,27 @@ def _write_cache(
         },
         "preprocessing": {
             "schema_version": 1,
-            "camera_mode": "concat_view",
-            "ordered_camera_fields": ["robot0_agentview_left", "robot0_eye_in_hand"],
+            "camera_mode": camera_mode,
+            "ordered_camera_fields": list(camera_fields),
             "fps": 20.0,
             "dataset_image_size": 256,
             "video_resize": {
-                "resolution": None,
-                "resolution_selection": "auto_get_vision_data_resolution",
+                "resolution": video_resize_resolution,
+                "resolution_selection": (
+                    "auto_get_vision_data_resolution"
+                    if video_resize_resolution is None
+                    else "explicit_resolution_tier"
+                ),
                 "keep_aspect_ratio": True,
                 "pad_keys": ["video"],
                 "resize_interpolation": "bicubic",
                 "antialias": True,
                 "padding_origin": "top_left",
                 "padding_mode": "reflect_else_edge",
-                "image_size": [192, 320, 160, 320],
+                "image_size": list(image_size),
             },
             "post_encode_crop": {
-                "stage": "post_padding_crop",
+                "stage": latent_stage,
                 "spatial_rounding": "floor",
                 "minimum_latent_size": 1,
             },
@@ -126,15 +139,15 @@ def _write_cache(
             "behavior_relevant_config": WAN_CACHE_VAE_BEHAVIOR_CONTRACT,
         },
         "latent": {
-            "shape": [48, 5, 10, 20],
+            "shape": list(shape),
             "storage_dtype": "bfloat16",
             "logical_dtype": "float32",
-            "stage": "post_padding_crop",
+            "stage": latent_stage,
             "record_nbytes": record_nbytes,
             "record_stride_bytes": record_stride_bytes,
             "byte_order": "little",
             "video_num_frames": 17,
-            "image_size": [192, 320, 160, 320],
+            "image_size": list(image_size),
         },
         "splits": {
             "train": {
@@ -186,21 +199,26 @@ def _reader_kwargs(
     expected_num_samples: int = 3,
     ordered_visual_identity_sha256: str = "d" * 64,
     source_split_manifest_sha256: str = "e" * 64,
+    latent_stage: str = CACHE_STAGE,
+    image_size: tuple[int, int, int, int] = (192, 320, 160, 320),
+    camera_mode: str = "concat_view",
+    camera_fields: tuple[str, ...] = ("robot0_agentview_left", "robot0_eye_in_hand"),
 ) -> dict[str, Any]:
     return {
         "split": "train",
         "expected_dataset_id": dataset_id,
         "expected_dataset_manifest_sha256": dataset_manifest_sha256,
         "expected_num_samples": expected_num_samples,
-        "expected_camera_mode": "concat_view",
-        "expected_ordered_camera_fields": ("robot0_agentview_left", "robot0_eye_in_hand"),
+        "expected_camera_mode": camera_mode,
+        "expected_ordered_camera_fields": camera_fields,
         "expected_fps": 20.0,
         "expected_dataset_image_size": 256,
-        "expected_image_size": (192, 320, 160, 320),
+        "expected_image_size": image_size,
         "expected_vae_weights_sha256": OFFICIAL_WAN22_VAE_SHA256,
         "expected_preprocessing_code_sha256": active_preprocessing_code_sha256(),
         "expected_split_manifest_sha256": source_split_manifest_sha256,
         "expected_ordered_visual_identity_sha256": ordered_visual_identity_sha256,
+        "expected_cache_stage": latent_stage,
     }
 
 
@@ -302,6 +320,52 @@ def test_fixed_record_reader_loads_mapping_into_memory_and_uses_one_pread(
     assert first.is_contiguous()
     torch.testing.assert_close(first, records[1], rtol=0, atol=0)
     torch.testing.assert_close(duplicate, first, rtol=0, atol=0)
+
+
+def test_full_padding_reader_preserves_480_canvas_latent_shape(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    image_size = (480, 832, 256, 768)
+    camera_fields = (
+        "robot0_agentview_left",
+        "robot0_eye_in_hand",
+        "robot0_agentview_right",
+    )
+    _, records = _write_cache(
+        cache_root,
+        dataset_id="dataset-full-padding",
+        dataset_manifest_sha256="9" * 64,
+        latent_stage=CACHE_STAGE_FULL_PADDING,
+        image_size=image_size,
+        camera_mode="triple_view",
+        camera_fields=camera_fields,
+    )
+    reader = RoboCasa365LatentCache(
+        cache_root,
+        **_reader_kwargs(
+            dataset_id="dataset-full-padding",
+            dataset_manifest_sha256="9" * 64,
+            latent_stage=CACHE_STAGE_FULL_PADDING,
+            image_size=image_size,
+            camera_mode="triple_view",
+            camera_fields=camera_fields,
+        ),
+    )
+
+    assert reader.layout.stage == CACHE_STAGE_FULL_PADDING
+    assert reader.layout.shape == (48, 5, 30, 52)
+    torch.testing.assert_close(reader.read_sample(1), records[0], rtol=0, atol=0)
+
+    with pytest.raises(RuntimeError, match="crop contract mismatch"):
+        RoboCasa365LatentCache(
+            cache_root,
+            **_reader_kwargs(
+                dataset_id="dataset-full-padding",
+                dataset_manifest_sha256="9" * 64,
+                image_size=image_size,
+                camera_mode="triple_view",
+                camera_fields=camera_fields,
+            ),
+        )
 
 
 def test_shared_published_files_validator_returns_inventory_and_rejects_string_shard_id(
@@ -486,6 +550,53 @@ def test_dataset_required_mode_returns_cache_and_never_decodes_video(
         dataset[1]
 
 
+def test_strong_dataset_consumes_full_padding_cache_without_video_decode(
+    dataset_view: tuple[Path, Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, source_root, dataset_manifest_sha = dataset_view
+    cache_root = tmp_path / "full-padding-cache"
+    image_size = (480, 832, 256, 768)
+    camera_fields = (
+        "robot0_agentview_left",
+        "robot0_eye_in_hand",
+        "robot0_agentview_right",
+    )
+    _, records = _write_cache(
+        cache_root,
+        dataset_id="synthetic-robocasa365",
+        dataset_manifest_sha256=dataset_manifest_sha,
+        mapping=np.asarray([1, 0], dtype=np.uint32),
+        source_split_manifest_sha256=sha256_file(root / "splits" / "train.parquet"),
+        latent_stage=CACHE_STAGE_FULL_PADDING,
+        image_size=image_size,
+        camera_mode="triple_view",
+        camera_fields=camera_fields,
+        video_resize_resolution="480",
+    )
+    dataset = RoboCasa365SegmentDataset(
+        root=str(root),
+        source_root=str(source_root),
+        action_normalization=None,
+        camera_mode="triple_view",
+        transform_resolution="480",
+        latent_cache_root=str(cache_root),
+        latent_cache_mode="required",
+        latent_cache_expected_stage=CACHE_STAGE_FULL_PADDING,
+    )
+    monkeypatch.setattr(
+        dataset,
+        "_load_video",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("video decode is forbidden")),
+    )
+
+    sample = dataset[0]
+    assert sample["image_size"].tolist() == [480.0, 832.0, 256.0, 768.0]
+    assert sample["video_latent"].shape == (48, 5, 30, 52)
+    torch.testing.assert_close(sample["video_latent"], records[1], rtol=0, atol=0)
+
+
 def test_builder_visual_only_dataset_does_not_load_dense_actions(
     dataset_view: tuple[Path, Path, str],
 ) -> None:
@@ -534,6 +645,87 @@ def test_batched_overlapping_window_decode_is_pixel_exact(
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert len(calls) == 2
     assert [len(timestamps) for _, timestamps in calls] == [18, 18]
+
+
+def test_overlapping_segments_share_canonical_timestamp_identity_and_pixels(
+    dataset_view: tuple[Path, Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, source_root, _ = dataset_view
+    split_path = root / "splits" / "train.parquet"
+    base_row = pq.read_table(split_path).to_pylist()[0]
+    first_row = {
+        **base_row,
+        "demian_episode_index": 1,
+        "valid_window_count": 89,
+        "source_frame_offset": 0,
+        "action_offset": 0,
+        "action_length": 105,
+        "robot0_agentview_left_from_timestamp": 11.7,
+        "robot0_agentview_right_from_timestamp": 11.7,
+        "robot0_eye_in_hand_from_timestamp": 11.7,
+    }
+    second_row = {
+        **base_row,
+        "demian_episode_index": 108,
+        "valid_window_count": 47,
+        "source_frame_offset": 80,
+        "action_offset": 80,
+        "action_length": 63,
+        "robot0_agentview_left_from_timestamp": 15.7,
+        "robot0_agentview_right_from_timestamp": 15.7,
+        "robot0_eye_in_hand_from_timestamp": 15.7,
+    }
+    pq.write_table(pa.Table.from_pylist([first_row, second_row]), split_path)
+
+    manifest_path = root / "dataset_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["counts"]["action_rows"] = 200
+    _write_json(manifest_path, manifest)
+    np.save(
+        root / "data" / "actions" / "actions_rot6d_f32.npy",
+        np.zeros((200, 10), dtype=np.float32),
+        allow_pickle=False,
+    )
+    success = json.loads((root / "_SUCCESS.json").read_text())
+    success["dataset_manifest_sha256"] = sha256_file(manifest_path)
+    _write_json(root / "_SUCCESS.json", success)
+
+    dataset = RoboCasa365SegmentDataset(
+        root=str(root),
+        source_root=str(source_root),
+        image_size=8,
+        action_normalization=None,
+        latent_cache_mode="disabled",
+        load_actions=False,
+    )
+    first_index = 87
+    second_index = 96
+    first_identity = dataset.get_visual_window_identity(first_index)
+    second_identity = dataset.get_visual_window_identity(second_index)
+    assert first_identity == second_identity
+    assert first_identity["camera_effective_start_timestamps"] == [16.05, 16.05]
+
+    calls: list[tuple[str, list[float]]] = []
+
+    def fake_decode(path: Path, timestamps: list[float]) -> torch.Tensor:
+        calls.append((path.name, timestamps))
+        camera_offset = 0.1 if "left" in path.name else 0.2
+        values = torch.tensor([camera_offset + timestamp / 100.0 for timestamp in timestamps])
+        return values[:, None, None, None].expand(-1, 3, 4, 4).contiguous()
+
+    monkeypatch.setattr(dataset, "_decode_video", fake_decode)
+    first_video = dataset._load_video(*dataset.resolve_window(first_index))
+    second_video = dataset._load_video(*dataset.resolve_window(second_index))
+    torch.testing.assert_close(first_video, second_video, rtol=0, atol=0)
+    assert calls[0][1] == calls[2][1]
+    assert calls[1][1] == calls[3][1]
+
+    calls.clear()
+    batched = dataset.load_video_windows([first_index, second_index])
+    torch.testing.assert_close(batched[0], batched[1], rtol=0, atol=0)
+    assert len(calls) == 2
+    assert [len(timestamps) for _, timestamps in calls] == [17, 17]
 
 
 def test_dataset_requires_explicit_cache_contract(

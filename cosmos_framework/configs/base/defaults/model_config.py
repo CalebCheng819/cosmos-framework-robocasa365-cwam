@@ -5,12 +5,12 @@ from typing import Any
 
 import attrs
 
-from cosmos_framework.utils.lazy_config import LazyDict
 from cosmos_framework.configs.base.defaults.activation_checkpointing import ActivationCheckpointingConfig
 from cosmos_framework.configs.base.defaults.compile import CompileConfig
 from cosmos_framework.configs.base.defaults.ema import EMAConfig
 from cosmos_framework.configs.base.defaults.parallelism import ParallelismConfig
 from cosmos_framework.configs.base.defaults.reasoner import VLMConfig
+from cosmos_framework.utils.lazy_config import LazyDict
 
 
 @attrs.define(slots=False)
@@ -248,6 +248,50 @@ class OmniMoTModelConfig:
     action_gen: bool = False  # whether to use action related parameters and condition/generate action tokens
     max_action_dim: int = 32  # maximum dimension of the action space, we need to pad the data to this dimension.
     num_embodiment_domains: int = 32  # number of domains for the domain-aware linear layer
+    # Optional action-conditioned residual over task and clean visual tokens.
+    # This preserves the official MoT path and adds a soft action-relevance route
+    # immediately before action decoding.
+    action_relevance_enabled: bool = False
+    action_relevance_routing_dim: int = 512
+    action_relevance_num_heads: int = 8
+    action_relevance_topk: int = 32
+    action_relevance_initial_gate: float = 0.01
+    action_relevance_routing_mode: str = "soft_attention"
+    action_relevance_dselect_num_selectors: int = 32
+    action_relevance_dselect_capacity: int = 8192
+    action_relevance_dselect_gamma: float = 1.0
+    action_relevance_dselect_overlap_weight: float = 0.1
+    action_relevance_dselect_invalid_weight: float = 1.0
+    action_relevance_dselect_adaptive_counts: list[int] = attrs.field(factory=lambda: [4, 8, 12, 16, 24, 32])
+    action_relevance_dselect_adaptive_temperature: float = 1.0
+    action_relevance_dselect_adaptive_target_selectors: float = 24.0
+    action_relevance_dselect_adaptive_budget_weight: float = 1.0
+    action_relevance_dselect_adaptive_entropy_weight: float = 0.01
+    action_relevance_sparsity_weight: float = 0.01
+    action_relevance_sparsity_start_iter: int = 1000
+    action_relevance_sparsity_anneal_iters: int = 4000
+    # Optional B2 action objective decoded only from the noisy action seed and
+    # action-relevance-routed context. The full-context action path is retained.
+    action_relevance_aux_loss_weight: float = 0.0
+    action_relevance_aux_start_iter: int = 0
+    action_relevance_aux_warmup_iters: int = 1000
+    # DeMiAn-inspired decoupled action tower with explicit proprio/action memory.
+    strong_action_expert_enabled: bool = False
+    strong_action_expert_model_dim: int = 1024
+    strong_action_expert_num_heads: int = 16
+    strong_action_expert_num_layers: int = 4
+    strong_action_expert_ffn_multiplier: int = 4
+    strong_action_state_dim: int = 16
+    strong_action_history_action_dim: int = 10
+    strong_action_proprio_history_length: int = 4
+    strong_action_proprio_history_stride: int = 12
+    strong_action_history_length: int = 16
+    strong_action_memory_layers: int = 2
+    strong_action_memory_tokens: int = 4
+    strong_action_num_views: int = 3
+    strong_action_view_token_width: int = 8
+    strong_action_initial_gate: float = 0.01
+    strong_action_input_resolution: str = "480"
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

@@ -40,6 +40,71 @@ def _should_append_idle_frame_info(mode: object) -> bool:
     return mode != "inverse_dynamics"
 
 
+def preprocess_control_context(
+    data_dict: dict,
+    *,
+    action_normalizer: ActionNormalizer | None,
+    raw_action_dim: int,
+) -> dict:
+    """Validate and normalize the strong-policy causal control context."""
+
+    keys = {
+        "control_proprio_history",
+        "control_proprio_history_mask",
+        "control_action_history",
+        "control_action_history_mask",
+    }
+    present = keys.intersection(data_dict)
+    if not present:
+        return data_dict
+    if present != keys:
+        raise ValueError(f"Control context is incomplete; missing keys={sorted(keys - present)}")
+
+    proprio = data_dict["control_proprio_history"]
+    proprio_mask = data_dict["control_proprio_history_mask"]
+    action_history = data_dict["control_action_history"]
+    action_mask = data_dict["control_action_history_mask"]
+    if not isinstance(proprio, torch.Tensor) or proprio.ndim != 2:
+        raise ValueError("control_proprio_history must have shape [P,D_state]")
+    if not isinstance(action_history, torch.Tensor) or action_history.ndim != 2:
+        raise ValueError("control_action_history must have shape [H,D_action]")
+    if action_history.shape[-1] != raw_action_dim:
+        raise ValueError(
+            "control_action_history width must match the policy action width: "
+            f"history={action_history.shape[-1]}, action={raw_action_dim}."
+        )
+    if not isinstance(proprio_mask, torch.Tensor) or proprio_mask.shape != proprio.shape[:1]:
+        raise ValueError("control_proprio_history_mask must align with proprio history")
+    if not isinstance(action_mask, torch.Tensor) or action_mask.shape != action_history.shape[:1]:
+        raise ValueError("control_action_history_mask must align with action history")
+    proprio_mask = proprio_mask.to(dtype=torch.bool)
+    action_mask = action_mask.to(dtype=torch.bool)
+    if not bool(proprio_mask[-1]):
+        raise ValueError("The current proprioception (last history row) must be valid")
+    if torch.any(proprio_mask[:-1] & ~proprio_mask[1:]):
+        raise ValueError("Proprio history mask must be a right-aligned contiguous suffix")
+    if torch.any(action_mask[:-1] & ~action_mask[1:]):
+        raise ValueError("Action history mask must be a right-aligned contiguous suffix")
+    if not torch.isfinite(proprio[proprio_mask]).all():
+        raise ValueError("Valid proprio history contains non-finite values")
+    if not torch.isfinite(action_history[action_mask]).all():
+        raise ValueError("Valid action history contains non-finite values")
+
+    action_history_raw = action_history.clone()
+    if action_normalizer is not None:
+        action_history = action_normalizer.normalize_action(action_history)
+    action_history = action_history.masked_fill(~action_mask[:, None], 0.0)
+    proprio = proprio.masked_fill(~proprio_mask[:, None], 0.0)
+
+    processed = dict(data_dict)
+    processed["control_proprio_history"] = proprio
+    processed["control_proprio_history_mask"] = proprio_mask
+    processed["control_action_history_raw"] = action_history_raw
+    processed["control_action_history"] = action_history
+    processed["control_action_history_mask"] = action_mask
+    return processed
+
+
 def find_closest_target_size(h: int, w: int, resolution: str | int) -> tuple[int, int]:
     """Find the closest predefined target size for a given input resolution.
 
@@ -728,6 +793,11 @@ class ActionTransformPipeline:
 
         if sequence_plan.has_action:
             assert isinstance(action, torch.Tensor), "action tensor is required when sequence plan has action"
+            data_dict = preprocess_control_context(
+                data_dict,
+                action_normalizer=action_normalizer,
+                raw_action_dim=int(action.shape[-1]),
+            )
             data_dict = self.action_processor.preprocess_action(
                 data_dict,
                 action,
@@ -741,5 +811,13 @@ class ActionTransformPipeline:
             data_dict["action"] = None
             data_dict["domain_id"] = None
             data_dict["action_processing_record"] = None
+            for key in (
+                "control_proprio_history",
+                "control_proprio_history_mask",
+                "control_action_history_raw",
+                "control_action_history",
+                "control_action_history_mask",
+            ):
+                data_dict[key] = None
 
         return data_dict

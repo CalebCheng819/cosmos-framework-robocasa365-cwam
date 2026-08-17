@@ -30,14 +30,17 @@ import traceback
 import torch
 from loguru import logger as logging
 
-from cosmos_framework.utils.config import Config
-from cosmos_framework.utils.lazy_config import LazyConfig, instantiate
-from cosmos_framework.utils.serialization import to_yaml
+from cosmos_framework.configs.toml_config.sft_config import load_experiment_from_toml
 from cosmos_framework.utils import distributed
+from cosmos_framework.utils.config import Config
 from cosmos_framework.utils.context_managers import data_loader_init, distributed_init, model_init
 from cosmos_framework.utils.launch import log_reproducible_setup
+from cosmos_framework.utils.lazy_config import LazyConfig, instantiate
+from cosmos_framework.utils.rank_local_cache import configure_rank_local_compile_cache
+from cosmos_framework.utils.serialization import to_yaml
 from cosmos_framework.utils.training_telemetry import telemetry
-from cosmos_framework.configs.toml_config.sft_config import load_experiment_from_toml
+
+configure_rank_local_compile_cache()
 
 
 # ---------------------------------------------------------------------------

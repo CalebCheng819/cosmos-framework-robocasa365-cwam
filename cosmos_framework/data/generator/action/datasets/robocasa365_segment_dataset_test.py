@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from cosmos_framework.data.generator.action.action_processing import ActionProcessor
+from cosmos_framework.data.generator.action.datasets.robocasa365_control_cache import sha256_file
 from cosmos_framework.data.generator.action.datasets.robocasa365_segment_dataset import (
     RoboCasa365SegmentDataset,
 )
@@ -42,6 +43,11 @@ def _segment(
         "eligible_for_chunk": True,
         "valid_window_count": action_length - 16,
         "split_group": group,
+        "source_prefix": "fixture-source",
+        # Local source IDs are only unique within source_prefix. Control state
+        # arrays use the dataset-global episode index instead.
+        "source_episode_index": 100 if group == "g1" else 101,
+        "source_dataset_episode_index": 0 if group == "g1" else 1,
         "source_frame_offset": source_frame_offset,
         "action_offset": action_offset,
         "action_length": action_length,
@@ -164,6 +170,47 @@ def robocasa_view(tmp_path: Path) -> tuple[Path, Path, np.ndarray]:
     return root, source_root, actions
 
 
+def _write_control_cache(root: Path, *, dataset_manifest_sha256: str) -> Path:
+    cache = root / "control-cache"
+    arrays_root = cache / "arrays"
+    arrays_root.mkdir(parents=True)
+    episode_offsets = np.asarray([[0, 120], [120, 17]], dtype=np.int64)
+    states = np.arange(137 * 16, dtype=np.float32).reshape(137, 16) / 100.0
+    actions = np.arange(137 * 10, dtype=np.float32).reshape(137, 10) / 1000.0
+    action_valid = np.ones(137, dtype=np.bool_)
+    values = {
+        "states": ("arrays/states_f32.npy", states),
+        "actions_rot6d10": ("arrays/actions_rot6d10_f32.npy", actions),
+        "action_valid": ("arrays/action_valid_bool.npy", action_valid),
+        "episode_offsets": ("arrays/episode_offsets_i64.npy", episode_offsets),
+    }
+    descriptors = {}
+    for name, (relative_path, value) in values.items():
+        path = cache / relative_path
+        np.save(path, value, allow_pickle=False)
+        descriptors[name] = {
+            "path": relative_path,
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+            "size_bytes": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+    manifest_path = cache / "manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": 1,
+            "dataset_manifest_sha256": dataset_manifest_sha256,
+            "arrays": descriptors,
+        },
+    )
+    _write_json(
+        cache / "_SUCCESS.json",
+        {"status": "complete", "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()},
+    )
+    return cache
+
+
 def test_segment_index_video_caption_and_action_contract(
     robocasa_view: tuple[Path, Path, np.ndarray],
     monkeypatch: pytest.MonkeyPatch,
@@ -267,6 +314,61 @@ def test_policy_caption_is_causal_by_default(
     sample = dataset[0]
     assert sample["ai_caption"] == "Increase the temperature."
     assert "Current action:" not in sample["ai_caption"]
+
+
+def test_triple_view_and_masked_control_history_match_strong_contract(
+    robocasa_view: tuple[Path, Path, np.ndarray],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, source_root, _ = robocasa_view
+    control_cache = _write_control_cache(
+        root,
+        dataset_manifest_sha256=hashlib.sha256((root / "dataset_manifest.json").read_bytes()).hexdigest(),
+    )
+    dataset = RoboCasa365SegmentDataset(
+        root=str(root),
+        source_root=str(source_root),
+        image_size=256,
+        camera_mode="triple_view",
+        control_cache_root=str(control_cache),
+        proprio_history_length=4,
+        proprio_history_stride=12,
+        action_history_length=16,
+        transform_resolution="480",
+        resample_on_decode_error=False,
+    )
+
+    def fake_decode(path: Path, _timestamps: list[float]) -> torch.Tensor:
+        value = {"left.mp4": 0.1, "wrist.mp4": 0.2, "right.mp4": 0.3}[path.name]
+        return torch.full((17, 3, 8, 8), value, dtype=torch.float32)
+
+    monkeypatch.setattr(dataset, "_decode_video", fake_decode)
+    sample = dataset[4]
+    assert sample["video"].shape == (3, 17, 256, 768)
+    assert torch.all(sample["video"][..., :256] == 25)
+    assert torch.all(sample["video"][..., 256:512] == 51)
+    assert torch.all(sample["video"][..., 512:] == 76)
+    assert sample["control_proprio_history"].shape == (4, 16)
+    assert sample["control_proprio_history_mask"].tolist() == [True, True, True, True]
+    assert sample["control_action_history"].shape == (16, 10)
+    assert sample["control_action_history_mask"].all()
+
+    pipeline = ActionTransformPipeline(
+        tokenizer_config=None,
+        max_action_dim=64,
+        append_viewpoint_info=False,
+        append_duration_fps_timestamps=False,
+        append_resolution_info=False,
+        append_idle_frames=False,
+        format_prompt_as_json=False,
+    )
+    transformed = pipeline(sample, "480", action_normalizer=dataset.get_action_normalizer())
+    assert transformed["video"].shape[-2:] == (480, 832)
+    assert transformed["image_size"][:2].tolist() == [480.0, 832.0]
+    torch.testing.assert_close(
+        transformed["control_action_history"],
+        (transformed["control_action_history_raw"] + 1.0) / 2.0,
+    )
 
 
 def test_policy_json_prompt_omits_future_action_metadata(

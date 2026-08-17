@@ -46,6 +46,13 @@ class GenerationDataClean:
     action_domain_id: list[torch.Tensor] | None = None  # per-sample domain IDs, None when no action samples
     raw_action_dim: list[torch.Tensor] | None = None  # raw action dimension, used adding masks to loss calculation
 
+    # Strong action-policy context. These fields stay separate from generated
+    # action tokens so proprio/history cannot be confused with flow targets.
+    control_proprio_history: list[torch.Tensor] | None = None  # per sample [P,state_dim]
+    control_proprio_history_mask: list[torch.Tensor] | None = None  # per sample [P]
+    control_action_history: list[torch.Tensor] | None = None  # per sample [H,action_dim]
+    control_action_history_mask: list[torch.Tensor] | None = None  # per sample [H]
+
     # Multi-control transfer: per-sample list of per-control weights.
     # Shape: [num_samples], each element is a list of floats (one per control stream).
     # None for non-transfer or single-control samples.

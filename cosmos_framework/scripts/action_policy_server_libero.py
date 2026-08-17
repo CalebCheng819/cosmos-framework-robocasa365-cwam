@@ -91,6 +91,12 @@ from cosmos_framework.utils.lazy_config import instantiate
 from cosmos_framework.utils.generator.data_utils import get_vision_data_resolution
 
 _DEFAULT_ACTION_CHUNK_SIZE = 16
+_CONTROL_CONTEXT_KEYS = (
+    "control_proprio_history",
+    "control_proprio_history_mask",
+    "control_action_history",
+    "control_action_history_mask",
+)
 ActionNormalization = Literal["auto", "meanstd", "minmax", "quantile", "quantile_rot"]
 ResolvedActionNormalization = Literal["meanstd", "minmax", "quantile", "quantile_rot"]
 
@@ -894,7 +900,13 @@ class ActionModelService:
         t_frames = self.cfg.action_chunk_size + 1
         _, final_h, final_w = img_chw_uint8.shape
         video_c_t_h_w_uint8 = img_chw_uint8.unsqueeze(1).repeat(1, t_frames, 1, 1)  # [3,T,H,W]
-        resolution = get_vision_data_resolution((final_h, final_w))
+        requested_resolution = req.get("resolution")
+        if requested_resolution is None:
+            resolution: str | int = get_vision_data_resolution((final_h, final_w))
+        elif isinstance(requested_resolution, (str, int)) and not isinstance(requested_resolution, bool):
+            resolution = requested_resolution
+        else:
+            raise ValueError("'resolution' must be a supported string/integer tier when provided")
         target_w, target_h = find_closest_target_size(final_h, final_w, resolution)
         pad_dict: dict[str, Any] = {"video": video_c_t_h_w_uint8}
         reflection_pad_to_target(pad_dict, ["video"], True, target_w, target_h)
@@ -918,7 +930,7 @@ class ActionModelService:
                 append_duration_fps=self.append_duration_fps,
                 append_resolution_info=self.append_resolution_info,
             )
-        return {
+        prepared = {
             "img_chw_uint8": img_chw_uint8,
             "video_padded": pad_dict["video"],
             "padded_image_size": pad_dict["image_size"],
@@ -927,6 +939,32 @@ class ActionModelService:
             "domain_name": domain_name,
             "image_size": image_size,
         }
+        present_control_keys = {key for key in _CONTROL_CONTEXT_KEYS if key in req}
+        if present_control_keys:
+            if present_control_keys != set(_CONTROL_CONTEXT_KEYS):
+                missing = sorted(set(_CONTROL_CONTEXT_KEYS) - present_control_keys)
+                raise ValueError(f"Policy control context is incomplete; missing keys={missing}")
+            proprio = torch.as_tensor(req["control_proprio_history"], dtype=torch.float32)
+            proprio_mask = torch.as_tensor(req["control_proprio_history_mask"], dtype=torch.bool)
+            action_history = torch.as_tensor(req["control_action_history"], dtype=torch.float32)
+            action_mask = torch.as_tensor(req["control_action_history_mask"], dtype=torch.bool)
+            if proprio.ndim != 2 or proprio_mask.shape != proprio.shape[:1]:
+                raise ValueError("Policy proprio history and mask must have shapes [P,D] and [P]")
+            if action_history.ndim != 2 or action_mask.shape != action_history.shape[:1]:
+                raise ValueError("Policy action history and mask must have shapes [H,D] and [H]")
+            if proprio.shape[0] < 1 or action_history.shape[0] < 1:
+                raise ValueError("Policy control histories must be non-empty")
+            if not bool(proprio_mask[-1]):
+                raise ValueError("Policy control context requires valid current proprioception")
+            if not torch.isfinite(proprio[proprio_mask]).all() or not torch.isfinite(action_history[action_mask]).all():
+                raise ValueError("Policy control context contains non-finite valid values")
+            prepared.update(
+                control_proprio_history=proprio.masked_fill(~proprio_mask[:, None], 0.0),
+                control_proprio_history_mask=proprio_mask,
+                control_action_history=action_history.masked_fill(~action_mask[:, None], 0.0),
+                control_action_history_mask=action_mask,
+            )
+        return prepared
 
     def predict_policy_batch(self, reqs: list[dict[str, Any]]) -> dict[str, Any]:
         """Batched policy inference: N requests -> ONE diffusion forward (batch_size=N)
@@ -954,6 +992,11 @@ class ActionModelService:
             "domain_id": [torch.tensor(get_domain_id(p["domain_name"]), dtype=torch.long) for p in preps],
             "sequence_plan": [p["sequence_plan"] for p in preps],
         }
+        if any(key in prep for prep in preps for key in _CONTROL_CONTEXT_KEYS):
+            if not all(all(key in prep for key in _CONTROL_CONTEXT_KEYS) for prep in preps):
+                raise ValueError("Every item in a policy batch must use the same control-context contract")
+            for key in _CONTROL_CONTEXT_KEYS:
+                batch[key] = [prep[key] for prep in preps]
         t_inf0 = time.monotonic()
         with self._lock:
             with torch.inference_mode():
@@ -1045,6 +1088,9 @@ class ActionModelService:
             "domain_id": [torch.tensor(get_domain_id(domain_name), dtype=torch.long)],
             "sequence_plan": [sequence_plan],
         }
+        for key in _CONTROL_CONTEXT_KEYS:
+            if key in prep:
+                batch[key] = [prep[key]]
 
         if getattr(self.model, "training", False):
             log.warning(f"[action-server] request_id={request_id} WARNING: model.training=True")

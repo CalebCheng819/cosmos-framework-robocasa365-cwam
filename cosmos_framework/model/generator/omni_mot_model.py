@@ -82,6 +82,25 @@ from cosmos_framework.utils.lazy_config import instantiate as lazy_instantiate
 from cosmos_framework.utils.timer import Timer
 
 
+def action_relevance_aux_warmup_fraction(*, iteration: int, start_iter: int, warmup_iters: int) -> float:
+    """Return the B2 auxiliary objective's bounded linear warmup fraction."""
+    if iteration < 0 or start_iter < 0 or warmup_iters < 0:
+        raise ValueError("action relevance auxiliary schedule requires non-negative values")
+    if iteration < start_iter:
+        return 0.0
+    if warmup_iters == 0:
+        return 1.0
+    return min((iteration - start_iter + 1) / warmup_iters, 1.0)
+
+
+def optional_model_config_value(config: Any, name: str, default: Any) -> Any:
+    """Read a post-training option without breaking older published configs."""
+    try:
+        return getattr(config, name)
+    except (AttributeError, KeyError):
+        return default
+
+
 class OmniMoTModel(ImaginaireModel):
     """
     Mixture of Transformers (MoT) model to be trained with the flow matching objective
@@ -194,6 +213,21 @@ class OmniMoTModel(ImaginaireModel):
     def build_net(self, dtype: torch.dtype, *, lora_enabled: bool | None = None) -> torch.nn.Module:
         # Build model network and parallelize it.
         lora_enabled = self.config.lora_enabled if lora_enabled is None else lora_enabled
+        adaptive_counts = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_counts", (4, 8, 12, 16, 24, 32)
+        )
+        adaptive_temperature = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_temperature", 1.0
+        )
+        adaptive_target_selectors = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_target_selectors", 24.0
+        )
+        adaptive_budget_weight = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_budget_weight", 1.0
+        )
+        adaptive_entropy_weight = optional_model_config_value(
+            self.config, "action_relevance_dselect_adaptive_entropy_weight", 0.01
+        )
         with torch.device("meta"):
             assert self.vlm_config.model_instance is not None, "Model instance should be specified"
 
@@ -222,6 +256,37 @@ class OmniMoTModel(ImaginaireModel):
                 action_dim=self.config.max_action_dim,
                 num_embodiment_domains=self.config.num_embodiment_domains,
                 temporal_compression_factor_vision=self.tokenizer_vision_gen.temporal_compression_factor,
+                action_relevance_enabled=self.config.action_relevance_enabled,
+                action_relevance_routing_dim=self.config.action_relevance_routing_dim,
+                action_relevance_num_heads=self.config.action_relevance_num_heads,
+                action_relevance_topk=self.config.action_relevance_topk,
+                action_relevance_initial_gate=self.config.action_relevance_initial_gate,
+                action_relevance_routing_mode=self.config.action_relevance_routing_mode,
+                action_relevance_dselect_num_selectors=self.config.action_relevance_dselect_num_selectors,
+                action_relevance_dselect_capacity=self.config.action_relevance_dselect_capacity,
+                action_relevance_dselect_gamma=self.config.action_relevance_dselect_gamma,
+                action_relevance_dselect_overlap_weight=self.config.action_relevance_dselect_overlap_weight,
+                action_relevance_dselect_invalid_weight=self.config.action_relevance_dselect_invalid_weight,
+                action_relevance_dselect_adaptive_counts=adaptive_counts,
+                action_relevance_dselect_adaptive_temperature=adaptive_temperature,
+                action_relevance_dselect_adaptive_target_selectors=adaptive_target_selectors,
+                action_relevance_dselect_adaptive_budget_weight=adaptive_budget_weight,
+                action_relevance_dselect_adaptive_entropy_weight=adaptive_entropy_weight,
+                strong_action_expert_enabled=self.config.strong_action_expert_enabled,
+                strong_action_expert_model_dim=self.config.strong_action_expert_model_dim,
+                strong_action_expert_num_heads=self.config.strong_action_expert_num_heads,
+                strong_action_expert_num_layers=self.config.strong_action_expert_num_layers,
+                strong_action_expert_ffn_multiplier=self.config.strong_action_expert_ffn_multiplier,
+                strong_action_state_dim=self.config.strong_action_state_dim,
+                strong_action_history_action_dim=self.config.strong_action_history_action_dim,
+                strong_action_proprio_history_length=self.config.strong_action_proprio_history_length,
+                strong_action_proprio_history_stride=self.config.strong_action_proprio_history_stride,
+                strong_action_history_length=self.config.strong_action_history_length,
+                strong_action_memory_layers=self.config.strong_action_memory_layers,
+                strong_action_memory_tokens=self.config.strong_action_memory_tokens,
+                strong_action_num_views=self.config.strong_action_num_views,
+                strong_action_view_token_width=self.config.strong_action_view_token_width,
+                strong_action_initial_gate=self.config.strong_action_initial_gate,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -1047,6 +1112,7 @@ class OmniMoTModel(ImaginaireModel):
             is_image_batch=gen_data_clean.is_image_batch,
             timesteps_action=timesteps_action,
             timesteps_sound=timesteps_sound,
+            iteration=iteration,
         )
 
         # Pixel-space video shapes for VAE FLOPs estimation in callbacks (e.g. MFU).
@@ -1151,6 +1217,7 @@ class OmniMoTModel(ImaginaireModel):
         is_image_batch: bool,
         timesteps_action: torch.Tensor | None = None,
         timesteps_sound: torch.Tensor | None = None,
+        iteration: int = 0,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute flow matching loss and auxiliary load balancing losses.
 
@@ -1227,6 +1294,112 @@ class OmniMoTModel(ImaginaireModel):
                 losses_dict["flow_matching_loss_action"] = dummy_loss
         else:
             losses_dict["flow_matching_loss_action"] = torch.tensor(0.0, **self.tensor_kwargs_fp32)
+
+        if self.config.action_relevance_enabled:
+            required_metrics = (
+                "action_relevance_sparsity_loss",
+                "action_relevance_entropy",
+                "action_relevance_topk_mass",
+                "action_relevance_effective_support",
+                "action_relevance_residual_gate",
+                "action_relevance_selector_entropy",
+                "action_relevance_selector_overlap",
+                "action_relevance_selector_invalid_mass",
+                "action_relevance_selector_hard_fraction",
+                "action_relevance_selector_expected_count",
+                "action_relevance_selector_selected_count",
+                "action_relevance_selector_count_entropy",
+                "action_relevance_selector_budget_loss",
+                "action_relevance_selector_utilization",
+            )
+            missing_metrics = [name for name in required_metrics if name not in out_net]
+            if missing_metrics:
+                raise ValueError(f"action relevance output is missing metrics: {missing_metrics}")
+
+            start_iter = self.config.action_relevance_sparsity_start_iter
+            anneal_iters = self.config.action_relevance_sparsity_anneal_iters
+            if start_iter < 0 or anneal_iters <= 0:
+                raise ValueError("action relevance sparsity schedule must use start>=0 and anneal_iters>0")
+            anneal_fraction = min(max((iteration - start_iter) / anneal_iters, 0.0), 1.0)
+            sparsity_weight = self.config.action_relevance_sparsity_weight * anneal_fraction
+            sparsity_loss = out_net["action_relevance_sparsity_loss"]
+            total_loss += sparsity_loss * sparsity_weight
+            losses_dict.update(
+                action_relevance_sparsity_loss=sparsity_loss,
+                action_relevance_sparsity_weight=torch.tensor(
+                    sparsity_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+                action_relevance_entropy=out_net["action_relevance_entropy"],
+                action_relevance_topk_mass=out_net["action_relevance_topk_mass"],
+                action_relevance_effective_support=out_net["action_relevance_effective_support"],
+                action_relevance_residual_gate=out_net["action_relevance_residual_gate"],
+                action_relevance_selector_entropy=out_net["action_relevance_selector_entropy"],
+                action_relevance_selector_overlap=out_net["action_relevance_selector_overlap"],
+                action_relevance_selector_invalid_mass=out_net[
+                    "action_relevance_selector_invalid_mass"
+                ],
+                action_relevance_selector_hard_fraction=out_net[
+                    "action_relevance_selector_hard_fraction"
+                ],
+                action_relevance_selector_expected_count=out_net["action_relevance_selector_expected_count"],
+                action_relevance_selector_selected_count=out_net["action_relevance_selector_selected_count"],
+                action_relevance_selector_count_entropy=out_net["action_relevance_selector_count_entropy"],
+                action_relevance_selector_budget_loss=out_net["action_relevance_selector_budget_loss"],
+                action_relevance_selector_utilization=out_net["action_relevance_selector_utilization"],
+            )
+
+            aux_loss_weight = self.config.action_relevance_aux_loss_weight
+            aux_start_iter = self.config.action_relevance_aux_start_iter
+            aux_warmup_iters = self.config.action_relevance_aux_warmup_iters
+            if aux_loss_weight < 0.0 or aux_start_iter < 0 or aux_warmup_iters < 0:
+                raise ValueError("action relevance auxiliary schedule requires non-negative values")
+            if aux_loss_weight > 0.0:
+                if "preds_action_relevance_only" not in out_net:
+                    raise ValueError("B2 auxiliary loss requires preds_action_relevance_only")
+                aux_warmup_fraction = action_relevance_aux_warmup_fraction(
+                    iteration=iteration,
+                    start_iter=aux_start_iter,
+                    warmup_iters=aux_warmup_iters,
+                )
+
+                if data_batch_packed.action is not None:
+                    assert isinstance(data_batch_packed.action.condition_mask, list)
+                    assert gen_data_noised.vt_target_action is not None
+                    aux_action_loss, _ = self._compute_flow_matching_loss(
+                        pred=out_net["preds_action_relevance_only"],
+                        target=gen_data_noised.vt_target_action,
+                        condition_mask=data_batch_packed.action.condition_mask,
+                        timesteps=ts_action,
+                        has_valid_tokens=has_noisy_tokens(data_batch_packed.action),
+                        rectified_flow=self.rectified_flow_action,
+                        raw_action_dim=data_batch_packed.action.raw_action_dim,
+                        normalize_by_active=normalize_by_active,
+                    )
+                else:
+                    aux_action_loss = 0.0 * sum(p.sum() for p in out_net["preds_action_relevance_only"])
+
+                effective_aux_weight = rf_cfg.action_loss_weight * aux_loss_weight * aux_warmup_fraction
+                total_loss += aux_action_loss * effective_aux_weight
+                losses_dict.update(
+                    flow_matching_loss_action_relevance_only=aux_action_loss,
+                    action_relevance_aux_loss_weight=torch.tensor(
+                        effective_aux_weight,
+                        **self.tensor_kwargs_fp32,
+                    ),
+                )
+
+        if self.config.strong_action_expert_enabled:
+            required_metrics = (
+                "strong_action_residual_gate",
+                "strong_action_attention_entropy",
+                "strong_action_valid_context_tokens",
+                "strong_action_memory_rms",
+            )
+            missing_metrics = [name for name in required_metrics if name not in out_net]
+            if missing_metrics:
+                raise ValueError(f"Strong action expert output is missing metrics: {missing_metrics}")
+            losses_dict.update({name: out_net[name] for name in required_metrics})
 
         if self.config.sound_gen:
             if data_batch_packed.sound is not None:
@@ -2213,6 +2386,10 @@ class OmniMoTModel(ImaginaireModel):
             # sequence. Without this, multi_control_two_way_attention never runs
             # and all controls are blended equally (weights ignored).
             control_weights=gen_data_clean.control_weights,
+            control_proprio_history=gen_data_clean.control_proprio_history,
+            control_proprio_history_mask=gen_data_clean.control_proprio_history_mask,
+            control_action_history=gen_data_clean.control_action_history,
+            control_action_history_mask=gen_data_clean.control_action_history_mask,
         )
 
         if packed_sequence_template is None:
@@ -3167,6 +3344,26 @@ class OmniMoTModel(ImaginaireModel):
             action_domain_id=action_domain_id,
             raw_action_dim=raw_action_dim,
             num_vision_items_per_sample=subset_num_items,
+            control_proprio_history=(
+                gen_data_clean.control_proprio_history[start:limit]
+                if gen_data_clean.control_proprio_history is not None
+                else None
+            ),
+            control_proprio_history_mask=(
+                gen_data_clean.control_proprio_history_mask[start:limit]
+                if gen_data_clean.control_proprio_history_mask is not None
+                else None
+            ),
+            control_action_history=(
+                gen_data_clean.control_action_history[start:limit]
+                if gen_data_clean.control_action_history is not None
+                else None
+            ),
+            control_action_history_mask=(
+                gen_data_clean.control_action_history_mask[start:limit]
+                if gen_data_clean.control_action_history_mask is not None
+                else None
+            ),
         )
 
     @torch.no_grad()
@@ -3582,6 +3779,34 @@ class OmniMoTModel(ImaginaireModel):
         raw_state_action, action_domain_id = self._normalize_action_databatch(data_batch)
         x0_tokens_action = raw_state_action
         raw_action_dim = data_batch.get("raw_action_dim", None)
+        control_proprio_history = unwrap_and_densify(
+            data_batch.get("control_proprio_history"),
+            self.tensor_kwargs_fp32,
+        )
+        control_action_history = unwrap_and_densify(
+            data_batch.get("control_action_history"),
+            self.tensor_kwargs_fp32,
+        )
+        mask_to_kwargs = {"device": self.tensor_kwargs_fp32["device"]}
+        control_proprio_history_mask = unwrap_and_densify(
+            data_batch.get("control_proprio_history_mask"),
+            mask_to_kwargs,
+        )
+        control_action_history_mask = unwrap_and_densify(
+            data_batch.get("control_action_history_mask"),
+            mask_to_kwargs,
+        )
+        control_fields = (
+            control_proprio_history,
+            control_proprio_history_mask,
+            control_action_history,
+            control_action_history_mask,
+        )
+        if any(value is not None for value in control_fields):
+            if any(value is None for value in control_fields):
+                raise ValueError("Strong policy control context is incomplete in the data batch")
+            if any(len(value) != batch_size for value in control_fields if value is not None):
+                raise ValueError("Strong policy control context must provide one tensor per sample")
 
         # Sound/audio - normalize, encode if present and sound_gen is enabled
         self._normalize_sound_databatch_inplace(data_batch)
@@ -3661,6 +3886,10 @@ class OmniMoTModel(ImaginaireModel):
             num_vision_items_per_sample=num_vision_items_per_sample,
             raw_action_dim=raw_action_dim,
             control_weights=control_weights,
+            control_proprio_history=control_proprio_history,
+            control_proprio_history_mask=control_proprio_history_mask,
+            control_action_history=control_action_history,
+            control_action_history_mask=control_action_history_mask,
         )
 
     def _normalize_video_databatch_inplace(
@@ -4366,6 +4595,9 @@ class OmniMoTModel(ImaginaireModel):
                 - "preds_vision": list[Tensor[C,T,H,W]], one per sample.
                 - "preds_action": Velocity prediction for action modality (if action_gen enabled).
                 - "preds_sound": Velocity prediction for sound modality (if sound_gen enabled).
+                - "action_relevance_*": routing losses and diagnostics (if enabled).
+                - "preds_action_relevance_only": B2 auxiliary action prediction (if enabled).
+                - "strong_action_*": strong action expert diagnostics (if enabled).
                 - "lbl_metadata_und": Load balancing metadata for understanding pathway (if present).
                 - "lbl_metadata_gen": Load balancing metadata for generation pathway (if present).
         """
@@ -4379,10 +4611,12 @@ class OmniMoTModel(ImaginaireModel):
         output_dict["preds_vision"] = out_net["preds_vision"]
         if self.config.action_gen and "preds_action" in out_net:
             output_dict["preds_action"] = out_net["preds_action"]
+        if self.config.action_relevance_enabled and "preds_action_relevance_only" in out_net:
+            output_dict["preds_action_relevance_only"] = out_net["preds_action_relevance_only"]
         if self.config.sound_gen and "preds_sound" in out_net:
             output_dict["preds_sound"] = out_net["preds_sound"]
         for key, value in out_net.items():
-            if "lbl_metadata_" in key:
+            if key.startswith(("action_relevance_", "strong_action_")) or "lbl_metadata_" in key:
                 output_dict[key] = value
 
         return output_dict

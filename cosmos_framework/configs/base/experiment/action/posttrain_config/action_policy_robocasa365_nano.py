@@ -22,7 +22,27 @@ from cosmos_framework.utils.lazy_config import LazyDict
 cs = ConfigStore.instance()
 
 
-def _action_policy_robocasa365_nano_model_config() -> dict:
+def _latent_cache_settings(*, root_env: str, mode_env: str) -> tuple[str | None, str]:
+    latent_cache_root = os.environ.get(root_env) or None
+    latent_cache_mode = os.environ.get(
+        mode_env,
+        "required" if latent_cache_root else "disabled",
+    )
+    if latent_cache_mode not in {"disabled", "required"}:
+        raise ValueError(f"{mode_env} must be disabled or required, got {latent_cache_mode!r}.")
+    if latent_cache_mode == "required" and not latent_cache_root:
+        raise ValueError(f"{root_env} is required when {mode_env}=required.")
+    if latent_cache_mode == "disabled":
+        latent_cache_root = None
+    return latent_cache_root, latent_cache_mode
+
+
+def _action_policy_robocasa365_nano_model_config(
+    *,
+    latent_cache_root_env: str = "ROBOCASA365_LATENT_CACHE_ROOT",
+    latent_cache_mode_env: str = "ROBOCASA365_LATENT_CACHE_MODE",
+    metadata_only_tokenizer_env: str = "CWAM_METADATA_ONLY_VIDEO_TOKENIZER",
+) -> dict:
     """Return the Nano action-policy model settings used by this recipe."""
     cfg = copy.deepcopy(NANO_MODEL_CONFIG)
     cfg["max_num_tokens_after_packing"] = 74000
@@ -36,25 +56,18 @@ def _action_policy_robocasa365_nano_model_config() -> dict:
     cfg["diffusion_expert_config"]["load_weights_from_pretrained"] = False
     cfg["rectified_flow_training_config"]["loss_scale"] = 10.0
     cfg["rectified_flow_training_config"]["image_loss_scale"] = None
-    latent_cache_root = os.environ.get("ROBOCASA365_LATENT_CACHE_ROOT") or None
-    latent_cache_mode = os.environ.get(
-        "ROBOCASA365_LATENT_CACHE_MODE",
-        "required" if latent_cache_root else "disabled",
+    latent_cache_root, latent_cache_mode = _latent_cache_settings(
+        root_env=latent_cache_root_env,
+        mode_env=latent_cache_mode_env,
     )
-    if latent_cache_mode not in {"disabled", "required"}:
-        raise ValueError(
-            f"ROBOCASA365_LATENT_CACHE_MODE must be disabled or required, got {latent_cache_mode!r}."
-        )
-    if latent_cache_mode == "required" and not latent_cache_root:
-        raise ValueError("ROBOCASA365_LATENT_CACHE_ROOT is required when latent cache mode is required.")
-    metadata_only_raw = os.environ.get("CWAM_METADATA_ONLY_VIDEO_TOKENIZER", "0")
+    metadata_only_raw = os.environ.get(metadata_only_tokenizer_env, "0")
     if metadata_only_raw not in {"0", "1"}:
-        raise ValueError("CWAM_METADATA_ONLY_VIDEO_TOKENIZER must be exactly 0 or 1.")
+        raise ValueError(f"{metadata_only_tokenizer_env} must be exactly 0 or 1.")
     metadata_only_tokenizer = metadata_only_raw == "1"
     if metadata_only_tokenizer and latent_cache_mode != "required":
         raise ValueError(
-            "CWAM_METADATA_ONLY_VIDEO_TOKENIZER=1 requires "
-            "ROBOCASA365_LATENT_CACHE_MODE=required."
+            f"{metadata_only_tokenizer_env}=1 requires "
+            f"{latent_cache_mode_env}=required."
         )
     if metadata_only_tokenizer:
         # The strict cache reader validates the Wan weights/config/code hashes.
@@ -83,29 +96,29 @@ def _robocasa365_packing_dataloader(
     num_workers: int,
     in_order: bool,
     restart_on_iter: bool = False,
+    max_samples_per_batch: int = 128,
+    camera_mode: str = "concat_view",
+    resolution: str | None = None,
+    latent_cache_root_env: str = "ROBOCASA365_LATENT_CACHE_ROOT",
+    latent_cache_mode_env: str = "ROBOCASA365_LATENT_CACHE_MODE",
+    latent_cache_expected_stage: str = "post_padding_crop",
+    control_cache_root: str | None = None,
+    proprio_history_length: int = 0,
+    proprio_history_stride: int = 1,
+    action_history_length: int = 0,
 ):
     """Build a train/validation loader with one shared causal data contract."""
-    latent_cache_root = os.environ.get("ROBOCASA365_LATENT_CACHE_ROOT") or None
-    latent_cache_mode = os.environ.get(
-        "ROBOCASA365_LATENT_CACHE_MODE",
-        "required" if latent_cache_root else "disabled",
+    latent_cache_root, latent_cache_mode = _latent_cache_settings(
+        root_env=latent_cache_root_env,
+        mode_env=latent_cache_mode_env,
     )
-    if latent_cache_mode not in {"disabled", "required"}:
-        raise ValueError(
-            f"ROBOCASA365_LATENT_CACHE_MODE must be disabled or required, got {latent_cache_mode!r}."
-        )
-    if latent_cache_mode == "disabled":
-        # Allow a raw-video A/B cell to override an inherited cache root with
-        # ROBOCASA365_LATENT_CACHE_MODE=disabled. The dataset contract
-        # deliberately rejects a dormant cache root in disabled mode.
-        latent_cache_root = None
     fixed_index_trace_path = (
         (os.environ.get("ROBOCASA365_FIXED_INDEX_TRACE_PATH") or None) if split == "train" else None
     )
     return L(PackingDataLoader)(
         audio_sample_rate=48000,
         dataset_name=f"action_robocasa365_{split}",
-        max_samples_per_batch=128,
+        max_samples_per_batch=max_samples_per_batch,
         max_sequence_length=None,
         patch_spatial=2,
         sound_latent_fps=0,
@@ -131,17 +144,23 @@ def _robocasa365_packing_dataloader(
                         chunk_length=16,
                         image_size=256,
                         mode="policy",
-                        camera_mode="concat_view",
+                        camera_mode=camera_mode,
                         caption_mode="policy",
                         action_normalization="quantile_rot",
                         embodiment_type="robocasa365",
                         video_backend="lerobot",
                         latent_cache_root=latent_cache_root,
                         latent_cache_mode=latent_cache_mode,
+                        latent_cache_expected_stage=latent_cache_expected_stage,
+                        control_cache_root=control_cache_root,
+                        control_cache_verify_checksums=False,
+                        proprio_history_length=proprio_history_length,
+                        proprio_history_stride=proprio_history_stride,
+                        action_history_length=action_history_length,
                         iterable_shuffle=iterable_shuffle,
                         episode_shuffle_seed=episode_shuffle_seed,
                         fixed_index_trace_path=fixed_index_trace_path,
-                        resolution=None,
+                        resolution=resolution,
                         max_action_dim="${model.config.max_action_dim}",
                         cfg_dropout_rate=cfg_dropout_rate,
                         # idle_frames is computed from the future action target.
@@ -330,4 +349,228 @@ cs.store(
     package="_global_",
     name="action_policy_robocasa365_nano",
     node=action_policy_robocasa365_nano,
+)
+
+
+def _action_policy_robocasa365_s1_nano_model_config() -> dict:
+    """Enable the S1 soft action-relevance residual on the baseline policy."""
+    cfg = _action_policy_robocasa365_nano_model_config()
+    cfg.update(
+        action_relevance_enabled=True,
+        action_relevance_routing_dim=512,
+        action_relevance_num_heads=8,
+        action_relevance_topk=32,
+        action_relevance_initial_gate=0.01,
+        action_relevance_sparsity_weight=0.01,
+        action_relevance_sparsity_start_iter=1000,
+        action_relevance_sparsity_anneal_iters=4000,
+    )
+    return cfg
+
+
+action_policy_robocasa365_s1_nano = copy.deepcopy(action_policy_robocasa365_nano)
+action_policy_robocasa365_s1_nano.job.name = "action_policy_robocasa365_s1_nano"
+action_policy_robocasa365_s1_nano.model.config = _action_policy_robocasa365_s1_nano_model_config()
+action_policy_robocasa365_s1_nano.optimizer.keys_to_select.append("action_relevance")
+action_policy_robocasa365_s1_nano.optimizer.lr_multipliers["action_relevance"] = 5.0
+action_policy_robocasa365_s1_nano.trainer.callbacks.action_gradient_evidence.families.append("action_relevance")
+action_policy_robocasa365_s1_nano.checkpoint.keys_to_skip_loading.append("action_relevance")
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_s1_nano",
+    node=action_policy_robocasa365_s1_nano,
+)
+
+
+def _action_policy_robocasa365_strong_nano_model_config() -> dict:
+    """Enable the three-view DeMiAn-inspired action tower and control memory."""
+    cfg = _action_policy_robocasa365_nano_model_config(
+        latent_cache_root_env="ROBOCASA365_STRONG_LATENT_CACHE_ROOT",
+        latent_cache_mode_env="ROBOCASA365_STRONG_LATENT_CACHE_MODE",
+        metadata_only_tokenizer_env="CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER",
+    )
+    cfg.update(
+        action_relevance_enabled=False,
+        strong_action_expert_enabled=True,
+        strong_action_expert_model_dim=1024,
+        strong_action_expert_num_heads=16,
+        strong_action_expert_num_layers=4,
+        strong_action_expert_ffn_multiplier=4,
+        strong_action_state_dim=16,
+        strong_action_history_action_dim=10,
+        strong_action_proprio_history_length=4,
+        strong_action_proprio_history_stride=12,
+        strong_action_history_length=16,
+        strong_action_memory_layers=2,
+        strong_action_memory_tokens=4,
+        strong_action_num_views=3,
+        # 256 px/view / Wan spatial compression 16 / network patch 2.
+        strong_action_view_token_width=8,
+        strong_action_initial_gate=0.01,
+        strong_action_input_resolution="480",
+    )
+    return cfg
+
+
+def _strong_robocasa365_packing_dataloader(
+    *,
+    split: str,
+    cfg_dropout_rate: float,
+    iterable_shuffle: bool,
+    episode_shuffle_seed: int,
+    num_workers: int,
+    in_order: bool,
+    restart_on_iter: bool = False,
+):
+    return _robocasa365_packing_dataloader(
+        split=split,
+        cfg_dropout_rate=cfg_dropout_rate,
+        iterable_shuffle=iterable_shuffle,
+        episode_shuffle_seed=episode_shuffle_seed,
+        num_workers=num_workers,
+        in_order=in_order,
+        restart_on_iter=restart_on_iter,
+        max_samples_per_batch=32,
+        camera_mode="triple_view",
+        resolution="480",
+        latent_cache_root_env="ROBOCASA365_STRONG_LATENT_CACHE_ROOT",
+        latent_cache_mode_env="ROBOCASA365_STRONG_LATENT_CACHE_MODE",
+        latent_cache_expected_stage="full_padding",
+        control_cache_root="${oc.env:ROBOCASA365_CONTROL_CACHE_ROOT}",
+        proprio_history_length=4,
+        proprio_history_stride=12,
+        action_history_length=16,
+    )
+
+
+action_policy_robocasa365_strong_nano = copy.deepcopy(action_policy_robocasa365_nano)
+action_policy_robocasa365_strong_nano.job.name = "action_policy_robocasa365_strong_nano"
+action_policy_robocasa365_strong_nano.model.config = _action_policy_robocasa365_strong_nano_model_config()
+action_policy_robocasa365_strong_nano.optimizer.keys_to_select.append("strong_action_expert")
+action_policy_robocasa365_strong_nano.optimizer.lr_multipliers["strong_action_expert"] = 5.0
+action_policy_robocasa365_strong_nano.trainer.grad_accum_iter = 2
+action_policy_robocasa365_strong_nano.trainer.callbacks.action_gradient_evidence.families.append(
+    "strong_action_expert"
+)
+strong_memory_gate = action_policy_robocasa365_strong_nano.trainer.callbacks.production_batch_memory_gate
+strong_memory_gate.expected_samples_per_microbatch = 32
+action_policy_robocasa365_strong_nano.checkpoint.keys_to_skip_loading.append("strong_action_expert")
+action_policy_robocasa365_strong_nano.dataloader_train = _strong_robocasa365_packing_dataloader(
+    split="train",
+    cfg_dropout_rate=0.1,
+    iterable_shuffle=True,
+    episode_shuffle_seed=42,
+    num_workers=int(os.environ.get("ROBOCASA365_TRAIN_NUM_WORKERS", "4")),
+    in_order=True,
+)
+action_policy_robocasa365_strong_nano.dataloader_val = _strong_robocasa365_packing_dataloader(
+    split="val",
+    cfg_dropout_rate=0.0,
+    iterable_shuffle=True,
+    episode_shuffle_seed=4242,
+    num_workers=int(os.environ.get("ROBOCASA365_VAL_NUM_WORKERS", "2")),
+    in_order=True,
+    restart_on_iter=True,
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_strong_nano",
+    node=action_policy_robocasa365_strong_nano,
+)
+
+
+def _action_policy_robocasa365_b2_nano_model_config() -> dict:
+    """Add action-relevance routing and its auxiliary action objective to Strong."""
+    cfg = _action_policy_robocasa365_strong_nano_model_config()
+    cfg.update(
+        action_relevance_enabled=True,
+        action_relevance_routing_dim=512,
+        action_relevance_num_heads=8,
+        action_relevance_topk=32,
+        action_relevance_initial_gate=0.01,
+        action_relevance_sparsity_weight=0.01,
+        action_relevance_sparsity_start_iter=1000,
+        action_relevance_sparsity_anneal_iters=4000,
+        action_relevance_aux_loss_weight=0.25,
+        action_relevance_aux_start_iter=0,
+        action_relevance_aux_warmup_iters=1000,
+    )
+    return cfg
+
+
+action_policy_robocasa365_b2_nano = copy.deepcopy(action_policy_robocasa365_strong_nano)
+action_policy_robocasa365_b2_nano.job.name = "action_policy_robocasa365_b2_nano"
+action_policy_robocasa365_b2_nano.model.config = _action_policy_robocasa365_b2_nano_model_config()
+action_policy_robocasa365_b2_nano.optimizer.keys_to_select.append("action_relevance")
+action_policy_robocasa365_b2_nano.optimizer.lr_multipliers["action_relevance"] = 5.0
+action_policy_robocasa365_b2_nano.trainer.callbacks.action_gradient_evidence.families.append(
+    "action_relevance"
+)
+action_policy_robocasa365_b2_nano.checkpoint.keys_to_skip_loading.append("action_relevance")
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_b2_nano",
+    node=action_policy_robocasa365_b2_nano,
+)
+
+
+def _action_policy_robocasa365_b3_dselect_nano_model_config() -> dict:
+    """Replace B2's top-k-mass proxy with matched-budget DSelect-k support."""
+    cfg = _action_policy_robocasa365_b2_nano_model_config()
+    cfg.update(
+        action_relevance_routing_mode="dselect_k",
+        action_relevance_dselect_num_selectors=32,
+        action_relevance_dselect_capacity=8192,
+        action_relevance_dselect_gamma=1.0,
+        action_relevance_dselect_overlap_weight=0.1,
+        action_relevance_dselect_invalid_weight=1.0,
+    )
+    return cfg
+
+
+action_policy_robocasa365_b3_dselect_nano = copy.deepcopy(action_policy_robocasa365_b2_nano)
+action_policy_robocasa365_b3_dselect_nano.job.name = "action_policy_robocasa365_b3_dselect_nano"
+action_policy_robocasa365_b3_dselect_nano.model.config = (
+    _action_policy_robocasa365_b3_dselect_nano_model_config()
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_b3_dselect_nano",
+    node=action_policy_robocasa365_b3_dselect_nano,
+)
+
+
+def _action_policy_robocasa365_b4_adaptive_dselect_nano_model_config() -> dict:
+    """Make B3's fixed selector budget adaptive while retaining its maximum capacity."""
+    cfg = _action_policy_robocasa365_b3_dselect_nano_model_config()
+    cfg.update(
+        action_relevance_routing_mode="adaptive_dselect_k",
+        action_relevance_dselect_adaptive_counts=[4, 8, 12, 16, 24, 32],
+        action_relevance_dselect_adaptive_temperature=1.0,
+        action_relevance_dselect_adaptive_target_selectors=24.0,
+        action_relevance_dselect_adaptive_budget_weight=1.0,
+        action_relevance_dselect_adaptive_entropy_weight=0.01,
+    )
+    return cfg
+
+
+action_policy_robocasa365_b4_adaptive_dselect_nano = copy.deepcopy(action_policy_robocasa365_b3_dselect_nano)
+action_policy_robocasa365_b4_adaptive_dselect_nano.job.name = "action_policy_robocasa365_b4_adaptive_dselect_nano"
+action_policy_robocasa365_b4_adaptive_dselect_nano.model.config = (
+    _action_policy_robocasa365_b4_adaptive_dselect_nano_model_config()
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_b4_adaptive_dselect_nano",
+    node=action_policy_robocasa365_b4_adaptive_dselect_nano,
 )

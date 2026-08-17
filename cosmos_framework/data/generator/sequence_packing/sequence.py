@@ -853,6 +853,10 @@ class PackedSequenceBuilder:
             # Multi-control transfer
             vision_item_split_lens=list(self.vision_item_split_lens),
             control_weights=gen_data_clean.control_weights,
+            control_proprio_history=gen_data_clean.control_proprio_history,
+            control_proprio_history_mask=gen_data_clean.control_proprio_history_mask,
+            control_action_history=gen_data_clean.control_action_history,
+            control_action_history_mask=gen_data_clean.control_action_history_mask,
         )
 
 
@@ -939,6 +943,12 @@ class PackedSequence:
     # None for non-transfer or standard single-control samples.
     control_weights: list[list[float]] | None = None
 
+    # Episode-level policy context, one tensor per action sample.
+    control_proprio_history: list[torch.Tensor] | None = None
+    control_proprio_history_mask: list[torch.Tensor] | None = None
+    control_action_history: list[torch.Tensor] | None = None
+    control_action_history_mask: list[torch.Tensor] | None = None
+
     def __post_init__(self) -> None:
         assert isinstance(self.text_ids, torch.Tensor), "PackedSequence.text_ids must be finalized"
         assert isinstance(self.text_indexes, torch.Tensor), "PackedSequence.text_indexes must be finalized"
@@ -971,6 +981,15 @@ class PackedSequence:
             self.action.to_cuda()
         if self.sound is not None:
             self.sound.to_cuda()
+        for field_name in (
+            "control_proprio_history",
+            "control_proprio_history_mask",
+            "control_action_history",
+            "control_action_history_mask",
+        ):
+            values = getattr(self, field_name)
+            if values is not None:
+                setattr(self, field_name, [value.cuda() for value in values])
 
 
 @dataclass

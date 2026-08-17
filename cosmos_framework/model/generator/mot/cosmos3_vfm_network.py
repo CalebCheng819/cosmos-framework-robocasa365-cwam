@@ -9,6 +9,12 @@ from torch import nn
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 
+from cosmos_framework.data.generator.sequence_packing import ModalityData, PackedSequence
+from cosmos_framework.data.generator.sequence_packing.natten import verify_natten_parameter_list
+from cosmos_framework.model.generator.mot.action_relevance import (
+    ActionRelevanceAdapter,
+    conditioned_vision_token_indexes,
+)
 from cosmos_framework.model.generator.mot.attention import SplitInfo, build_packed_sequence
 from cosmos_framework.model.generator.mot.context_parallel_utils import (
     get_context_parallel_last_hidden_state,
@@ -16,9 +22,8 @@ from cosmos_framework.model.generator.mot.context_parallel_utils import (
 )
 from cosmos_framework.model.generator.mot.domain_aware_linear import DomainAwareLinear
 from cosmos_framework.model.generator.mot.modeling_utils import TimestepEmbedder, has_noisy_tokens
+from cosmos_framework.model.generator.mot.strong_action_expert import StrongActionContextExpert
 from cosmos_framework.model.generator.utils.memory import MemoryState
-from cosmos_framework.data.generator.sequence_packing import ModalityData, PackedSequence
-from cosmos_framework.data.generator.sequence_packing.natten import verify_natten_parameter_list
 
 
 class Cosmos3VFMNetworkConfig(PretrainedConfig):
@@ -47,6 +52,37 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         num_embodiment_domains=32,
         temporal_compression_factor_vision=4,
         temporal_compression_factor_action=1,
+        action_relevance_enabled=False,
+        action_relevance_routing_dim=512,
+        action_relevance_num_heads=8,
+        action_relevance_topk=32,
+        action_relevance_initial_gate=0.01,
+        action_relevance_routing_mode="soft_attention",
+        action_relevance_dselect_num_selectors=32,
+        action_relevance_dselect_capacity=8192,
+        action_relevance_dselect_gamma=1.0,
+        action_relevance_dselect_overlap_weight=0.1,
+        action_relevance_dselect_invalid_weight=1.0,
+        action_relevance_dselect_adaptive_counts=(4, 8, 12, 16, 24, 32),
+        action_relevance_dselect_adaptive_temperature=1.0,
+        action_relevance_dselect_adaptive_target_selectors=24.0,
+        action_relevance_dselect_adaptive_budget_weight=1.0,
+        action_relevance_dselect_adaptive_entropy_weight=0.01,
+        strong_action_expert_enabled=False,
+        strong_action_expert_model_dim=1024,
+        strong_action_expert_num_heads=16,
+        strong_action_expert_num_layers=4,
+        strong_action_expert_ffn_multiplier=4,
+        strong_action_state_dim=16,
+        strong_action_history_action_dim=10,
+        strong_action_proprio_history_length=4,
+        strong_action_proprio_history_stride=12,
+        strong_action_history_length=16,
+        strong_action_memory_layers=2,
+        strong_action_memory_tokens=4,
+        strong_action_num_views=3,
+        strong_action_view_token_width=8,
+        strong_action_initial_gate=0.01,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -84,10 +120,76 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.action_dim = action_dim
         self.num_embodiment_domains = num_embodiment_domains
         self.temporal_compression_factor_action = temporal_compression_factor_action
+        self.action_relevance_enabled = action_relevance_enabled
+        self.action_relevance_routing_dim = action_relevance_routing_dim
+        self.action_relevance_num_heads = action_relevance_num_heads
+        self.action_relevance_topk = action_relevance_topk
+        self.action_relevance_initial_gate = action_relevance_initial_gate
+        self.action_relevance_routing_mode = action_relevance_routing_mode
+        self.action_relevance_dselect_num_selectors = action_relevance_dselect_num_selectors
+        self.action_relevance_dselect_capacity = action_relevance_dselect_capacity
+        self.action_relevance_dselect_gamma = action_relevance_dselect_gamma
+        self.action_relevance_dselect_overlap_weight = action_relevance_dselect_overlap_weight
+        self.action_relevance_dselect_invalid_weight = action_relevance_dselect_invalid_weight
+        self.action_relevance_dselect_adaptive_counts = action_relevance_dselect_adaptive_counts
+        self.action_relevance_dselect_adaptive_temperature = action_relevance_dselect_adaptive_temperature
+        self.action_relevance_dselect_adaptive_target_selectors = action_relevance_dselect_adaptive_target_selectors
+        self.action_relevance_dselect_adaptive_budget_weight = action_relevance_dselect_adaptive_budget_weight
+        self.action_relevance_dselect_adaptive_entropy_weight = action_relevance_dselect_adaptive_entropy_weight
+        self.strong_action_expert_enabled = strong_action_expert_enabled
+        self.strong_action_expert_model_dim = strong_action_expert_model_dim
+        self.strong_action_expert_num_heads = strong_action_expert_num_heads
+        self.strong_action_expert_num_layers = strong_action_expert_num_layers
+        self.strong_action_expert_ffn_multiplier = strong_action_expert_ffn_multiplier
+        self.strong_action_state_dim = strong_action_state_dim
+        self.strong_action_history_action_dim = strong_action_history_action_dim
+        self.strong_action_proprio_history_length = strong_action_proprio_history_length
+        self.strong_action_proprio_history_stride = strong_action_proprio_history_stride
+        self.strong_action_history_length = strong_action_history_length
+        self.strong_action_memory_layers = strong_action_memory_layers
+        self.strong_action_memory_tokens = strong_action_memory_tokens
+        self.strong_action_num_views = strong_action_num_views
+        self.strong_action_view_token_width = strong_action_view_token_width
+        self.strong_action_initial_gate = strong_action_initial_gate
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
             )
+        if self.action_relevance_enabled and not self.action_gen:
+            raise ValueError("action_relevance_enabled=True requires action_gen=True")
+        if self.action_relevance_routing_mode not in {
+            "soft_attention",
+            "dselect_k",
+            "adaptive_dselect_k",
+        }:
+            raise ValueError(
+                f"Unsupported action_relevance_routing_mode={self.action_relevance_routing_mode!r}"
+            )
+        if self.strong_action_expert_enabled and not self.action_gen:
+            raise ValueError("strong_action_expert_enabled=True requires action_gen=True")
+        if self.strong_action_expert_enabled:
+            strong_positive_values = {
+                "model_dim": self.strong_action_expert_model_dim,
+                "num_heads": self.strong_action_expert_num_heads,
+                "num_layers": self.strong_action_expert_num_layers,
+                "ffn_multiplier": self.strong_action_expert_ffn_multiplier,
+                "state_dim": self.strong_action_state_dim,
+                "history_action_dim": self.strong_action_history_action_dim,
+                "proprio_history_length": self.strong_action_proprio_history_length,
+                "proprio_history_stride": self.strong_action_proprio_history_stride,
+                "action_history_length": self.strong_action_history_length,
+                "memory_layers": self.strong_action_memory_layers,
+                "memory_tokens": self.strong_action_memory_tokens,
+                "num_views": self.strong_action_num_views,
+                "view_token_width": self.strong_action_view_token_width,
+            }
+            invalid = {name: value for name, value in strong_positive_values.items() if int(value) < 1}
+            if invalid:
+                raise ValueError(f"Strong action expert dimensions must be positive: {invalid}")
+            if self.strong_action_expert_model_dim % self.strong_action_expert_num_heads:
+                raise ValueError("Strong action expert model_dim must be divisible by num_heads")
+            if not 0.0 < float(self.strong_action_initial_gate) < 1.0:
+                raise ValueError("Strong action expert initial gate must be strictly between zero and one")
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -158,6 +260,43 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             self.llm2action = DomainAwareLinear(self.hidden_size, self.action_dim, self.num_embodiment_domains)
 
             self.action_modality_embed = nn.Parameter(torch.zeros(self.hidden_size))
+            if config.action_relevance_enabled:
+                self.action_relevance = ActionRelevanceAdapter(
+                    hidden_size=self.hidden_size,
+                    routing_dim=config.action_relevance_routing_dim,
+                    num_heads=config.action_relevance_num_heads,
+                    topk=config.action_relevance_topk,
+                    initial_residual_gate=config.action_relevance_initial_gate,
+                    routing_mode=config.action_relevance_routing_mode,
+                    dselect_num_selectors=config.action_relevance_dselect_num_selectors,
+                    dselect_capacity=config.action_relevance_dselect_capacity,
+                    dselect_gamma=config.action_relevance_dselect_gamma,
+                    dselect_overlap_weight=config.action_relevance_dselect_overlap_weight,
+                    dselect_invalid_weight=config.action_relevance_dselect_invalid_weight,
+                    dselect_adaptive_counts=tuple(config.action_relevance_dselect_adaptive_counts),
+                    dselect_adaptive_temperature=config.action_relevance_dselect_adaptive_temperature,
+                    dselect_adaptive_target_selectors=(config.action_relevance_dselect_adaptive_target_selectors),
+                    dselect_adaptive_budget_weight=config.action_relevance_dselect_adaptive_budget_weight,
+                    dselect_adaptive_entropy_weight=config.action_relevance_dselect_adaptive_entropy_weight,
+                )
+            if config.strong_action_expert_enabled:
+                self.strong_action_expert = StrongActionContextExpert(
+                    hidden_size=self.hidden_size,
+                    model_dim=config.strong_action_expert_model_dim,
+                    num_heads=config.strong_action_expert_num_heads,
+                    num_layers=config.strong_action_expert_num_layers,
+                    ffn_multiplier=config.strong_action_expert_ffn_multiplier,
+                    state_dim=config.strong_action_state_dim,
+                    action_dim=config.strong_action_history_action_dim,
+                    proprio_history_length=config.strong_action_proprio_history_length,
+                    proprio_history_stride=config.strong_action_proprio_history_stride,
+                    action_history_length=config.strong_action_history_length,
+                    memory_layers=config.strong_action_memory_layers,
+                    memory_tokens=config.strong_action_memory_tokens,
+                    num_views=config.strong_action_num_views,
+                    view_token_width=config.strong_action_view_token_width,
+                    initial_residual_gate=config.strong_action_initial_gate,
+                )
 
         if config.sound_gen:
             self.sound_dim = config.sound_dim
@@ -196,6 +335,10 @@ class Cosmos3VFMNetwork(PreTrainedModel):
 
             std = 1.0 / math.sqrt(self.hidden_size)
             torch.nn.init.trunc_normal_(self.action_modality_embed, std=std, a=-3 * std, b=3 * std)
+            if self.config.action_relevance_enabled:
+                self.action_relevance.init_weights()
+            if self.config.strong_action_expert_enabled:
+                self.strong_action_expert.init_weights()
 
         if self.config.sound_gen:
             # sound2llm: input_size=sound_dim, output_size=hidden_size
@@ -789,6 +932,52 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             preds_action = self.unpack_action(preds_action, action.token_shapes, action.noisy_frame_indexes)
             output_dict.update(preds_action=preds_action)
 
+    def _decode_action_relevance_only(
+        self,
+        packed_seq: PackedSequence,
+        action_hidden_states: torch.Tensor,
+        output_dict: dict,
+    ) -> None:
+        """Decode the B2 auxiliary prediction from action-order hidden states."""
+        action = packed_seq.action
+        if action is None or action.tokens is None:
+            raise ValueError("relevance-only action decoding requires action tokens")
+        expected_tokens = sum(int(shape[0]) for shape in action.token_shapes)
+        if action_hidden_states.shape != (expected_tokens, self.hidden_size):
+            raise ValueError(
+                "relevance-only hidden states must follow packed action order: "
+                f"expected {(expected_tokens, self.hidden_size)}, got {tuple(action_hidden_states.shape)}"
+            )
+
+        if not has_noisy_tokens(action):
+            graph_anchor = action_hidden_states.sum() * 0.0
+            preds = [torch.zeros_like(tokens) for tokens in action.tokens]
+            if preds:
+                preds[0] = preds[0] + graph_anchor
+            output_dict["preds_action_relevance_only"] = preds
+            return
+
+        local_noisy_indexes: list[torch.Tensor] = []
+        domain_ids: list[torch.Tensor] = []
+        token_offset = 0
+        for token_shape, noisy_indexes, domain_id in zip(
+            action.token_shapes,
+            action.noisy_frame_indexes,
+            action.domain_id,
+        ):
+            local_noisy_indexes.append(noisy_indexes.to(action_hidden_states.device) + token_offset)
+            domain_ids.append(domain_id.to(action_hidden_states.device).expand(noisy_indexes.numel()))
+            token_offset += int(token_shape[0])
+
+        noisy_hidden = action_hidden_states[torch.cat(local_noisy_indexes)]
+        per_token_domain_id = torch.cat(domain_ids)
+        preds = self.llm2action(noisy_hidden, per_token_domain_id)
+        output_dict["preds_action_relevance_only"] = self.unpack_action(
+            preds,
+            action.token_shapes,
+            action.noisy_frame_indexes,
+        )
+
     def _encode_sound(
         self,
         packed_seq: PackedSequence,
@@ -930,8 +1119,16 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             original_latent_shapes = self._encode_vision(packed_seq, packed_sequence, target_dtype)
 
         # encode action tokens
+        action_seed_hidden: torch.Tensor | None = None
         if self.config.action_gen:
             self._encode_action(packed_seq, packed_sequence, target_dtype)
+            if self.config.action_relevance_enabled:
+                if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                    raise ValueError("action relevance requires packed action tokens")
+                # Keep an immutable, action-order-aligned copy before the joint
+                # transformer. B2 uses it as the only action-side input to the
+                # relevance-only auxiliary prediction.
+                action_seed_hidden = packed_sequence[packed_seq.action.sequence_indexes].clone()
 
         # encode sound tokens
         if self.config.sound_gen:
@@ -1084,6 +1281,63 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         )  # [N_total,hidden_size]
         output_dict = dict()
 
+        if self.config.strong_action_expert_enabled:
+            if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                raise ValueError("Strong action expert requires packed action tokens")
+            if packed_seq.vision is None:
+                raise ValueError("Strong action expert requires packed vision tokens")
+            if not isinstance(packed_seq.text_indexes, torch.Tensor):
+                raise TypeError("Strong action expert requires finalized text indexes")
+            if not isinstance(packed_seq.position_ids, torch.Tensor):
+                raise TypeError("Strong action expert requires finalized position IDs")
+            clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
+            last_hidden_state, strong_action_metrics = self.strong_action_expert(
+                last_hidden_state,
+                action_indexes=packed_seq.action.sequence_indexes,
+                text_indexes=packed_seq.text_indexes,
+                vision_indexes=clean_vision_indexes,
+                position_ids=packed_seq.position_ids,
+                sample_lens=packed_seq.sample_lens,
+                proprio_history=packed_seq.control_proprio_history,
+                proprio_history_mask=packed_seq.control_proprio_history_mask,
+                action_history=packed_seq.control_action_history,
+                action_history_mask=packed_seq.control_action_history_mask,
+            )
+            output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})
+
+        auxiliary_action_hidden: torch.Tensor | None = None
+        if self.config.action_relevance_enabled:
+            if packed_seq.action is None or not isinstance(packed_seq.action.sequence_indexes, torch.Tensor):
+                raise ValueError("action relevance requires packed action tokens")
+            if packed_seq.vision is None:
+                raise ValueError("action relevance requires packed vision tokens")
+            if not isinstance(packed_seq.text_indexes, torch.Tensor):
+                raise TypeError("action relevance requires finalized text indexes")
+            if not isinstance(packed_seq.position_ids, torch.Tensor):
+                raise TypeError("action relevance requires finalized position IDs")
+
+            clean_vision_indexes = conditioned_vision_token_indexes(packed_seq.vision)
+            context_indexes = torch.cat((packed_seq.text_indexes, clean_vision_indexes))
+            context_is_vision = torch.cat(
+                (
+                    torch.zeros_like(packed_seq.text_indexes, dtype=torch.bool),
+                    torch.ones_like(clean_vision_indexes, dtype=torch.bool),
+                )
+            )
+            context_order = context_indexes.argsort()
+            if action_seed_hidden is None:
+                raise RuntimeError("action relevance seed was not captured before the transformer")
+            last_hidden_state, auxiliary_action_hidden, action_relevance = self.action_relevance(
+                last_hidden_state,
+                action_indexes=packed_seq.action.sequence_indexes,
+                context_indexes=context_indexes[context_order],
+                context_is_vision=context_is_vision[context_order],
+                position_ids=packed_seq.position_ids,
+                sample_lens=packed_seq.sample_lens,
+                action_seed_hidden=action_seed_hidden,
+            )
+            output_dict.update({f"action_relevance_{name}": value for name, value in action_relevance.items()})
+
         # decode vision tokens
         if self.config.vision_gen:
             self._decode_vision(packed_seq, last_hidden_state, output_dict, original_latent_shapes)
@@ -1091,6 +1345,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         # decode action tokens
         if self.config.action_gen:
             self._decode_action(packed_seq, last_hidden_state, output_dict)
+            if auxiliary_action_hidden is not None:
+                self._decode_action_relevance_only(packed_seq, auxiliary_action_hidden, output_dict)
 
         # decode sound tokens
         if self.config.sound_gen:

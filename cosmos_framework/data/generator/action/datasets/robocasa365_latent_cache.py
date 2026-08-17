@@ -31,7 +31,11 @@ import torch
 CACHE_SCHEMA_VERSION = 1
 CACHE_MANIFEST_NAME = "manifest.json"
 CACHE_SUCCESS_NAME = "_SUCCESS.json"
-CACHE_STAGE = "post_padding_crop"
+CACHE_STAGE_POST_PADDING_CROP = "post_padding_crop"
+CACHE_STAGE_FULL_PADDING = "full_padding"
+CACHE_STAGES = frozenset({CACHE_STAGE_POST_PADDING_CROP, CACHE_STAGE_FULL_PADDING})
+# Backward-compatible default for every historical RoboCasa365 cache/config.
+CACHE_STAGE = CACHE_STAGE_POST_PADDING_CROP
 IDENTITY_DIGEST_ALGORITHM = "sha256-length-prefixed-canonical-json-v1"
 OFFICIAL_WAN22_VAE_SHA256 = "20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"
 WAN_CACHE_VAE_BEHAVIOR_CONTRACT: dict[str, Any] = {
@@ -493,6 +497,7 @@ class LatentRecordLayout:
     record_stride_bytes: int
     video_num_frames: int
     image_size: tuple[int, int, int, int]
+    stage: str
 
     @property
     def storage_dtype(self) -> torch.dtype:
@@ -570,12 +575,20 @@ class RoboCasa365LatentCache:
         expected_preprocessing_code_sha256: Mapping[str, str],
         expected_split_manifest_sha256: str,
         expected_ordered_visual_identity_sha256: str | None = None,
+        expected_video_resize_resolution: str | int | None = None,
+        expected_cache_stage: str = CACHE_STAGE,
         verify_shard_checksums: bool = False,
     ) -> None:
         self.root = Path(root)
         self.split = str(split)
         self._fds: dict[Path, int] = {}
         self._fd_pid = os.getpid()
+        if expected_cache_stage not in CACHE_STAGES:
+            raise ValueError(
+                "RoboCasa365 latent cache expected_cache_stage must be one of "
+                f"{sorted(CACHE_STAGES)}, got {expected_cache_stage!r}."
+            )
+        self.expected_cache_stage = expected_cache_stage
 
         published = validate_published_cache_files(
             self.root,
@@ -632,13 +645,18 @@ class RoboCasa365LatentCache:
             expected_fps=expected_fps,
             expected_dataset_image_size=expected_dataset_image_size,
             expected_image_size=expected_image_size,
+            expected_video_resize_resolution=expected_video_resize_resolution,
+            expected_cache_stage=expected_cache_stage,
             expected_code_sha256=expected_preprocessing_code_sha256,
         )
         self.vae = self._validate_vae(
             manifest.get("vae"),
             expected_weights_sha256=expected_vae_weights_sha256,
         )
-        self.layout = self._parse_layout(manifest.get("latent"))
+        self.layout = self._parse_layout(
+            manifest.get("latent"),
+            expected_cache_stage=expected_cache_stage,
+        )
         self._validate_derived_layout()
         self.shards = self._parse_shards(
             manifest.get("shards"),
@@ -664,6 +682,8 @@ class RoboCasa365LatentCache:
         expected_fps: float,
         expected_dataset_image_size: int,
         expected_image_size: tuple[int, int, int, int],
+        expected_video_resize_resolution: str | int | None,
+        expected_cache_stage: str,
         expected_code_sha256: Mapping[str, str],
     ) -> dict[str, Any]:
         if not isinstance(value, dict):
@@ -698,9 +718,14 @@ class RoboCasa365LatentCache:
         resize = value.get("video_resize")
         if not isinstance(resize, dict):
             raise ValueError("RoboCasa365 latent cache preprocessing.video_resize must be an object.")
+        normalized_resolution = (
+            None if expected_video_resize_resolution is None else str(expected_video_resize_resolution)
+        )
         required_resize = {
-            "resolution": None,
-            "resolution_selection": "auto_get_vision_data_resolution",
+            "resolution": normalized_resolution,
+            "resolution_selection": (
+                "auto_get_vision_data_resolution" if normalized_resolution is None else "explicit_resolution_tier"
+            ),
             "keep_aspect_ratio": True,
             "pad_keys": ["video"],
             "resize_interpolation": "bicubic",
@@ -716,7 +741,7 @@ class RoboCasa365LatentCache:
             )
         crop = value.get("post_encode_crop")
         required_crop = {
-            "stage": CACHE_STAGE,
+            "stage": expected_cache_stage,
             "spatial_rounding": "floor",
             "minimum_latent_size": 1,
         }
@@ -769,16 +794,20 @@ class RoboCasa365LatentCache:
         frames = self.layout.video_num_frames
         temporal_factor = int(config["temporal_compression_factor"])
         image_size = self.layout.image_size
+        if self.layout.stage == CACHE_STAGE_FULL_PADDING:
+            spatial_image_size = image_size[:2]
+        else:
+            spatial_image_size = image_size[2:]
         expected_shape = (
             int(config["latent_channels"]),
             (frames - 1) // temporal_factor + 1,
-            max(image_size[2] // int(config["spatial_compression_factor"]), 1),
-            max(image_size[3] // int(config["spatial_compression_factor"]), 1),
+            max(spatial_image_size[0] // int(config["spatial_compression_factor"]), 1),
+            max(spatial_image_size[1] // int(config["spatial_compression_factor"]), 1),
         )
         if self.layout.shape != expected_shape:
             raise RuntimeError(
-                "RoboCasa365 latent cache shape does not match the VAE and post-crop contract: "
-                f"cache={self.layout.shape}, derived={expected_shape}."
+                "RoboCasa365 latent cache shape does not match the VAE and spatial-stage contract: "
+                f"stage={self.layout.stage!r}, cache={self.layout.shape}, derived={expected_shape}."
             )
         resize_image_size = tuple(self.preprocessing["video_resize"]["image_size"])
         if self.layout.image_size != resize_image_size:
@@ -787,7 +816,12 @@ class RoboCasa365LatentCache:
                 f"latent={self.layout.image_size}, resize={resize_image_size}."
             )
 
-    def _parse_layout(self, value: object) -> LatentRecordLayout:
+    def _parse_layout(
+        self,
+        value: object,
+        *,
+        expected_cache_stage: str,
+    ) -> LatentRecordLayout:
         if not isinstance(value, dict):
             raise ValueError("RoboCasa365 latent cache manifest.latent must be an object.")
         raw_shape = value.get("shape")
@@ -809,9 +843,10 @@ class RoboCasa365LatentCache:
             raise ValueError(
                 f"RoboCasa365 latent cache logical_dtype must be 'float32', got {logical_dtype_name!r}."
             )
-        if value.get("stage") != CACHE_STAGE:
+        if value.get("stage") != expected_cache_stage:
             raise ValueError(
-                f"RoboCasa365 latent cache stage must be {CACHE_STAGE!r}, got {value.get('stage')!r}."
+                "RoboCasa365 latent cache stage mismatch: "
+                f"expected={expected_cache_stage!r}, got={value.get('stage')!r}."
             )
         if value.get("byte_order") != "little":
             raise ValueError("RoboCasa365 latent cache byte_order must be 'little'.")
@@ -851,6 +886,7 @@ class RoboCasa365LatentCache:
             record_stride_bytes=record_stride_bytes,
             video_num_frames=video_num_frames,
             image_size=tuple(raw_image_size),  # type: ignore[arg-type]
+            stage=expected_cache_stage,
         )
 
     def _parse_shards(self, value: object, *, verify_checksums: bool) -> list[LatentShard]:
