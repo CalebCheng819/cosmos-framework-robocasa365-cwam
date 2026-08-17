@@ -1,0 +1,6 @@
+{
+  "children": [
+    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R6 Fix3 distributed gates passed"}}]}},
+    {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "R6 code commit 4340ae2a38362171d0cdbf9aab6ed783cd2e8674 keeps the two legacy absolute-memory parameters in the FSDP, optimizer, and EMA layout through an output-invariant graph anchor with strictly zero gradients. The immutable production source passed 28 focused tests. Separate 8-B200, two-step R6-A and R6-B gates both exited 0 after backward, TE FusedAdam, EMA, and batch-end, with no OOM and zero non-finite gradients across 199,967,573 and 225,174,357 active elements. The prior attempt0, retry1, and Fix2 failures remain preserved. Decision: authorize only the two planned 500-step Fix3 probes plus matched none/zero/shuffle validations; require nonzero dynamic-memory evidence in each 2048-sample initial validation and do not extend either run to 20k unless every acceptance gate passes."}}]}}
+  ]
+}

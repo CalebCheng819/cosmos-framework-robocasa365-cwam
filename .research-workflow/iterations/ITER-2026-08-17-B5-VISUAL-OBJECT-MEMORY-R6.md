@@ -19,8 +19,9 @@
 - R6 fix2 计划：保持两个不可达 legacy 参数参与与 R5 相同的 FSDP/optimizer 参数布局，但 dynamic-exclusive forward 不读取它们，因此其梯度必须严格为 `None`；action-gradient callback 继续按精确名称排除这 1,025 个元素。先运行聚焦测试与 8-rank、2-step、`CUDA_LAUNCH_BLOCKING=1` 门禁，只有跨过 backward、optimizer、EMA 和 batch-end 后才提交新的 500-step retry。
 - R6 fix2 gate 结果：保留参数布局后，R6-A 已完成 initial validation 和完整 backward，action-gradient gate 对 199,967,573 个 active elements 检查通过；随后在首个 TE FusedAdam `multi_tensor_apply` 中触发 CUDA illegal memory access。`CUDA_LAUNCH_BLOCKING=1` 证明 retry1 中报告于 EMA 的错误实际由前一异步 optimizer kernel 引发，因此 fix2 未通过 optimizer 门禁。失败证据保存在 `/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-PROBE-R6A-FIX2-GATE-2S-RETRY1-20260817`。
 - R6 fix3 计划：exclusive forward 继续不使用两个 absolute-memory 参数的数值，但向 action 输出加入严格为零的 graph anchor，使它们在 FSDP 分片中获得存在且全零的梯度，从而保持与 R5 相同的 forward/backward/optimizer/EMA 参数参与布局。单测必须同时证明两个梯度全零，且任意改变参数值都不会改变 R6 输出；通过后重新执行 8-rank 2-step optimizer/EMA 门禁。
-- 变更：实现 R5 matched contribution decomposition；新增 R6-A/R6-B dynamic-exclusive 配置、精确 zero mask、action-gradient fail-closed gate，并为 R6 fix2 保留 legacy 参数布局但切断其 forward 梯度。
-- 结果：R5 的 gate-residual interaction 为主要贡献但 full 因果效应仍低于 1%；R6 fix2 聚焦测试 22 passed，8-rank optimizer/EMA 门禁及两个 500-step probe 结果待补。
-- 决策：拒绝 R5 单一路径贡献主导假设；R6-A/B 只有在 fix2 8-rank 门禁通过后才允许正式重试，任一 500-step 验收门槛失败均不扩展到 20k。
-- 下一步：冻结并推送 fix2 source，依次运行 R6-A、R6-B 2-step 门禁、500-step probe 与 matched none/zero/shuffle validation，最后更新 Notion 和本地终态记录。
+- R6 fix3 结果：commit `4340ae2a38362171d0cdbf9aab6ed783cd2e8674` 在生产环境完成 28 个聚焦测试。R6-A 与 R6-B 均通过 8-rank B200、2-step BF16 门禁，连续跨过 backward、TE FusedAdam、EMA 与 batch-end，退出码均为 0 且无 OOM。R6-A 每步检查 199,967,573 个 active elements，R6-B 检查 225,174,357 个，均为 0 non-finite；第二步 nonzero gradient elements 分别为 195,711,436 与有效 action 参数集合内的有限梯度。R6-A/R6-B 稳态单步约 4.32/4.56 秒。正式 500-step 运行额外要求 2048-sample initial validation 出现非零 temporal-pair/object-delta 证据；若全零则在继续训练前停止。
+- 变更：实现 R5 matched contribution decomposition；新增 R6-A/R6-B dynamic-exclusive 配置、精确 zero mask、action-gradient fail-closed gate；Fix3 通过严格为零的 graph anchor 保持 legacy 参数的 FSDP/optimizer/EMA 布局，同时证明其数值不影响输出且梯度严格为零。
+- 结果：R5 的 gate-residual interaction 为主要贡献但 full 因果效应仍低于 1%；R6 Fix3 聚焦测试 28 passed，R6-A/R6-B 的 8-rank 两步 optimizer/EMA 门禁均通过；两个正式 500-step probe 与 matched interventions 待运行。
+- 决策：拒绝 R5 单一路径贡献主导假设；Fix3 已满足正式 500-step 重试的分布式运行门禁。任一 500-step 验收门槛失败均不扩展到 20k。
+- 下一步：依次运行 Fix3 R6-A 500-step 与 matched none/zero/shuffle validation，再运行 Fix3 R6-B 对应实验，最后更新 Notion 和本地终态记录。
 - 记录人：Codex

@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "Git Commit": {"rich_text": [{"type": "text", "text": {"content": "4340ae2a38362171d0cdbf9aab6ed783cd2e8674 (pushed clean Fix3 source; output-invariant zero-gradient legacy-layout anchor)"}}]},
+    "Artifact URL": {"url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/4340ae2a38362171d0cdbf9aab6ed783cd2e8674"},
+    "Config": {"rich_text": [{"type": "text", "text": {"content": "R4 model-only warm start; train strong_action_expert; dynamic-exclusive memory; zero absolute-memory main context/conditioners; four exact-zero-masked object-delta cross-attention plus FiLM layers and final object-local delta; Fix3 layout anchor; batch 64/rank; DP8; 500 steps; matched 2048-sample interventions."}}]},
+    "Run IDs": {"rich_text": [{"type": "text", "text": {"content": "Fix3 two-step gate passed: CWAM-COSMOS3-B5-VOM-PROBE-R6B-FIX3-GATE-2S-20260817; formal: CWAM-COSMOS3-B5-VOM-PROBE-R6B-R4WARM-500S-FIX3-20260817; matched R6B-FIX3-{NONE,ZERO,SHUFFLE}"}}]},
+    "Estimated Runtime": {"number": 1.0},
+    "Current ETA": {"date": {"start": "2026-08-17T20:10:00+08:00"}},
+    "Experiment Window": {"date": {"start": "2026-08-17T19:10:00+08:00", "end": "2026-08-17T20:10:00+08:00"}},
+    "Status": {"status": {"name": "Planned"}}
+  }
+}
