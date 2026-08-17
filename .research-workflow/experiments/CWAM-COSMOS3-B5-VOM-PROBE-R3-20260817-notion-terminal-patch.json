@@ -1,0 +1,56 @@
+{
+  "properties": {
+    "Status": {
+      "status": {
+        "name": "Failed"
+      }
+    },
+    "Completed At": {
+      "date": {
+        "start": "2026-08-17T09:33:55+08:00"
+      }
+    },
+    "Actual Runtime": {
+      "number": 0.58
+    },
+    "Experiment Window": {
+      "date": {
+        "start": "2026-08-17T08:59:01+08:00",
+        "end": "2026-08-17T09:33:55+08:00"
+      }
+    },
+    "Run IDs": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "train B4WARM-500S; matched validation VAL-NONE, VAL-ZERO, VAL-SHUFFLE; all validations exited 0"
+          }
+        }
+      ]
+    },
+    "Primary Metrics": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "500 finite steps; complete iter_000000500. Temporal loss 0.8570142 -> 0.0064946; memory-only future-action loss 1.6276376 -> 0.3089735; slot abs cosine 0.9989161 -> 0.9996318. Identical 2048-sample main action loss: aligned 0.0082432544, zero 0.0082443468, shuffle 0.0082437079. Aligned gains were only 0.01325% and 0.00550%, below 1%."
+          }
+        }
+      ]
+    },
+    "Artifact URL": {
+      "url": "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam/commit/1fa9d1c2b14f544f5b8e4e9ff4a968197ab7e8a4"
+    },
+    "Conclusion / Failure Reason": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "The non-bypassable per-layer memory cross-attention/FiLM path and both auxiliary objectives optimized, but the representation collapsed across slots and remained causally negligible under zero/shuffle interventions. R3 failed the anti-collapse and representation-use gates; the formal 20k run was not launched. Next probe must preserve R2 competition while using object-local correspondence/contrastive negatives or action-gradient localization so auxiliary prediction cannot be solved by a shared episode summary."
+          }
+        }
+      ]
+    }
+  }
+}

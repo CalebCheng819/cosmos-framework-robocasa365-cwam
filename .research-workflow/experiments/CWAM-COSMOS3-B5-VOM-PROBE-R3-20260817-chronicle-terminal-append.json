@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R3 structurally conditioned visual memory terminal result"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Experiment CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817 used commit 1fa9d1c2b14f544f5b8e4e9ff4a968197ab7e8a4 and 8 B200 GPUs. It completed 500 finite steps and a complete iter_000000500. Temporal correspondence improved 0.8570142 to 0.0064946 and memory-only future-action loss improved 1.6276376 to 0.3089735, but slot absolute cosine worsened to 0.9996318. On the same 2048 examples, main action loss was none 0.0082432544, zero 0.0082443468, shuffle 0.0082437079, only 0.01325% and 0.00550% aligned gains. Decision: failed anti-collapse and causal-use gates; do not launch 20k. Preserve R2 competitive anti-collapse and next add object-local correspondence with negatives or action-gradient localization. Notion experiment page: 3bf21e77-89cc-81d9-bc09-cbe844e6f9e5."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
