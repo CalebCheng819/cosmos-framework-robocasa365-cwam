@@ -6,7 +6,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cosmos_framework.model.generator.mot.strong_action_expert import StrongActionContextExpert
+from cosmos_framework.model.generator.mot.strong_action_expert import (
+    StrongActionContextExpert,
+    action_gradient_alignment_loss,
+)
 
 
 def _expert(
@@ -132,7 +135,7 @@ def test_strong_action_expert_accepts_singleton_collator_axis() -> None:
     assert output.shape == inputs["hidden_states"].shape
     assert auxiliary is None
     assert torch.isfinite(output).all()
-    assert all(torch.isfinite(value) for value in metrics.values())
+    assert all(torch.isfinite(value).all() for value in metrics.values())
 
 
 def test_strong_action_expert_rejects_nonsingleton_collator_axis() -> None:
@@ -201,6 +204,7 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
             torch.tensor([False, True, True]),
             torch.tensor([True, True, True]),
         ],
+        episode_ids=[torch.tensor(4), torch.tensor(5)],
         action_seed_hidden=torch.randn(6, 32, requires_grad=True),
     )
     output, auxiliary, metrics = visual(**inputs)
@@ -213,10 +217,22 @@ def test_visual_object_memory_is_checkpoint_additive_and_backpropagates() -> Non
     assert metrics["visual_memory_history_fraction"].item() == pytest.approx(5.0 / 6.0)
     assert 0.0 <= metrics["visual_memory_slot_abs_cosine"].item() <= 1.0
     assert 0.0 <= metrics["visual_memory_diversity_loss"].item() <= 1.0
+    assert 0.0 <= metrics["visual_memory_assignment_entropy_loss"].item() <= 1.0
+    assert metrics["visual_memory_assignment_balance_loss"].item() >= 0.0
+    assert metrics["visual_memory_spatial_compactness_loss"].item() >= 0.0
     assert torch.isfinite(metrics["visual_memory_temporal_correspondence_loss"])
+    assert torch.isfinite(metrics["visual_memory_object_contrastive_loss"])
+    assert metrics["visual_memory_episode_contrastive_loss"].item() == 0.0
     assert metrics["visual_memory_temporal_pair_fraction"].item() == pytest.approx(0.75)
+    assert metrics["visual_memory_episode_negative_fraction"].item() == 0.0
     assert metrics["visual_memory_conditioning_scale"].item() == pytest.approx(0.25)
     assert metrics["visual_memory_conditioned_residual_rms"].item() > 0.0
+    assert metrics["visual_memory_slots"].shape == (2, 3, 16)
+    assert metrics["visual_memory_action_attention"].shape == (2, 3)
+    torch.testing.assert_close(
+        metrics["visual_memory_action_attention"].sum(dim=-1),
+        torch.ones(2),
+    )
     assert visual.visual_object_memory.slot_anchors.shape == (3, 2)
     (output[inputs["action_indexes"]].square().mean() + auxiliary.square().mean()).backward()
     assert visual.visual_memory_gate_logit.grad is not None
@@ -284,6 +300,44 @@ def test_visual_memory_zero_intervention_masks_history_from_action_context() -> 
     assert metrics_b["visual_memory_history_fraction"].item() == 0.0
     assert metrics_a["visual_memory_temporal_pair_fraction"].item() == 0.0
     assert metrics_b["visual_memory_temporal_pair_fraction"].item() == 0.0
+    for metric_name in (
+        "visual_memory_assignment_entropy_loss",
+        "visual_memory_assignment_balance_loss",
+        "visual_memory_spatial_compactness_loss",
+        "visual_memory_temporal_correspondence_loss",
+        "visual_memory_object_contrastive_loss",
+        "visual_memory_episode_contrastive_loss",
+    ):
+        assert metrics_a[metric_name].item() == 0.0
+        assert metrics_b[metric_name].item() == 0.0
+
+
+def test_action_gradient_alignment_supervises_attention_without_second_order_gradients() -> None:
+    torch.manual_seed(23)
+    slots = torch.randn(2, 3, 4, requires_grad=True)
+    saliency_scale = torch.tensor(
+        [
+            [[4.0], [1.0], [0.25]],
+            [[0.5], [3.0], [1.0]],
+        ]
+    )
+    action_loss = (slots * saliency_scale).square().mean()
+    attention_logits = torch.zeros(2, 3, requires_grad=True)
+    attention = attention_logits.softmax(dim=-1)
+
+    alignment_loss, valid_fraction, target_entropy = action_gradient_alignment_loss(
+        action_loss,
+        slots,
+        attention,
+    )
+
+    assert torch.isfinite(alignment_loss)
+    assert valid_fraction.item() == 1.0
+    assert 0.0 <= target_entropy.item() <= 1.0
+    alignment_loss.backward()
+    assert attention_logits.grad is not None
+    assert torch.count_nonzero(attention_logits.grad) > 0
+    assert slots.grad is None
 
 
 def test_visual_memory_auxiliary_has_no_full_context_bypass() -> None:

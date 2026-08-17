@@ -303,7 +303,14 @@ class OmniMoTModelConfig:
     strong_action_visual_memory_initial_gate: float = 0.1
     strong_action_visual_memory_conditioning_scale: float = 0.25
     strong_action_visual_memory_diversity_loss_weight: float = 0.05
+    strong_action_visual_memory_assignment_entropy_loss_weight: float = 0.0
+    strong_action_visual_memory_assignment_balance_loss_weight: float = 0.0
+    strong_action_visual_memory_spatial_compactness_loss_weight: float = 0.0
     strong_action_visual_memory_temporal_loss_weight: float = 0.05
+    strong_action_visual_memory_object_contrastive_loss_weight: float = 0.0
+    strong_action_visual_memory_episode_contrastive_loss_weight: float = 0.0
+    strong_action_visual_memory_contrastive_temperature: float = 0.07
+    strong_action_visual_memory_action_gradient_loss_weight: float = 0.0
     strong_action_visual_memory_action_aux_loss_weight: float = 0.25
     strong_action_visual_memory_action_aux_warmup_iters: int = 50
     strong_action_visual_memory_intervention: str = "none"

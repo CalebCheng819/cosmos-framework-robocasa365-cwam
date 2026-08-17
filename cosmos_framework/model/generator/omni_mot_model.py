@@ -45,6 +45,7 @@ from cosmos_framework.model.generator.mot.inference_text_kv_memory import (
 )
 from cosmos_framework.model.generator.mot.modeling_utils import has_noisy_tokens
 from cosmos_framework.model.generator.mot.parallelize_vfm_network import parallelize_vfm_network
+from cosmos_framework.model.generator.mot.strong_action_expert import action_gradient_alignment_loss
 from cosmos_framework.model.generator.reasoner.qwen3_vl.utils import tokenize_caption
 from cosmos_framework.model.generator.tokenizers.interface import VideoTokenizerInterface
 from cosmos_framework.model.generator.upsampler.prompts import build_messages, clean_response
@@ -302,8 +303,29 @@ class OmniMoTModel(ImaginaireModel):
                 strong_action_visual_memory_diversity_loss_weight=(
                     self.config.strong_action_visual_memory_diversity_loss_weight
                 ),
+                strong_action_visual_memory_assignment_entropy_loss_weight=(
+                    self.config.strong_action_visual_memory_assignment_entropy_loss_weight
+                ),
+                strong_action_visual_memory_assignment_balance_loss_weight=(
+                    self.config.strong_action_visual_memory_assignment_balance_loss_weight
+                ),
+                strong_action_visual_memory_spatial_compactness_loss_weight=(
+                    self.config.strong_action_visual_memory_spatial_compactness_loss_weight
+                ),
                 strong_action_visual_memory_temporal_loss_weight=(
                     self.config.strong_action_visual_memory_temporal_loss_weight
+                ),
+                strong_action_visual_memory_object_contrastive_loss_weight=(
+                    self.config.strong_action_visual_memory_object_contrastive_loss_weight
+                ),
+                strong_action_visual_memory_episode_contrastive_loss_weight=(
+                    self.config.strong_action_visual_memory_episode_contrastive_loss_weight
+                ),
+                strong_action_visual_memory_contrastive_temperature=(
+                    self.config.strong_action_visual_memory_contrastive_temperature
+                ),
+                strong_action_visual_memory_action_gradient_loss_weight=(
+                    self.config.strong_action_visual_memory_action_gradient_loss_weight
                 ),
                 strong_action_visual_memory_action_aux_loss_weight=(
                     self.config.strong_action_visual_memory_action_aux_loss_weight
@@ -1428,9 +1450,18 @@ class OmniMoTModel(ImaginaireModel):
                     "strong_action_visual_memory_slot_cosine",
                     "strong_action_visual_memory_slot_abs_cosine",
                     "strong_action_visual_memory_diversity_loss",
+                    "strong_action_visual_memory_assignment_entropy_loss",
+                    "strong_action_visual_memory_assignment_balance_loss",
+                    "strong_action_visual_memory_spatial_compactness_loss",
                     "strong_action_visual_memory_history_fraction",
                     "strong_action_visual_memory_temporal_correspondence_loss",
                     "strong_action_visual_memory_temporal_pair_fraction",
+                    "strong_action_visual_memory_object_contrastive_loss",
+                    "strong_action_visual_memory_episode_contrastive_loss",
+                    "strong_action_visual_memory_positive_similarity",
+                    "strong_action_visual_memory_object_negative_similarity",
+                    "strong_action_visual_memory_episode_negative_similarity",
+                    "strong_action_visual_memory_episode_negative_fraction",
                     "strong_action_visual_memory_conditioning_scale",
                     "strong_action_visual_memory_conditioned_residual_rms",
                     "strong_action_visual_memory_action_aux_hidden_rms",
@@ -1447,6 +1478,35 @@ class OmniMoTModel(ImaginaireModel):
                     diversity_weight,
                     **self.tensor_kwargs_fp32,
                 )
+                auxiliary_objectives = (
+                    (
+                        "strong_action_visual_memory_assignment_entropy_loss",
+                        "strong_action_visual_memory_assignment_entropy_loss_weight",
+                    ),
+                    (
+                        "strong_action_visual_memory_assignment_balance_loss",
+                        "strong_action_visual_memory_assignment_balance_loss_weight",
+                    ),
+                    (
+                        "strong_action_visual_memory_spatial_compactness_loss",
+                        "strong_action_visual_memory_spatial_compactness_loss_weight",
+                    ),
+                    (
+                        "strong_action_visual_memory_object_contrastive_loss",
+                        "strong_action_visual_memory_object_contrastive_loss_weight",
+                    ),
+                    (
+                        "strong_action_visual_memory_episode_contrastive_loss",
+                        "strong_action_visual_memory_episode_contrastive_loss_weight",
+                    ),
+                )
+                for loss_name, weight_name in auxiliary_objectives:
+                    objective_weight = float(getattr(self.config, weight_name))
+                    total_loss += out_net[loss_name] * objective_weight
+                    losses_dict[weight_name] = torch.tensor(
+                        objective_weight,
+                        **self.tensor_kwargs_fp32,
+                    )
                 temporal_loss = out_net["strong_action_visual_memory_temporal_correspondence_loss"]
                 temporal_weight = float(self.config.strong_action_visual_memory_temporal_loss_weight)
                 total_loss += temporal_loss * temporal_weight
@@ -1454,6 +1514,44 @@ class OmniMoTModel(ImaginaireModel):
                     temporal_weight,
                     **self.tensor_kwargs_fp32,
                 )
+
+                action_gradient_weight = float(
+                    self.config.strong_action_visual_memory_action_gradient_loss_weight
+                )
+                if action_gradient_weight > 0.0:
+                    gradient_required = (
+                        "strong_action_visual_memory_slots",
+                        "strong_action_visual_memory_action_attention",
+                    )
+                    missing_gradient_inputs = [
+                        name for name in gradient_required if name not in out_net
+                    ]
+                    if missing_gradient_inputs:
+                        raise ValueError(
+                            "R4 action-gradient supervision is missing inputs: "
+                            f"{missing_gradient_inputs}"
+                        )
+                    action_gradient_loss, gradient_valid_fraction, gradient_target_entropy = (
+                        action_gradient_alignment_loss(
+                            losses_dict["flow_matching_loss_action"],
+                            out_net["strong_action_visual_memory_slots"],
+                            out_net["strong_action_visual_memory_action_attention"],
+                        )
+                    )
+                    total_loss += action_gradient_loss * action_gradient_weight
+                    losses_dict.update(
+                        strong_action_visual_memory_action_gradient_loss=action_gradient_loss,
+                        strong_action_visual_memory_action_gradient_valid_fraction=(
+                            gradient_valid_fraction
+                        ),
+                        strong_action_visual_memory_action_gradient_target_entropy=(
+                            gradient_target_entropy
+                        ),
+                        strong_action_visual_memory_action_gradient_loss_weight=torch.tensor(
+                            action_gradient_weight,
+                            **self.tensor_kwargs_fp32,
+                        ),
+                    )
 
                 action_aux_weight = float(
                     self.config.strong_action_visual_memory_action_aux_loss_weight
@@ -1463,7 +1561,7 @@ class OmniMoTModel(ImaginaireModel):
                 )
                 if action_aux_weight > 0.0:
                     if "preds_action_visual_memory_only" not in out_net:
-                        raise ValueError("R3 visual-memory action auxiliary prediction is missing")
+                        raise ValueError("R4 visual-memory action auxiliary prediction is missing")
                     action_aux_warmup = action_relevance_aux_warmup_fraction(
                         iteration=iteration,
                         start_iter=0,
@@ -2490,6 +2588,7 @@ class OmniMoTModel(ImaginaireModel):
             control_action_history_mask=gen_data_clean.control_action_history_mask,
             control_visual_history_latent=gen_data_clean.control_visual_history_latent,
             control_visual_history_mask=gen_data_clean.control_visual_history_mask,
+            control_episode_id=gen_data_clean.control_episode_id,
         )
 
         if packed_sequence_template is None:
@@ -3474,6 +3573,11 @@ class OmniMoTModel(ImaginaireModel):
                 if gen_data_clean.control_visual_history_mask is not None
                 else None
             ),
+            control_episode_id=(
+                gen_data_clean.control_episode_id[start:limit]
+                if gen_data_clean.control_episode_id is not None
+                else None
+            ),
         )
 
     @torch.no_grad()
@@ -3910,6 +4014,10 @@ class OmniMoTModel(ImaginaireModel):
             data_batch.get("control_visual_history_mask"),
             mask_to_kwargs,
         )
+        control_episode_id = unwrap_and_densify(
+            data_batch.get("control_episode_id"),
+            mask_to_kwargs,
+        )
         raw_visual_history = data_batch.get("control_visual_history_video")
         cached_visual_history = data_batch.get("control_visual_history_latent")
         if raw_visual_history is not None and cached_visual_history is not None:
@@ -3949,6 +4057,8 @@ class OmniMoTModel(ImaginaireModel):
                 raise ValueError("Visual policy memory is incomplete in the data batch")
             if any(len(value) != batch_size for value in visual_control_fields if value is not None):
                 raise ValueError("Visual policy memory must provide one tensor per sample")
+        if control_episode_id is not None and len(control_episode_id) != batch_size:
+            raise ValueError("Visual policy memory episode IDs must provide one tensor per sample")
 
         # Sound/audio - normalize, encode if present and sound_gen is enabled
         self._normalize_sound_databatch_inplace(data_batch)
@@ -4034,6 +4144,7 @@ class OmniMoTModel(ImaginaireModel):
             control_action_history_mask=control_action_history_mask,
             control_visual_history_latent=control_visual_history_latent,
             control_visual_history_mask=control_visual_history_mask,
+            control_episode_id=control_episode_id,
         )
 
     def _encode_control_visual_history(

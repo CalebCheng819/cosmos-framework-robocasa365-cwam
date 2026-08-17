@@ -93,7 +93,14 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         strong_action_visual_memory_initial_gate=0.1,
         strong_action_visual_memory_conditioning_scale=0.25,
         strong_action_visual_memory_diversity_loss_weight=0.05,
+        strong_action_visual_memory_assignment_entropy_loss_weight=0.0,
+        strong_action_visual_memory_assignment_balance_loss_weight=0.0,
+        strong_action_visual_memory_spatial_compactness_loss_weight=0.0,
         strong_action_visual_memory_temporal_loss_weight=0.05,
+        strong_action_visual_memory_object_contrastive_loss_weight=0.0,
+        strong_action_visual_memory_episode_contrastive_loss_weight=0.0,
+        strong_action_visual_memory_contrastive_temperature=0.07,
+        strong_action_visual_memory_action_gradient_loss_weight=0.0,
         strong_action_visual_memory_action_aux_loss_weight=0.25,
         strong_action_visual_memory_action_aux_warmup_iters=50,
         strong_action_visual_memory_intervention="none",
@@ -175,7 +182,28 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.strong_action_visual_memory_initial_gate = strong_action_visual_memory_initial_gate
         self.strong_action_visual_memory_conditioning_scale = strong_action_visual_memory_conditioning_scale
         self.strong_action_visual_memory_diversity_loss_weight = strong_action_visual_memory_diversity_loss_weight
+        self.strong_action_visual_memory_assignment_entropy_loss_weight = (
+            strong_action_visual_memory_assignment_entropy_loss_weight
+        )
+        self.strong_action_visual_memory_assignment_balance_loss_weight = (
+            strong_action_visual_memory_assignment_balance_loss_weight
+        )
+        self.strong_action_visual_memory_spatial_compactness_loss_weight = (
+            strong_action_visual_memory_spatial_compactness_loss_weight
+        )
         self.strong_action_visual_memory_temporal_loss_weight = strong_action_visual_memory_temporal_loss_weight
+        self.strong_action_visual_memory_object_contrastive_loss_weight = (
+            strong_action_visual_memory_object_contrastive_loss_weight
+        )
+        self.strong_action_visual_memory_episode_contrastive_loss_weight = (
+            strong_action_visual_memory_episode_contrastive_loss_weight
+        )
+        self.strong_action_visual_memory_contrastive_temperature = (
+            strong_action_visual_memory_contrastive_temperature
+        )
+        self.strong_action_visual_memory_action_gradient_loss_weight = (
+            strong_action_visual_memory_action_gradient_loss_weight
+        )
         self.strong_action_visual_memory_action_aux_loss_weight = strong_action_visual_memory_action_aux_loss_weight
         self.strong_action_visual_memory_action_aux_warmup_iters = strong_action_visual_memory_action_aux_warmup_iters
         self.strong_action_visual_memory_intervention = strong_action_visual_memory_intervention
@@ -230,7 +258,25 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                 raise ValueError("Strong action visual memory conditioning scale must be in (0, 1]")
             nonnegative_visual_memory_values = {
                 "diversity_loss_weight": self.strong_action_visual_memory_diversity_loss_weight,
+                "assignment_entropy_loss_weight": (
+                    self.strong_action_visual_memory_assignment_entropy_loss_weight
+                ),
+                "assignment_balance_loss_weight": (
+                    self.strong_action_visual_memory_assignment_balance_loss_weight
+                ),
+                "spatial_compactness_loss_weight": (
+                    self.strong_action_visual_memory_spatial_compactness_loss_weight
+                ),
                 "temporal_loss_weight": self.strong_action_visual_memory_temporal_loss_weight,
+                "object_contrastive_loss_weight": (
+                    self.strong_action_visual_memory_object_contrastive_loss_weight
+                ),
+                "episode_contrastive_loss_weight": (
+                    self.strong_action_visual_memory_episode_contrastive_loss_weight
+                ),
+                "action_gradient_loss_weight": (
+                    self.strong_action_visual_memory_action_gradient_loss_weight
+                ),
                 "action_aux_loss_weight": self.strong_action_visual_memory_action_aux_loss_weight,
                 "action_aux_warmup_iters": self.strong_action_visual_memory_action_aux_warmup_iters,
             }
@@ -244,6 +290,8 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
                     "Strong action visual memory loss schedule must be non-negative: "
                     f"{invalid_visual_memory_values}"
                 )
+            if float(self.strong_action_visual_memory_contrastive_temperature) <= 0.0:
+                raise ValueError("Strong action visual memory contrastive temperature must be positive")
             if self.strong_action_visual_memory_intervention not in {"none", "zero", "shuffle"}:
                 raise ValueError(
                     "strong_action_visual_memory_intervention must be none, zero, or shuffle"
@@ -364,6 +412,9 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     visual_memory_initial_gate=config.strong_action_visual_memory_initial_gate,
                     visual_memory_conditioning_scale=(
                         config.strong_action_visual_memory_conditioning_scale
+                    ),
+                    visual_memory_contrastive_temperature=(
+                        config.strong_action_visual_memory_contrastive_temperature
                     ),
                     visual_memory_intervention=config.strong_action_visual_memory_intervention,
                 )
@@ -1379,6 +1430,7 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                 action_history_mask=packed_seq.control_action_history_mask,
                 visual_history_latent=packed_seq.control_visual_history_latent,
                 visual_history_mask=packed_seq.control_visual_history_mask,
+                episode_ids=packed_seq.control_episode_id,
                 action_seed_hidden=action_seed_hidden,
             )
             output_dict.update({f"strong_action_{name}": value for name, value in strong_action_metrics.items()})

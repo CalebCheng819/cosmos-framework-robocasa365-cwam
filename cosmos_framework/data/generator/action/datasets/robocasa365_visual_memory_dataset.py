@@ -111,4 +111,5 @@ class RoboCasa365VisualMemoryDataset(RoboCasa365SegmentDataset):
             mask[position] = True
         result["control_visual_history_latent"] = torch.stack(values)
         result["control_visual_history_mask"] = mask
+        result["control_episode_id"] = torch.tensor(episode, dtype=torch.long)
         return result

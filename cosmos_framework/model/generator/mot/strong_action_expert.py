@@ -9,6 +9,7 @@ import math
 from itertools import accumulate
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
@@ -19,6 +20,45 @@ _PROPRIO_CONTEXT = 2
 _ACTION_HISTORY_CONTEXT = 3
 _MEMORY_CONTEXT = 4
 _NUM_CONTEXT_TYPES = 5
+
+
+def action_gradient_alignment_loss(
+    action_loss: torch.Tensor,
+    memory_slots: torch.Tensor,
+    action_attention: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Align action-to-slot attention with per-sample action-loss saliency."""
+    zero = action_attention.float().sum() * 0.0
+    if (
+        not torch.is_grad_enabled()
+        or not action_loss.requires_grad
+        or not memory_slots.requires_grad
+    ):
+        return zero, zero.detach(), zero.detach()
+    slot_gradient = torch.autograd.grad(
+        action_loss,
+        memory_slots,
+        retain_graph=True,
+        create_graph=False,
+        allow_unused=True,
+    )[0]
+    if slot_gradient is None:
+        return zero, zero.detach(), zero.detach()
+
+    saliency = slot_gradient.detach().float().square().sum(dim=-1).sqrt()
+    saliency_sum = saliency.sum(dim=-1, keepdim=True)
+    valid = saliency_sum.squeeze(-1) > 1.0e-12
+    target = saliency / saliency_sum.clamp_min(1.0e-12)
+    attention = action_attention.float().clamp_min(1.0e-8)
+    attention = attention / attention.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+    per_sample_loss = -(target * attention.log()).sum(dim=-1)
+    valid_weight = valid.float()
+    valid_denominator = valid_weight.sum().clamp_min(1.0)
+    loss = (per_sample_loss * valid_weight).sum() / valid_denominator
+    entropy_denominator = math.log(max(memory_slots.shape[1], 2))
+    target_entropy = -(target.clamp_min(1.0e-8).log() * target).sum(dim=-1)
+    target_entropy = (target_entropy * valid_weight).sum() / valid_denominator / entropy_denominator
+    return loss, valid.float().mean(), target_entropy
 
 
 def _strip_optional_collator_axis(
@@ -198,6 +238,7 @@ class VisualObjectMemory(nn.Module):
         num_slots: int,
         num_views: int,
         intervention: str,
+        contrastive_temperature: float = 0.07,
     ) -> None:
         super().__init__()
         if min(
@@ -216,6 +257,8 @@ class VisualObjectMemory(nn.Module):
             raise ValueError("Visual object memory model_dim must be divisible by num_heads")
         if intervention not in {"none", "zero", "shuffle"}:
             raise ValueError(f"Unsupported visual memory intervention={intervention!r}")
+        if contrastive_temperature <= 0.0:
+            raise ValueError("Visual memory contrastive temperature must be positive")
         self.latent_channels = latent_channels
         self.history_length = history_length
         self.latent_height = latent_height
@@ -225,6 +268,7 @@ class VisualObjectMemory(nn.Module):
         self.head_dim = model_dim // num_heads
         self.num_slots = num_slots
         self.intervention = intervention
+        self.contrastive_temperature = float(contrastive_temperature)
 
         self.latent_norm = nn.LayerNorm(latent_channels)
         self.latent_proj = nn.Linear(latent_channels, model_dim)
@@ -286,6 +330,7 @@ class VisualObjectMemory(nn.Module):
         self,
         history_latent: torch.Tensor,
         history_mask: torch.Tensor,
+        episode_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         expected = (
             self.history_length,
@@ -300,12 +345,16 @@ class VisualObjectMemory(nn.Module):
             )
         if history_mask.shape != history_latent.shape[:2]:
             raise ValueError("Visual history mask must align with [B,R]")
+        if episode_ids is not None and episode_ids.shape != history_latent.shape[:1]:
+            raise ValueError("Visual memory episode IDs must align with the batch")
         history_mask = history_mask.bool()
         if self.intervention == "zero":
             history_mask = torch.zeros_like(history_mask)
         elif self.intervention == "shuffle" and history_latent.shape[0] > 1:
             history_latent = torch.roll(history_latent, shifts=1, dims=0)
             history_mask = torch.roll(history_mask, shifts=1, dims=0)
+            if episode_ids is not None:
+                episode_ids = torch.roll(episode_ids, shifts=1, dims=0)
         slot_valid = history_mask.any(dim=1)
 
         batch_size = history_latent.shape[0]
@@ -377,6 +426,52 @@ class VisualObjectMemory(nn.Module):
             self.head_dim,
         )
         frame_weights = frame_assignment / frame_assignment.sum(dim=3, keepdim=True).clamp_min(1.0e-6)
+        valid_frame = history_mask[:, None, :, None].expand(
+            -1,
+            self.num_heads,
+            -1,
+            self.num_slots,
+        )
+        valid_frame_weight = valid_frame.float()
+        valid_frame_denominator = valid_frame_weight.sum().clamp_min(1.0)
+
+        assignment_entropy = -(
+            frame_assignment.float().clamp_min(1.0e-8).log() * frame_assignment.float()
+        ).sum(dim=-1)
+        assignment_entropy = assignment_entropy / math.log(max(self.num_slots, 2))
+        valid_token = history_mask[:, None, :, None].expand(
+            -1,
+            self.num_heads,
+            -1,
+            num_spatial_tokens,
+        )
+        assignment_entropy_loss = (
+            assignment_entropy * valid_token.float()
+        ).sum() / valid_token.float().sum().clamp_min(1.0)
+
+        slot_usage = frame_assignment.float().mean(dim=3)
+        uniform_usage = 1.0 / self.num_slots
+        assignment_balance_loss = (
+            (slot_usage - uniform_usage).square().sum(dim=-1)
+            * self.num_slots
+            * history_mask[:, None].float()
+        ).sum() / (
+            history_mask.float().sum() * self.num_heads
+        ).clamp_min(1.0)
+
+        local_coordinates = spatial_coordinates[:num_spatial_tokens].float()
+        slot_centroid = torch.einsum("bhrpk,pd->bhrkd", frame_weights.float(), local_coordinates)
+        centered_coordinates = (
+            local_coordinates[None, None, None, :, None, :]
+            - slot_centroid[:, :, :, None, :, :]
+        )
+        spatial_variance = (
+            frame_weights.float()[..., None] * centered_coordinates.square()
+        ).sum(dim=(3, 5))
+        spatial_compactness_loss = (
+            spatial_variance * valid_frame_weight
+        ).sum() / valid_frame_denominator
+
         frame_pooled = torch.einsum("bhrpk,bhrpd->bhrkd", frame_weights, frame_value)
         frame_pooled = frame_pooled.permute(0, 2, 4, 1, 3).reshape(
             batch_size,
@@ -403,6 +498,89 @@ class VisualObjectMemory(nn.Module):
             else temporal_pair_valid.new_zeros((), dtype=torch.float32)
         )
 
+        normalized_prediction = F.normalize(temporal_prediction.float(), dim=-1)
+        normalized_target = F.normalize(temporal_target.float(), dim=-1)
+        object_contrastive_loss = temporal_prediction.float().sum() * 0.0
+        positive_similarity = object_contrastive_loss.detach()
+        object_negative_similarity = object_contrastive_loss.detach()
+        if self.history_length > 1:
+            object_similarity = torch.einsum(
+                "brkd,brjd->brkj",
+                normalized_prediction,
+                normalized_target,
+            )
+            object_logits = object_similarity / self.contrastive_temperature
+            object_labels = torch.arange(self.num_slots, device=object_logits.device)
+            object_loss = F.cross_entropy(
+                object_logits.reshape(-1, self.num_slots),
+                object_labels.repeat(batch_size * (self.history_length - 1)),
+                reduction="none",
+            ).reshape(batch_size, self.history_length - 1, self.num_slots)
+            object_contrastive_loss = (
+                object_loss * temporal_pair_weight
+            ).sum() / temporal_pair_denominator
+            positive_similarity = (
+                (normalized_prediction * normalized_target).sum(dim=-1) * temporal_pair_weight
+            ).sum() / temporal_pair_denominator
+            object_off_diagonal = ~torch.eye(
+                self.num_slots,
+                device=object_similarity.device,
+                dtype=torch.bool,
+            )[None, None]
+            object_negative_weight = (
+                object_off_diagonal
+                & temporal_pair_valid[:, :, None, None]
+            ).float()
+            object_negative_similarity = (
+                object_similarity * object_negative_weight
+            ).sum() / object_negative_weight.sum().clamp_min(1.0)
+
+        episode_contrastive_loss = temporal_prediction.float().sum() * 0.0
+        episode_negative_similarity = episode_contrastive_loss.detach()
+        episode_negative_fraction = episode_contrastive_loss.detach()
+        if episode_ids is not None and dist.is_available() and dist.is_initialized():
+            local_prototype = frame_slots.new_zeros((self.num_slots, self.model_dim))
+            local_episode_id = episode_ids.new_full((), -1, dtype=torch.long)
+            valid_samples = slot_valid & (episode_ids >= 0)
+            if bool(valid_samples.any()):
+                local_index = int(valid_samples.nonzero(as_tuple=False)[0, 0])
+                valid_positions = history_mask[local_index].nonzero(as_tuple=False).flatten()
+                local_prototype = frame_slots[local_index, int(valid_positions[-1])].detach()
+                local_episode_id = episode_ids[local_index].long()
+            gathered_prototypes = [torch.zeros_like(local_prototype) for _ in range(dist.get_world_size())]
+            gathered_episode_ids = [torch.zeros_like(local_episode_id) for _ in range(dist.get_world_size())]
+            dist.all_gather(gathered_prototypes, local_prototype)
+            dist.all_gather(gathered_episode_ids, local_episode_id)
+            prototype_bank = F.normalize(torch.stack(gathered_prototypes).float(), dim=-1)
+            prototype_episode_ids = torch.stack(gathered_episode_ids)
+            episode_losses: list[torch.Tensor] = []
+            episode_negative_means: list[torch.Tensor] = []
+            valid_pair_count = int(temporal_pair_valid.sum())
+            for sample_id, pair_id in temporal_pair_valid.nonzero(as_tuple=False).tolist():
+                negative_episodes = (
+                    (prototype_episode_ids >= 0)
+                    & (prototype_episode_ids != episode_ids[sample_id])
+                )
+                if not bool(negative_episodes.any()):
+                    continue
+                query_slots = normalized_prediction[sample_id, pair_id]
+                positive_slots = normalized_target[sample_id, pair_id]
+                negatives = prototype_bank[negative_episodes].reshape(-1, self.model_dim)
+                positive_logits = (query_slots * positive_slots).sum(dim=-1, keepdim=True)
+                negative_logits = torch.matmul(query_slots, negatives.T)
+                logits = torch.cat((positive_logits, negative_logits), dim=-1)
+                labels = torch.zeros(self.num_slots, device=logits.device, dtype=torch.long)
+                episode_losses.append(
+                    F.cross_entropy(logits / self.contrastive_temperature, labels)
+                )
+                episode_negative_means.append(negative_logits.mean())
+            if episode_losses:
+                episode_contrastive_loss = torch.stack(episode_losses).mean()
+                episode_negative_similarity = torch.stack(episode_negative_means).mean()
+                episode_negative_fraction = episode_negative_fraction.new_tensor(
+                    len(episode_losses) / max(valid_pair_count, 1)
+                )
+
         slot_weights = competitive_assignment / competitive_assignment.sum(dim=2, keepdim=True).clamp_min(1.0e-6)
         pooled = torch.einsum("bhnk,bhnd->bhkd", slot_weights, value)
         pooled = pooled.permute(0, 2, 1, 3).reshape(batch_size, self.num_slots, self.model_dim)
@@ -423,12 +601,22 @@ class VisualObjectMemory(nn.Module):
             "visual_memory_slot_cosine": slot_cosine,
             "visual_memory_slot_abs_cosine": slot_abs_cosine,
             "visual_memory_diversity_loss": diversity_loss,
+            "visual_memory_assignment_entropy_loss": assignment_entropy_loss,
+            "visual_memory_assignment_balance_loss": assignment_balance_loss,
+            "visual_memory_spatial_compactness_loss": spatial_compactness_loss,
             "visual_memory_history_fraction": history_mask.float().mean(),
             "visual_memory_temporal_correspondence_loss": temporal_correspondence_loss,
             "visual_memory_temporal_pair_fraction": temporal_pair_fraction,
+            "visual_memory_object_contrastive_loss": object_contrastive_loss,
+            "visual_memory_episode_contrastive_loss": episode_contrastive_loss,
+            "visual_memory_positive_similarity": positive_similarity,
+            "visual_memory_object_negative_similarity": object_negative_similarity,
+            "visual_memory_episode_negative_similarity": episode_negative_similarity,
+            "visual_memory_episode_negative_fraction": episode_negative_fraction,
+            "visual_memory_slots": slots,
         }
         # Zero is represented by learned null slots, not by removing the branch.
-        # This keeps the R3 conditioning path structurally active for matched
+        # This keeps the R4 conditioning path structurally active for matched
         # none/zero/shuffle interventions without introducing all-masked attention.
         return slots, torch.ones_like(slot_valid), metrics
 
@@ -471,14 +659,15 @@ class MemoryConditioningBlock(nn.Module):
         memory: torch.Tensor,
         *,
         action_valid: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         normalized_action = self.action_norm(action)
         normalized_memory = self.memory_norm(memory)
-        attended, _ = self.cross_attention(
+        attended, attention = self.cross_attention(
             normalized_action,
             normalized_memory,
             normalized_memory,
-            need_weights=False,
+            need_weights=True,
+            average_attn_weights=False,
         )
         gamma, beta = self.film(attended).chunk(2, dim=-1)
         conditioned = attended + torch.tanh(gamma) * normalized_action + torch.tanh(beta)
@@ -486,7 +675,7 @@ class MemoryConditioningBlock(nn.Module):
         valid_residual = residual.float().square().sum() / (
             action_valid.sum().clamp_min(1) * residual.shape[-1]
         )
-        return action + residual, valid_residual.sqrt()
+        return action + residual, valid_residual.sqrt(), attention.mean(dim=1)
 
 
 class RelationAwareCrossAttention(nn.Module):
@@ -658,6 +847,7 @@ class StrongActionContextExpert(nn.Module):
         visual_memory_tokens: int = 8,
         visual_memory_initial_gate: float = 0.1,
         visual_memory_conditioning_scale: float = 0.25,
+        visual_memory_contrastive_temperature: float = 0.07,
         visual_memory_intervention: str = "none",
     ) -> None:
         super().__init__()
@@ -731,6 +921,7 @@ class StrongActionContextExpert(nn.Module):
                 num_slots=visual_memory_tokens,
                 num_views=num_views,
                 intervention=visual_memory_intervention,
+                contrastive_temperature=visual_memory_contrastive_temperature,
             )
             self.visual_memory_conditioners = nn.ModuleList(
                 MemoryConditioningBlock(
@@ -835,6 +1026,7 @@ class StrongActionContextExpert(nn.Module):
         action_history_mask: list[torch.Tensor] | None,
         visual_history_latent: list[torch.Tensor] | None = None,
         visual_history_mask: list[torch.Tensor] | None = None,
+        episode_ids: list[torch.Tensor] | None = None,
         action_seed_hidden: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor]]:
         control_fields = (proprio_history, proprio_history_mask, action_history, action_history_mask)
@@ -851,10 +1043,10 @@ class StrongActionContextExpert(nn.Module):
             raise ValueError("Strong action expert requires action tokens and clean visual context")
         if self.visual_memory_enabled:
             if action_seed_hidden is None:
-                raise ValueError("R3 visual memory conditioning requires pre-transformer action seeds")
+                raise ValueError("R4 visual memory conditioning requires pre-transformer action seeds")
             if action_seed_hidden.shape != (action_indexes.numel(), self.hidden_size):
                 raise ValueError(
-                    "R3 action seeds must follow packed action order: "
+                    "R4 action seeds must follow packed action order: "
                     f"expected {(action_indexes.numel(), self.hidden_size)}, got {tuple(action_seed_hidden.shape)}"
                 )
 
@@ -896,9 +1088,17 @@ class StrongActionContextExpert(nn.Module):
             visual_valid = torch.stack(
                 _strip_optional_collator_axis(visual_history_mask, expected_ndim=1)
             ).bool()
+            visual_episode_ids = None
+            if episode_ids is not None:
+                if len(episode_ids) != num_samples:
+                    raise ValueError("Visual memory episode IDs must align with packed samples")
+                visual_episode_ids = torch.stack(
+                    _strip_optional_collator_axis(episode_ids, expected_ndim=0)
+                ).long()
             visual_memory_tokens, visual_memory_valid, visual_memory_metrics = self.visual_object_memory(
                 visual_latent,
                 visual_valid,
+                visual_episode_ids,
             )
 
         action_sample_ids = _sample_ids(action_indexes, sample_lens)
@@ -1075,6 +1275,7 @@ class StrongActionContextExpert(nn.Module):
 
         entropies = []
         conditioned_residual_rms = []
+        visual_memory_attentions = []
         for layer_id, layer in enumerate(self.layers):
             action_batch, entropy = layer(
                 action_batch,
@@ -1090,17 +1291,18 @@ class StrongActionContextExpert(nn.Module):
                 assert visual_memory_tokens is not None
                 assert action_seed_batch is not None
                 conditioner = self.visual_memory_conditioners[layer_id]
-                action_batch, residual_rms = conditioner(
+                action_batch, residual_rms, action_attention = conditioner(
                     action_batch,
                     visual_memory_tokens,
                     action_valid=action_valid,
                 )
-                action_seed_batch, _ = conditioner(
+                action_seed_batch, _, _ = conditioner(
                     action_seed_batch,
                     visual_memory_tokens,
                     action_valid=action_valid,
                 )
                 conditioned_residual_rms.append(residual_rms)
+                visual_memory_attentions.append(action_attention)
 
         residuals = self.action_out(self.output_norm(action_batch))
         ordered_indexes = torch.cat(action_index_groups)
@@ -1138,5 +1340,12 @@ class StrongActionContextExpert(nn.Module):
             metrics["visual_memory_action_aux_hidden_rms"] = (
                 visual_memory_action_hidden.float().square().mean().sqrt()
             )
+            stacked_attention = torch.stack(visual_memory_attentions).float()
+            attention_weight = action_valid[None, :, :, None].float()
+            metrics["visual_memory_action_attention"] = (
+                stacked_attention * attention_weight
+            ).sum(dim=(0, 2)) / (
+                attention_weight.sum(dim=(0, 2)) * len(visual_memory_attentions)
+            ).clamp_min(1.0)
         metrics.update(visual_memory_metrics)
         return updated, visual_memory_action_hidden, metrics

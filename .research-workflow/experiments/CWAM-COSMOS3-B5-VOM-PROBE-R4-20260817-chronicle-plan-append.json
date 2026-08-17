@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R4 object-local contrastive memory planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Plan CWAM-COSMOS3-B5-VOM-PROBE-R4-20260817 starts from the completed R3 probe. Restore and strengthen local token-to-slot competition and diversity, add adjacent-frame cross-object and cross-episode negatives, and supervise memory attention with detached first-order slot gradients from the main action loss. Keep the matched 8-B200, 500-step B4-warm probe and identical 2048-sample none/zero/shuffle interventions. Gates: finite tests and BF16 smoke, complete checkpoint, final slot absolute cosine below 0.95, positive-to-negative similarity margins above 0.05, active finite action-gradient alignment, and at least 1% aligned main-action improvement over both zero and shuffle. Do not launch 20k unless every gate passes."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
