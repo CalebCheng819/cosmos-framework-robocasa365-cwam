@@ -4,7 +4,7 @@
   "experiment_id": "CWAM-COSMOS3-B5-VOM-PROBE-R3-20260817",
   "project_id": "CWAM-COSMOS3",
   "mode": "exploratory",
-  "status": "planned",
+  "status": "running",
   "notion": {
     "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
     "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
@@ -23,7 +23,7 @@
   "initial_eta": "2026-08-17T12:30:00+08:00",
   "current_eta": "2026-08-17T12:30:00+08:00",
   "experiment_window": {
-    "start": null,
+    "start": "2026-08-17T08:59:01+08:00",
     "end": "2026-08-17T12:30:00+08:00"
   },
   "git": {
@@ -59,10 +59,10 @@
     "source_path": "/data0/wam/cwam-b5/source/CWAM-COSMOS3-B5-VOM-R3-GIT-20260817",
     "base_checkpoint": "/data1/wam/cwam-b4/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B4-ADAPTIVE-DSELECT-R1-20260814/checkpoints/iter_000020000"
   },
-  "started_at": null,
+  "started_at": "2026-08-17T08:59:01+08:00",
   "completed_at": null,
   "actual_runtime_seconds": null,
-  "job_id": null,
+  "job_id": "cwam-b5-vom-probe-r3",
   "run_ids": [
     "CWAM-COSMOS3-B5-VOM-PROBE-R3-B4WARM-500S-20260817"
   ],
