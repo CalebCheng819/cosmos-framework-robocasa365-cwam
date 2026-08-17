@@ -1,0 +1,60 @@
+{
+  "experiment_id": "CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817",
+  "recorded_at": "2026-08-17T22:45:52+08:00",
+  "status": "Cancelled",
+  "reason": "Operator-cancelled after the step-500 validation to replace the underutilized batch-64/selective-activation-checkpointing configuration with an independently gated high-utilization run.",
+  "container": {
+    "job": "cwam-b5-vom-formal-r7-20k",
+    "monitor": "cwam-b5-vom-formal-r7-20k-gpu-monitor",
+    "host": "pyrogpucompute1",
+    "started_at": "2026-08-17T22:16:00+08:00",
+    "finished_at": "2026-08-17T22:45:51+08:00",
+    "docker_exit_code": 137,
+    "exit_interpretation": "The process did not exit within docker stop's 30-second grace period and was killed during the requested cancellation; this is not an autonomous training failure."
+  },
+  "training": {
+    "formal_optimizer_step_start": 0,
+    "formal_optimizer_step_target": 20000,
+    "latest_verified_iteration": 517,
+    "completed_target": false,
+    "steady_seconds_per_step": 3.2,
+    "effective_global_batch": 512,
+    "estimated_steady_samples_per_second": 160.0
+  },
+  "gradient_evidence": {
+    "iteration": 500,
+    "status": "passed",
+    "family": "strong_action_expert",
+    "gradient_elements": 199967573,
+    "nonzero_gradient_elements": 195696302,
+    "nonfinite_gradient_elements": 0,
+    "gradient_l2_norm": 5.8595136636157745
+  },
+  "matched_validation": {
+    "iteration": 500,
+    "examples": 2048,
+    "unstable_count": 0,
+    "aligned_action_loss": 0.008301959373056889,
+    "zero_action_loss": 0.009382298216223717,
+    "shuffle_action_loss": 0.009043650701642036,
+    "aligned_vs_zero_relative_gain": 0.11514650,
+    "aligned_vs_shuffle_relative_gain": 0.08201238,
+    "intervention_gate_passed": true
+  },
+  "gpu_telemetry": {
+    "samples_per_gpu": 59,
+    "average_utilization_percent_range": [63.78, 68.08],
+    "average_memory_used_mib_range": [55434, 57968],
+    "peak_memory_used_mib": 61698,
+    "memory_total_mib_each": 183359,
+    "average_power_watts_range": [666.6, 684.3],
+    "monitor_path": "/data0/wam/cwam-b5/evidence/CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817/gpu.csv"
+  },
+  "artifacts": {
+    "run_root": "/data0/wam/cwam-b5/runs/cosmos3_action_robocasa365/action_sft/CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817",
+    "log": "/data0/wam/cwam-b5/runs/logs/CWAM-COSMOS3-B5-VOM-FORMAL-R7-POLICY-RANK-20K-20260817.log",
+    "checkpoint_count": 0,
+    "checkpoint_note": "The run was cancelled before the first planned step-1000 checkpoint."
+  },
+  "terminal_scope": "Cancelled optimization run only; no terminal 20k training or closed-loop evaluation result."
+}

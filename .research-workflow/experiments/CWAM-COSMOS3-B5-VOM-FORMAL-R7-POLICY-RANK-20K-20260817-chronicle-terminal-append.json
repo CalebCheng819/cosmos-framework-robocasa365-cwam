@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R7 formal run cancelled for utilization optimization"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "The batch-64, selective-activation-checkpointing R7 formal run was intentionally stopped after verified iteration 517 and archived under its original run root. It averaged about 160 samples/s, 63.78%-68.08% GPU utilization, and 55,434-57,968 MiB memory per 183,359 MiB B200, with no nonfinite gradients. Its step-500 matched validation retained the intervention gate: aligned action loss 0.00830196 versus zero 0.00938230 and shuffle 0.00904365, gains of 11.51% and 8.20%. No checkpoint exists because the run ended before step 1,000. This is a cancelled optimization run, not a completed 20k or closed-loop result; R8 starts independently from the same R4 model-only warm start."}}]
+      }
+    }
+  ]
+}

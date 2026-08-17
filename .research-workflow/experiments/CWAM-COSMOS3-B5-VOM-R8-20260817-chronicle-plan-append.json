@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "2026-08-17 - R8 high-utilization formal-training optimization planned"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "The R7 formal run showed finite optimizer progress and retained the initial aligned-memory advantage, but independent telemetry averaged only about 60%-65% GPU utilization and 54-56 GiB memory per 183359 MiB B200. Preserve and cancel that run as a separate low-utilization record before its first checkpoint, then benchmark activation-checkpointing none with larger per-rank batches from the same R4 model-only warm start. Select by steady-state samples/s, finite gradients, memory below 90%, and the same aligned versus zero/shuffle intervention gate. Launch a new, independently named 20,000-step confirmatory run only after the probe passes; do not resume R7 optimizer, scheduler, trainer, or data-stream state."}}]
+      }
+    }
+  ]
+}

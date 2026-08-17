@@ -1,0 +1,9 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Cancelled"}},
+    "Completed At": {"date": {"start": "2026-08-17T22:45:51+08:00"}},
+    "Actual Runtime": {"number": 0.5},
+    "Primary Metrics": {"rich_text": [{"type": "text", "text": {"content": "Operator-cancelled after verified iteration 517. Stable step time was about 3.2 s at global batch 512, about 160 samples/s. Step-500 gradient audit passed with 195,696,302 nonzero and 0 nonfinite gradient elements. Step-500 matched validation over 2,048 samples: aligned/zero/shuffle action loss 0.00830196/0.00938230/0.00904365; aligned gain 11.51% versus zero and 8.20% versus shuffle. GPU telemetry averaged 63.78%-68.08% utilization and 55,434-57,968 MiB memory, with 61,698 MiB peak on 183,359 MiB cards."}}]},
+    "Conclusion / Failure Reason": {"rich_text": [{"type": "text", "text": {"content": "Cancelled intentionally to replace the underutilized batch-64/selective-activation-checkpointing configuration. Docker exit 137 followed the requested stop timeout and is not classified as an autonomous training failure. No checkpoint exists because cancellation occurred before step 1,000. R7 retained the causal intervention gate at step 500, but this run did not complete 20k and has no closed-loop result."}}]}
+  }
+}
