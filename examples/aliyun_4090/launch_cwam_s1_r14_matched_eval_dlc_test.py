@@ -123,9 +123,14 @@ def test_bootstrap_stages_large_assets_under_fixed_local_root() -> None:
     assert '"$SOURCE_CHECKPOINT_ROOT"' in script
     assert 'readonly SOURCE_ROBOCASA_ASSET_PACKAGE="$OSS_PROJECT_ROOT/inputs/archives/' in script
     assert "robocasa-29f7ce8814c1-assets-source-package-20260729.tar" in script
+    assert 'readonly SOURCE_ROBOCASA_ASSET_OVERLAY="$OSS_PROJECT_ROOT/inputs/archives/' in script
+    assert "robocasa-29f7ce8814c1-assets-legacy-fixture-overlay-20260817.tar" in script
     assert '[[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_PACKAGE")" == 11101859840 ]]' in script
+    assert '[[ "$(stat -c %s -- "$SOURCE_ROBOCASA_ASSET_OVERLAY")" == 2181120 ]]' in script
     assert 'findmnt -n -T "$SOURCE_ROBOCASA_ASSET_PACKAGE" -o TARGET' in script
+    assert 'findmnt -n -T "$SOURCE_ROBOCASA_ASSET_OVERLAY" -o TARGET' in script
     assert '[[ "$asset_package_mount_target" == /oss-chengjuntao ]]' in script
+    assert '[[ "$asset_overlay_mount_target" == /oss-chengjuntao ]]' in script
     assert '[[ "$asset_package_mount_identity" == *oss* ]]' in script
     assert "RoboCasa asset source package must have mode 0444" not in script
     assert 'mv -T -- "$LOCAL_BUILD_ROOT" "$LOCAL_ASSET_ROOT"' in script
@@ -179,7 +184,9 @@ def test_bootstrap_uses_immutable_external_control_files() -> None:
     assert 'export COSMOS_ENV_ARCHIVE_METADATA_HELPER' in script
     assert 'readonly ROBOCASA_ASSET_PACKAGE_HELPER="$CONTROL_DEPLOY_ROOT/' in script
     assert 'export ROBOCASA_ASSET_SOURCE_PACKAGE="$SOURCE_ROBOCASA_ASSET_PACKAGE"' in script
+    assert 'export ROBOCASA_ASSET_OVERLAY="$SOURCE_ROBOCASA_ASSET_OVERLAY"' in script
     assert "export EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840" in script
+    assert "export EXPECTED_ROBOCASA_ASSET_OVERLAY_BYTES=2181120" in script
     assert 'export EXPECTED_COSMOS_ENV_ARCHIVE_SHA256' not in script
     assert 'export EXPECTED_COSMOS_ENV_ARCHIVE_PUBLICATION_RECEIPT_SHA256' not in script
     assert 'export EVAL_CONTROL_COMMIT' in script

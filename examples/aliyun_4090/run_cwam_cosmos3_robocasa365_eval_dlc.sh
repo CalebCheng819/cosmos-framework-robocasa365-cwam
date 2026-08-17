@@ -125,8 +125,10 @@ case "$S1_R14_MATCHED_MODE" in
         : "${EVAL_CONTROL_COMMIT:?Set the immutable evaluation-control commit}"
         : "${COSMOS_ENV_ARCHIVE_METADATA_HELPER:?Set the metadata-only environment archive helper}"
         : "${ROBOCASA_ASSET_SOURCE_PACKAGE:?Set the complete RoboCasa asset source package}"
+        : "${ROBOCASA_ASSET_OVERLAY:?Set the exact RoboCasa legacy fixture overlay}"
         : "${ROBOCASA_ASSET_PACKAGE_HELPER:?Set the immutable RoboCasa asset package helper}"
         : "${EXPECTED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES:?Set the RoboCasa asset package byte size}"
+        : "${EXPECTED_ROBOCASA_ASSET_OVERLAY_BYTES:?Set the RoboCasa asset overlay byte size}"
         [[ "$FORMAL_MATCHED_LOCAL_ASSET_ROOT_OVERRIDE" == /tmp/cwam_s1_r14_matched_assets ]] || {
             printf 'ERROR matched local asset root must be /tmp/cwam_s1_r14_matched_assets\n' >&2
             exit 2
@@ -186,6 +188,7 @@ readonly FORMAL_COSMOS_ENV="$FORMAL_NVME_INPUT_ROOT/envs/cosmos-framework-09f231
 readonly FORMAL_COSMOS_ENV_ARCHIVE_PUBLICATION_SOURCE="$FORMAL_INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
 readonly FORMAL_ROBOCASA_REPO="$FORMAL_NVME_INPUT_ROOT/repos/robocasa-29f7ce8814c1"
 readonly FORMAL_ROBOCASA_ASSET_SOURCE_PACKAGE="/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/archives/robocasa-29f7ce8814c1-assets-source-package-20260729.tar"
+readonly FORMAL_ROBOCASA_ASSET_OVERLAY="/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/archives/robocasa-29f7ce8814c1-assets-legacy-fixture-overlay-20260817.tar"
 readonly FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT="$FORMAL_NVME_INPUT_ROOT/control/robocasa-asset-source-package-extraction.json"
 readonly FORMAL_CHECKPOINTS_ROOT="${FORMAL_CHECKPOINTS_ROOT_OVERRIDE:-$FORMAL_INPUT_ROOT/checkpoints}"
 readonly FORMAL_RUNTIME_CLOSURE_ROOT="$FORMAL_INPUT_ROOT/runtime/cosmos-r21-dlc-runtime-v1"
@@ -215,6 +218,7 @@ readonly PINNED_COSMOS_ENV_DIRECTORIES=11389
 readonly PINNED_COSMOS_ENV_SYMLINKS=4
 readonly PINNED_COSMOS_ENV_REGULAR_FILE_BYTES=14660695665
 readonly PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES=11101859840
+readonly PINNED_ROBOCASA_ASSET_OVERLAY_BYTES=2181120
 readonly PINNED_DEMIAN_COMMIT="2600ece5bf0eeacf010a95f084dcda2de6d30d59"
 readonly PINNED_ROBOCASA_COMMIT="29f7ce8814c1547f5af762a0997fbd4b64848dd7"
 readonly PINNED_ROBOSUITE_COMMIT="232ce7d4a6ed89c949a9aba024a05c8c32fdd08b"
@@ -289,6 +293,27 @@ require_exact_value() {
     local expected="$3"
     [[ "$actual" == "$expected" ]] ||
         die "$label differs from the audited formal value: expected=$expected actual=$actual"
+}
+
+verify_robocasa_assets() {
+    local output="$1"
+    local log="$2"
+    if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
+        "$COSMOS_PY" "$ROBOCASA_ASSET_PACKAGE_HELPER" \
+            verify-live-metadata \
+            --asset-root "$ROBOCASA_ASSET_ROOT" \
+            --expected-robocasa-commit "$EXPECTED_ROBOCASA_COMMIT" \
+            --output "$output" \
+            >"$log"
+    else
+        PYTHONPATH="$PROVENANCE_PYTHONPATH" \
+            "$COSMOS_PY" "$COSMOS_SOURCE/$ASSET_VERIFY_HELPER_REL" \
+            verify \
+            --asset-root "$ROBOCASA_ASSET_ROOT" \
+            --workers 16 \
+            --output "$output" \
+            >"$log"
+    fi
 }
 
 for forbidden_loader_variable in \
@@ -366,6 +391,7 @@ if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
         canonical_existing_file "$COSMOS_ENV_ARCHIVE_METADATA_HELPER"
     )"
     ROBOCASA_ASSET_SOURCE_PACKAGE="$(canonical_existing_file "$ROBOCASA_ASSET_SOURCE_PACKAGE")"
+    ROBOCASA_ASSET_OVERLAY="$(canonical_existing_file "$ROBOCASA_ASSET_OVERLAY")"
     ROBOCASA_ASSET_PACKAGE_HELPER="$(canonical_existing_file "$ROBOCASA_ASSET_PACKAGE_HELPER")"
 else
     readonly COSMOS_ENV_ARCHIVE_HELPER="$COSMOS_SOURCE/$COSMOS_ENV_ARCHIVE_HELPER_REL"
@@ -403,6 +429,37 @@ if [[ "$S1_R14_MATCHED_MODE" == 1 ]]; then
     robocasa_asset_mount_identity="${robocasa_asset_mount_source,,}:${robocasa_asset_mount_fstype,,}"
     [[ "$robocasa_asset_mount_identity" == *oss* ]] ||
         die "RoboCasa asset package mount does not identify OSS"
+    require_exact_value \
+        robocasa_asset_overlay_path \
+        "$ROBOCASA_ASSET_OVERLAY" \
+        "$FORMAL_ROBOCASA_ASSET_OVERLAY"
+    require_exact_value \
+        robocasa_asset_overlay_bytes \
+        "$EXPECTED_ROBOCASA_ASSET_OVERLAY_BYTES" \
+        "$PINNED_ROBOCASA_ASSET_OVERLAY_BYTES"
+    require_exact_value \
+        robocasa_asset_overlay_observed_bytes \
+        "$(stat -c %s -- "$ROBOCASA_ASSET_OVERLAY")" \
+        "$PINNED_ROBOCASA_ASSET_OVERLAY_BYTES"
+    robocasa_overlay_mount_target="$(
+        findmnt -n -T "$ROBOCASA_ASSET_OVERLAY" -o TARGET
+    )" || die "could not resolve the RoboCasa asset overlay mount target"
+    robocasa_overlay_mount_source="$(
+        findmnt -n -T "$ROBOCASA_ASSET_OVERLAY" -o SOURCE
+    )" || die "could not resolve the RoboCasa asset overlay mount source"
+    robocasa_overlay_mount_fstype="$(
+        findmnt -n -T "$ROBOCASA_ASSET_OVERLAY" -o FSTYPE
+    )" || die "could not resolve the RoboCasa asset overlay filesystem type"
+    [[ "$robocasa_overlay_mount_target" == /oss-chengjuntao ]] ||
+        die "RoboCasa asset overlay does not resolve to the fixed OSS mount"
+    require_exact_value \
+        robocasa_asset_overlay_mount_source \
+        "$robocasa_overlay_mount_source" \
+        "$robocasa_asset_mount_source"
+    require_exact_value \
+        robocasa_asset_overlay_mount_fstype \
+        "$robocasa_overlay_mount_fstype" \
+        "$robocasa_asset_mount_fstype"
     [[ "$(stat -c %a -- "$ROBOCASA_ASSET_PACKAGE_HELPER")" == 444 ]] ||
         die "immutable RoboCasa asset package helper must have mode 0444"
 fi
@@ -600,6 +657,8 @@ stage_robocasa_asset_source_package() {
     python3 "$ROBOCASA_ASSET_PACKAGE_HELPER" verify-extract \
         --archive "$ROBOCASA_ASSET_SOURCE_PACKAGE" \
         --expected-archive-bytes "$PINNED_ROBOCASA_ASSET_SOURCE_PACKAGE_BYTES" \
+        --overlay "$ROBOCASA_ASSET_OVERLAY" \
+        --expected-overlay-bytes "$PINNED_ROBOCASA_ASSET_OVERLAY_BYTES" \
         --stage "$stage" \
         --receipt-output "$FORMAL_ROBOCASA_ASSET_EXTRACTION_RECEIPT"
     sync -f -- "$stage"
@@ -1213,13 +1272,9 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --output "$ROBOCASA_ENV_VERIFICATION_PRE" \
     >"$CONTROL_DIR/verify-robocasa-environment-pre.log"
 
-PYTHONPATH="$PROVENANCE_PYTHONPATH" \
-    "$COSMOS_PY" "$COSMOS_SOURCE/$ASSET_VERIFY_HELPER_REL" \
-    verify \
-    --asset-root "$ROBOCASA_ASSET_ROOT" \
-    --workers 16 \
-    --output "$ROBOCASA_ASSET_VERIFICATION_PRE" \
-    >"$CONTROL_DIR/verify-robocasa-assets-pre.log"
+verify_robocasa_assets \
+    "$ROBOCASA_ASSET_VERIFICATION_PRE" \
+    "$CONTROL_DIR/verify-robocasa-assets-pre.log"
 "$COSMOS_PY" - "$ROBOCASA_ASSET_VERIFICATION_PRE" "$EXPECTED_ROBOCASA_COMMIT" <<'PY'
 import json
 import pathlib
@@ -1640,13 +1695,9 @@ PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     --output "$ROBOCASA_ENV_VERIFICATION_POST" \
     >"$CONTROL_DIR/verify-robocasa-environment-post.log"
 
-PYTHONPATH="$PROVENANCE_PYTHONPATH" \
-    "$COSMOS_PY" "$COSMOS_SOURCE/$ASSET_VERIFY_HELPER_REL" \
-    verify \
-    --asset-root "$ROBOCASA_ASSET_ROOT" \
-    --workers 16 \
-    --output "$ROBOCASA_ASSET_VERIFICATION_POST" \
-    >"$CONTROL_DIR/verify-robocasa-assets-post.log"
+verify_robocasa_assets \
+    "$ROBOCASA_ASSET_VERIFICATION_POST" \
+    "$CONTROL_DIR/verify-robocasa-assets-post.log"
 
 PYTHONPATH="$PROVENANCE_PYTHONPATH" \
     "$COSMOS_PY" "$COSMOS_SOURCE/$DLC_EVIDENCE_HELPER_REL" \
