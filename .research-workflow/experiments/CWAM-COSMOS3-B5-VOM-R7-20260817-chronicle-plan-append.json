@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-17 - R7 aligned-memory policy intervention ranking planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "R6-A/R6-B produced non-collapsed, exactly intervenable compact dynamic memory, but aligned main-action gains over zero/shuffle remained below one percent. R7 keeps the R6-A dynamic-exclusive final-delta architecture and adds a target-aware policy ranking objective. For each batch, the 5B joint transformer runs once; aligned, zero, and shuffle Action Expert branches share the same sample, noisy action, timestep, target, and non-memory context. Zero/shuffle branches are stop-gradient baselines, and the aligned branch is optimized to have at least a one-percent lower per-sample action denoising error. Run a matched 500-step eight-B200 probe from the same R4 model-only warm start, with 50-step ranking warmup and unit ranking weight. Require finite full checkpoints, exact interventions, and at least one-percent aligned gain over both zero and shuffle on the same 2048 held-out samples before any 20k extension."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
