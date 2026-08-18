@@ -153,7 +153,10 @@ cwam_require_trusted_executable "$ROBOCASA_PY" "$(dirname -- "$ROBOCASA_ENV")" |
 [[ "$(git_revision "$DEMIAN_REPO")" == "$DEMIAN_COMMIT" ]] || die "DeMiAn revision mismatch"
 [[ "$(git_revision "$ROBOCASA_REPO")" == "$ROBOCASA_COMMIT" ]] || die "RoboCasa revision mismatch"
 [[ "$(git_revision "$ROBOSUITE_REPO")" == "$ROBOSUITE_COMMIT" ]] || die "robosuite revision mismatch"
-[[ "$(findmnt -n -T "$EVAL_OUTPUT_ROOT" -o TARGET)" != / ]] || die "evaluation output is not on persistent storage"
+[[ "$EVAL_OUTPUT_ROOT" == /tmp/* ]] || die "evaluation output must be under worker-local /tmp"
+output_mount="$(findmnt -n -T "$EVAL_OUTPUT_ROOT" -o TARGET)"
+[[ "$output_mount" != /mnt/workspace && "$output_mount" != /oss-chengjuntao ]] || \
+    die "evaluation output resolves to persistent shared storage: $output_mount"
 [[ "$SCRATCH_DIR" == /tmp/* ]] || die "worker scratch must be under /tmp: $SCRATCH_DIR"
 scratch_mount="$(findmnt -n -T /tmp -o TARGET)"
 [[ "$scratch_mount" != /mnt/workspace && "$scratch_mount" != /oss-chengjuntao ]] || \
@@ -169,6 +172,8 @@ write_status RUNNING "checkpoint_load_gate_pending"
     --root "$CHECKPOINT_ARTIFACT_ROOT" \
     --output "$CONTROL_DIR/checkpoint-verification.json" \
     >"$CONTROL_DIR/checkpoint-verification.log"
+printf 'B4_CHECKPOINT_VERIFICATION_PASSED receipt=%s\n' \
+    "$CONTROL_DIR/checkpoint-verification.json"
 
 "$COSMOS_PY" - <<'PY'
 import os
@@ -264,6 +269,8 @@ launch_server 1
 capture_server_runtime 0
 capture_server_runtime 1
 write_status RUNNING "two_policy_servers_loaded_and_runtime_verified"
+printf 'B4_TWO_POLICY_SERVERS_LOADED runtime_a=%s runtime_b=%s\n' \
+    "$CONTROL_DIR/runtime-server-a.json" "$CONTROL_DIR/runtime-server-b.json"
 
 eval_env=(
     env -u LD_PRELOAD -u LD_AUDIT -u __EGL_VENDOR_LIBRARY_DIRS
@@ -299,6 +306,8 @@ run_gate() {
 run_gate 0
 run_gate 1
 write_status RUNNING "two_graphics_gates_passed_formal_340_running"
+printf 'B4_TWO_GRAPHICS_GATES_PASSED gate_a=%s gate_b=%s\n' \
+    "$CONTROL_DIR/gate-server-a.json" "$CONTROL_DIR/gate-server-b.json"
 
 export ROBOCASA_PY ROBOCASA_ENV EVALUATOR EVAL_PYTHONPATH EVAL_EGL_VENDOR_JSON B4_SHELL_UTILS
 export SERVING_CHECKPOINT_PATH RESULTS_ROOT RESULTS_DIR EVAL_RUN_NAME

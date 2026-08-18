@@ -84,6 +84,34 @@ def test_launcher_stages_cosmos_runtime_closure_at_wrapper_path() -> None:
     assert script.index("stage_runtime_directory \\\n    cosmos_private_glibc") < script.index('bash "$RUNNER"')
 
 
+def test_launcher_runs_formal_evaluator_locally_then_persists_to_oss() -> None:
+    script = _script()
+    runner = LAUNCHER.with_name("run_cwam_b4_robocasa365_eval_dlc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'readonly PERSIST_OUTPUT_HELPER="$CONTROL_ROOT/cwam_dlc_persist_eval_output.py"' in script
+    assert 'readonly DLC_LOCAL_FORMAL_PARENT=/tmp/cwam_b4_eval_formal' in script
+    assert 'export EVAL_OUTPUT_ROOT="$EVAL_LOCAL_OUTPUT_ROOT"' in script
+    assert '--persistent-output-root "$EVAL_PERSISTENT_OUTPUT_ROOT"' in script
+    assert 'trap persist_formal_output EXIT' in script
+    assert 'OUTPUT_STAGE=' not in script
+    assert '[[ "$EVAL_OUTPUT_ROOT" == /tmp/* ]]' in runner
+    assert 'evaluation output is not on persistent storage' not in runner
+
+
+def test_launcher_emits_observable_eval_gate_milestones() -> None:
+    script = _script()
+    runner = LAUNCHER.with_name("run_cwam_b4_robocasa365_eval_dlc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "B4_ONE_GPU_EGL_SMOKE_PASSED" in script
+    assert "B4_CHECKPOINT_VERIFICATION_PASSED" in runner
+    assert "B4_TWO_POLICY_SERVERS_LOADED" in runner
+    assert "B4_TWO_GRAPHICS_GATES_PASSED" in runner
+
+
 def test_policy_server_launch_nonce_satisfies_server_contract() -> None:
     runner = LAUNCHER.with_name("run_cwam_b4_robocasa365_eval_dlc.sh").read_text(
         encoding="utf-8"

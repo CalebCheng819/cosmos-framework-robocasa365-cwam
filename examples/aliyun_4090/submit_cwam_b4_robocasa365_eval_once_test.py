@@ -53,3 +53,11 @@ def test_submitter_persists_job_id_before_readback() -> None:
     readback = source.index("readback = get_job_readback(client, identifier)", persisted)
     assert accepted < persisted < readback
     assert 'mode.add_argument("--reconcile"' in source
+
+
+def test_submitter_requires_local_output_persistence_controls() -> None:
+    source = SUBMITTER.read_text(encoding="utf-8")
+
+    assert '"cwam_b4_eval_shell_utils.sh"' in source
+    assert '"cwam_dlc_persist_eval_output.py"' in source
+    assert '"Priority": 7' in source

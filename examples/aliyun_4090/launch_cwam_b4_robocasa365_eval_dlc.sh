@@ -37,6 +37,7 @@ readonly B4_EVAL_HELPER="$CONTROL_ROOT/cwam_b4_robocasa365_eval.py"
 readonly ENV_HELPER="$CONTROL_ROOT/cwam_cosmos_env_archive.py"
 readonly ASSET_HELPER="$CONTROL_ROOT/cwam_robocasa_asset_source_package.py"
 readonly EGL_PROBE="$CONTROL_ROOT/probe_mujoco_egl_mapping.py"
+readonly PERSIST_OUTPUT_HELPER="$CONTROL_ROOT/cwam_dlc_persist_eval_output.py"
 readonly SCRATCH_ROOT="/tmp/cwam_b4_eval_$EVAL_EXPERIMENT_ID"
 readonly COSMOS_ENV=/tmp/cwam_cosmos3_robocasa365_eval_nvme/inputs/envs/cosmos-framework-09f23119-cu128-train
 readonly LOCAL_ENV_ARCHIVE="$SCRATCH_ROOT/inputs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
@@ -53,14 +54,13 @@ readonly LOCAL_RUNTIME_STAGING_ROOT=/tmp/cwam_cosmos3_robocasa365_eval_nvme/stag
 readonly LOCAL_PRIVATE_GLIBC="$LOCAL_RUNTIME_STAGING_ROOT/cosmos-r21-private-glibc235-v1"
 readonly LOCAL_GCC_RUNTIME="$LOCAL_RUNTIME_STAGING_ROOT/cosmos-r21-gcc13-runtime-v3"
 readonly EVAL_EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
-readonly OUTPUT_PARENT="$OSS_ROOT/runs/$EVAL_EXPERIMENT_ID"
-readonly OUTPUT_FINAL="$OUTPUT_PARENT/$EVAL_LOGICAL_RUN_ID"
-readonly OUTPUT_STAGE="$OUTPUT_PARENT/.$EVAL_LOGICAL_RUN_ID.incomplete-${DLC_JOB_ID:-unknown}-$$"
+readonly DLC_LOCAL_FORMAL_PARENT=/tmp/cwam_b4_eval_formal
+readonly EVAL_LOCAL_OUTPUT_ROOT="$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
+readonly EVAL_PERSISTENT_OUTPUT_ROOT="$OSS_ROOT/runs/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 readonly EVAL_RUN_NAME=b4-iter20000-robocasa365-seed42
-readonly LAUNCHER_TERMINAL="$OUTPUT_STAGE/launcher-terminal.json"
+readonly LAUNCHER_TERMINAL="$EVAL_LOCAL_OUTPUT_ROOT/launcher-terminal.json"
 readonly REQUIRED_LOCAL_BYTES=161061273600
 
-OUTPUT_PUBLISHED=0
 STARTED_AT="$(date -u +%FT%TZ)"
 
 die() {
@@ -173,25 +173,44 @@ os.replace(temporary, path)
 PY
 }
 
-on_exit() {
-    local exit_code="$?"
+persist_formal_output() {
+    local formal_exit_code="$?"
+    local persistence_exit_code
+    local terminal_exit_code
     trap - EXIT INT TERM
-    if [[ -d "$OUTPUT_STAGE" ]]; then
-        if ((exit_code == 0)); then
-            write_launcher_terminal COMPLETE 0 || exit_code=1
+    set +e
+    if [[ -d "$EVAL_LOCAL_OUTPUT_ROOT" ]]; then
+        if ((formal_exit_code == 0)); then
+            write_launcher_terminal COMPLETE 0
+            terminal_exit_code=$?
+            if ((terminal_exit_code != 0)); then
+                printf 'ERROR: failed to write successful launcher terminal receipt\n' >&2
+                formal_exit_code=1
+            fi
         else
-            write_launcher_terminal FAILED "$exit_code" || true
-        fi
-        if [[ ! -e "$OUTPUT_FINAL" ]]; then
-            mv -T "$OUTPUT_STAGE" "$OUTPUT_FINAL" || true
-            OUTPUT_PUBLISHED=1
+            write_launcher_terminal FAILED "$formal_exit_code" || true
         fi
     fi
-    exit "$exit_code"
+    python3 "$PERSIST_OUTPUT_HELPER" \
+        --local-output-parent "$DLC_LOCAL_FORMAL_PARENT" \
+        --local-output-root "$EVAL_LOCAL_OUTPUT_ROOT" \
+        --persistent-output-parent "$OSS_ROOT/runs" \
+        --persistent-output-root "$EVAL_PERSISTENT_OUTPUT_ROOT" \
+        --experiment-id "$EVAL_EXPERIMENT_ID" \
+        --run-id "$EVAL_LOGICAL_RUN_ID" \
+        --control-commit "$EVAL_CONTROL_COMMIT" \
+        --launcher-exit-code "$formal_exit_code" \
+        --job-id "${DLC_JOB_ID:-${PAI_JOB_ID:-unknown-at-runtime}}"
+    persistence_exit_code=$?
+    if ((persistence_exit_code != 0)); then
+        printf 'ERROR B4_PERSISTENCE_FAILED formal_exit_code=%s persistence_exit_code=%s\n' \
+            "$formal_exit_code" "$persistence_exit_code" >&2
+        exit 90
+    fi
+    printf 'B4_PERSISTENCE_COMPLETE formal_exit_code=%s root=%s\n' \
+        "$formal_exit_code" "$EVAL_PERSISTENT_OUTPUT_ROOT"
+    exit "$formal_exit_code"
 }
-trap on_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
 [[ "$EVAL_CONTROL_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "invalid control commit"
 [[ "$(findmnt -n -T /mnt/workspace -o TARGET)" == /mnt/workspace ]] || die "CPFS mount missing"
@@ -201,7 +220,7 @@ trap 'exit 143' TERM
 [[ "$(git_revision "$SOURCE_ROOT")" == "$SOURCE_COMMIT" ]] || die "source snapshot revision mismatch"
 [[ -z "$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] || die "source snapshot is dirty"
 for file in "$RUNNER" "$SHARD_GROUP_RUNNER" "$B4_SHELL_UTILS" "$B4_EVAL_HELPER" \
-    "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE"; do
+    "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE" "$PERSIST_OUTPUT_HELPER"; do
     require_control_file "$file"
 done
 for file in "$SOURCE_ENV_ARCHIVE" "$SOURCE_ENV_RECEIPT" \
@@ -218,8 +237,16 @@ done
 [[ "$(stat -c %s "$SOURCE_ROBOCASA_ARCHIVE")" == 11101859840 ]] || die "RoboCasa archive size mismatch"
 [[ "$(stat -c %s "$SOURCE_ROBOCASA_OVERLAY")" == 2181120 ]] || die "RoboCasa overlay size mismatch"
 [[ "$(stat -c %s "$VAE_SOURCE")" == 2818839170 ]] || die "VAE size mismatch"
-[[ ! -e "$OUTPUT_FINAL" && ! -e "$OUTPUT_STAGE" ]] || die "formal output already exists"
-mkdir -p "$OUTPUT_PARENT" "$OUTPUT_STAGE"
+[[ ! -e "$EVAL_PERSISTENT_OUTPUT_ROOT" && ! -L "$EVAL_PERSISTENT_OUTPUT_ROOT" ]] || \
+    die "persistent formal output already exists"
+mkdir --parents --mode=0700 -- "$DLC_LOCAL_FORMAL_PARENT"
+[[ ! -e "$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID" && \
+    ! -L "$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID" ]] || \
+    die "refusing to reuse local formal experiment output"
+mkdir --parents --mode=0700 -- "$EVAL_LOCAL_OUTPUT_ROOT"
+trap persist_formal_output EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 rm -rf "$SCRATCH_ROOT" /tmp/cwam_cosmos3_robocasa365_eval_nvme
 available_local_bytes="$(LC_ALL=C df -B1 --output=avail /tmp | awk 'NR == 2 { print $1 }')"
@@ -291,20 +318,22 @@ env -u LD_PRELOAD -u LD_AUDIT -u __EGL_VENDOR_LIBRARY_DIRS \
     __EGL_VENDOR_LIBRARY_FILENAMES="$EVAL_EGL_VENDOR_JSON" \
     PYTHONPATH="$ROBOCASA_REPO:$ROBOSUITE_REPO" \
     "$ROBOCASA_ENV/bin/python" "$EGL_PROBE" --hold-seconds 1 \
-    >"$OUTPUT_STAGE/egl-one-gpu-smoke.log" 2>&1
+    >"$EVAL_LOCAL_OUTPUT_ROOT/egl-one-gpu-smoke.log" 2>&1
+printf 'B4_ONE_GPU_EGL_SMOKE_PASSED log=%s\n' \
+    "$EVAL_LOCAL_OUTPUT_ROOT/egl-one-gpu-smoke.log"
 
 export COSMOS_SOURCE="$SOURCE_ROOT"
 export COSMOS_ENV ROBOCASA_ENV DEMIAN_REPO ROBOCASA_REPO ROBOSUITE_REPO
 export CHECKPOINT_ARTIFACT_ROOT SERVING_CHECKPOINT_PATH ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER
 export TRAINING_CONFIG="$CHECKPOINT_ARTIFACT_ROOT/config.yaml"
-export EVAL_OUTPUT_ROOT="$OUTPUT_STAGE"
+export EVAL_OUTPUT_ROOT="$EVAL_LOCAL_OUTPUT_ROOT"
 export EVAL_WORKER_SCRATCH="$SCRATCH_ROOT/runtime/eval"
 export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER B4_SHELL_UTILS
 
 bash "$RUNNER"
-[[ -s "$OUTPUT_STAGE/evaluation_evidence.json" ]] || die "terminal evaluation evidence missing"
-[[ -s "$OUTPUT_STAGE/status.json" ]] || die "terminal evaluation status missing"
-python3 - "$OUTPUT_STAGE/evaluation_evidence.json" "$OUTPUT_STAGE/status.json" <<'PY'
+[[ -s "$EVAL_LOCAL_OUTPUT_ROOT/evaluation_evidence.json" ]] || die "terminal evaluation evidence missing"
+[[ -s "$EVAL_LOCAL_OUTPUT_ROOT/status.json" ]] || die "terminal evaluation status missing"
+python3 - "$EVAL_LOCAL_OUTPUT_ROOT/evaluation_evidence.json" "$EVAL_LOCAL_OUTPUT_ROOT/status.json" <<'PY'
 import json
 import pathlib
 import sys

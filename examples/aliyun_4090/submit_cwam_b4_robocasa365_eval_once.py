@@ -162,9 +162,11 @@ def validate_local(*, require_unsubmitted: bool) -> None:
         "launch_cwam_b4_robocasa365_eval_dlc.sh",
         "run_cwam_b4_robocasa365_eval_dlc.sh",
         "run_cwam_b4_robocasa365_eval_shard_group.sh",
+        "cwam_b4_eval_shell_utils.sh",
         "cwam_b4_robocasa365_eval.py",
         "cwam_cosmos_env_archive.py",
         "cwam_robocasa_asset_source_package.py",
+        "cwam_dlc_persist_eval_output.py",
         "probe_mujoco_egl_mapping.py",
     ):
         path = CONTROL_ROOT / name
