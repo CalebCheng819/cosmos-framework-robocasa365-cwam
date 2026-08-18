@@ -7,7 +7,7 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 
 readonly PINNED_IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
-readonly PINNED_QUOTA_GROUP="eailabagent_gpu"
+readonly PINNED_QUOTA_GROUP="eailabagent_cpu_task"
 readonly PERSONAL_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs"
 readonly PERSONAL_GPFS_MOUNT="gpfs://gpfs2/ailab-eailabagent-gpfs:$PERSONAL_ROOT"
 
@@ -69,10 +69,8 @@ submit_args=(
     --restart-policy never
     --termination-grace-period-seconds 60
     --backoff_limit 1
-    --enable-sshd
     --image "$PINNED_IMAGE"
     --cpu 32
-    --gpu 1
     --memory 250000
     --store-host-nvme
     --mount "$PERSONAL_GPFS_MOUNT"
@@ -109,7 +107,7 @@ payload = {
     "source_revision": os.environ["SOURCE_REVISION"],
     "source_remote": os.environ["SOURCE_REMOTE"],
     "target_remote": os.environ["TARGET_REMOTE"],
-    "resources": {"replicas": 1, "cpu": 32, "gpu": 1, "memory_mib": 250000},
+    "resources": {"replicas": 1, "cpu": 32, "gpu": 0, "memory_mib": 250000},
 }
 path = pathlib.Path(os.sys.argv[1])
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
