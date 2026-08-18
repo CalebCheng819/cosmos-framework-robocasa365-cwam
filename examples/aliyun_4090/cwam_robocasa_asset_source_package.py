@@ -96,9 +96,10 @@ def _ensure_directory(root: Path, relative: PurePosixPath) -> Path:
             metadata = current.lstat()
         except FileNotFoundError:
             current.mkdir(mode=0o755)
-            continue
+            metadata = current.lstat()
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise AssetPackageError(f"directory path collides with a non-directory: {current}")
+        os.chmod(current, 0o755, follow_symlinks=False)
     return current
 
 

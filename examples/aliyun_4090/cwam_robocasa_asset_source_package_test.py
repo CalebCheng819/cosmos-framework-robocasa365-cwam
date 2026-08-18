@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import tarfile
 import zipfile
 from pathlib import Path
@@ -238,6 +239,47 @@ def test_verify_extract_preserves_provenance_and_expands_fixed_zips(
     assert (stage / OVERLAY_DIRECTORY).stat().st_mode & 0o777 == 0o755
     assert value["schema_version"] == "metadata_no_hash_v1"
     assert value["final_validation"] == "publisher_manifest_path_type_mode_size_exact"
+
+
+def test_verify_extract_normalizes_directories_under_restrictive_umask(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "robocasa-assets.tar"
+    inventory = _build_package(archive)
+    overlay = tmp_path / "legacy-fixture-overlay.tar"
+    inventory.update(_build_overlay(overlay))
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    previous_umask = os.umask(0o077)
+    try:
+        asset_package.verify_extract(
+            _arguments(
+                archive,
+                overlay,
+                stage,
+                tmp_path / "restrictive-umask-extraction.json",
+                inventory,
+            )
+        )
+    finally:
+        os.umask(previous_umask)
+
+    expected_directories = [
+        stage / ".cwam_provenance",
+        stage / ".git",
+        stage / "robocasa",
+        stage / "robocasa/models",
+        stage / "robocasa/models/assets",
+        stage / "robocasa/models/assets/objects",
+        stage / OVERLAY_DIRECTORY,
+    ]
+    expected_directories.extend(
+        stage.joinpath(*target.parts, asset_package.ZIP_ROOTS[archive_name])
+        for archive_name, target in asset_package.ZIP_TARGETS.items()
+    )
+    for directory in expected_directories:
+        assert directory.stat().st_mode & 0o777 == 0o755
 
 
 def test_verify_live_metadata_rechecks_the_publisher_contract(
