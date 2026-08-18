@@ -29,8 +29,10 @@ readonly ACTION_STATS="$INPUT_ROOT/config/robocasa365_native_frame_wise_relative
 readonly VAE_SOURCE="$INPUT_ROOT/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
 readonly QWEN_SOURCE="$INPUT_ROOT/models/Qwen3-VL-8B-Instruct-tokenizer"
 readonly EGL_FRONTEND_SOURCE="$INPUT_ROOT/runtime/glvnd/libEGL.so.1.1.0"
+readonly RUNTIME_CLOSURE_SOURCE="$INPUT_ROOT/runtime/cosmos-r21-dlc-runtime-v1"
 readonly RUNNER="$CONTROL_ROOT/run_cwam_b4_robocasa365_eval_dlc.sh"
 readonly SHARD_GROUP_RUNNER="$CONTROL_ROOT/run_cwam_b4_robocasa365_eval_shard_group.sh"
+readonly B4_SHELL_UTILS="$CONTROL_ROOT/cwam_b4_eval_shell_utils.sh"
 readonly B4_EVAL_HELPER="$CONTROL_ROOT/cwam_b4_robocasa365_eval.py"
 readonly ENV_HELPER="$CONTROL_ROOT/cwam_cosmos_env_archive.py"
 readonly ASSET_HELPER="$CONTROL_ROOT/cwam_robocasa_asset_source_package.py"
@@ -47,6 +49,9 @@ readonly SERVING_CHECKPOINT_PATH="$CHECKPOINT_ARTIFACT_ROOT/model"
 readonly WAN2PT2_VAE="$SCRATCH_ROOT/inputs/models/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
 readonly QWEN_TOKENIZER="$SCRATCH_ROOT/inputs/models/Qwen3-VL-8B-Instruct-tokenizer"
 readonly EGL_ROOT="$SCRATCH_ROOT/runtime/glvnd"
+readonly LOCAL_RUNTIME_STAGING_ROOT=/tmp/cwam_cosmos3_robocasa365_eval_nvme/staging
+readonly LOCAL_PRIVATE_GLIBC="$LOCAL_RUNTIME_STAGING_ROOT/cosmos-r21-private-glibc235-v1"
+readonly LOCAL_GCC_RUNTIME="$LOCAL_RUNTIME_STAGING_ROOT/cosmos-r21-gcc13-runtime-v3"
 readonly EVAL_EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly OUTPUT_PARENT="$OSS_ROOT/runs/$EVAL_EXPERIMENT_ID"
 readonly OUTPUT_FINAL="$OUTPUT_PARENT/$EVAL_LOGICAL_RUN_ID"
@@ -100,6 +105,34 @@ prepare_empty_stage() {
     [[ -z "$(find "$stage" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
         die "extraction stage is not empty: $stage"
     printf 'B4_EMPTY_STAGE_READY destination=%s\n' "$stage"
+}
+
+stage_runtime_directory() {
+    local label="$1"
+    local source="$2"
+    local destination="$3"
+    local parent
+    local stage
+
+    [[ -d "$source" && ! -L "$source" ]] ||
+        die "$label source is missing or unsafe: $source"
+    [[ ! -e "$destination" && ! -L "$destination" ]] ||
+        die "$label destination already exists: $destination"
+    parent="$(dirname -- "$destination")"
+    stage="${destination}.incomplete-${EVAL_EXPERIMENT_ID}-$$"
+    [[ ! -e "$stage" && ! -L "$stage" ]] ||
+        die "$label stage already exists: $stage"
+    mkdir --parents --mode=0755 -- "$parent"
+    chmod 0755 -- "$(dirname -- "$parent")" "$parent"
+    mkdir --mode=0755 -- "$stage"
+    chmod 0755 -- "$stage"
+    cp --archive --reflink=auto -- "$source/." "$stage/"
+    sync -f -- "$stage"
+    mv -T -- "$stage" "$destination"
+    [[ -d "$destination" && ! -L "$destination" ]] ||
+        die "$label atomic local publication failed"
+    printf 'B4_RUNTIME_STAGE_READY label=%s source=%s destination=%s\n' \
+        "$label" "$source" "$destination"
 }
 
 git_revision() {
@@ -167,7 +200,8 @@ trap 'exit 143' TERM
 [[ -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" ]] || die "source snapshot missing"
 [[ "$(git_revision "$SOURCE_ROOT")" == "$SOURCE_COMMIT" ]] || die "source snapshot revision mismatch"
 [[ -z "$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] || die "source snapshot is dirty"
-for file in "$RUNNER" "$SHARD_GROUP_RUNNER" "$B4_EVAL_HELPER" "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE"; do
+for file in "$RUNNER" "$SHARD_GROUP_RUNNER" "$B4_SHELL_UTILS" "$B4_EVAL_HELPER" \
+    "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE"; do
     require_control_file "$file"
 done
 for file in "$SOURCE_ENV_ARCHIVE" "$SOURCE_ENV_RECEIPT" \
@@ -175,7 +209,8 @@ for file in "$SOURCE_ENV_ARCHIVE" "$SOURCE_ENV_RECEIPT" \
     "$ACTION_STATS" "$VAE_SOURCE" "$EGL_FRONTEND_SOURCE"; do
     require_file "$file"
 done
-for directory in "$CHECKPOINT_SOURCE" "$DEMIAN_REPO" "$ROBOSUITE_REPO" "$ROBOCASA_ENV" "$QWEN_SOURCE"; do
+for directory in "$CHECKPOINT_SOURCE" "$DEMIAN_REPO" "$ROBOSUITE_REPO" "$ROBOCASA_ENV" \
+    "$QWEN_SOURCE" "$RUNTIME_CLOSURE_SOURCE"; do
     [[ -d "$directory" && ! -L "$directory" ]] || die "missing input directory: $directory"
 done
 [[ "$(stat -c %s "$SOURCE_ENV_ARCHIVE")" == 14736947200 ]] || die "environment archive size mismatch"
@@ -194,6 +229,16 @@ mkdir -p "$SCRATCH_ROOT/inputs/repos" "$SCRATCH_ROOT/inputs/checkpoints" \
     "$(dirname "$WAN2PT2_VAE")" "$(dirname "$COSMOS_ENV")" "$EGL_ROOT"
 prepare_empty_stage "$COSMOS_ENV"
 prepare_empty_stage "$ROBOCASA_REPO"
+stage_runtime_directory \
+    cosmos_private_glibc \
+    "$RUNTIME_CLOSURE_SOURCE/cosmos-r21-private-glibc235-v1" \
+    "$LOCAL_PRIVATE_GLIBC"
+stage_runtime_directory \
+    cosmos_gcc13_runtime \
+    "$RUNTIME_CLOSURE_SOURCE/cosmos-r21-gcc13-runtime-v3" \
+    "$LOCAL_GCC_RUNTIME"
+require_file "$LOCAL_PRIVATE_GLIBC/root/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+require_file "$LOCAL_GCC_RUNTIME/runtime-root/lib/libstdc++.so.6.0.32"
 
 copy_regular_file "$SOURCE_ENV_ARCHIVE" "$LOCAL_ENV_ARCHIVE" 14736947200
 copy_regular_file "$SOURCE_ENV_RECEIPT" "$LOCAL_ENV_RECEIPT" 2124
@@ -254,7 +299,7 @@ export CHECKPOINT_ARTIFACT_ROOT SERVING_CHECKPOINT_PATH ACTION_STATS WAN2PT2_VAE
 export TRAINING_CONFIG="$CHECKPOINT_ARTIFACT_ROOT/config.yaml"
 export EVAL_OUTPUT_ROOT="$OUTPUT_STAGE"
 export EVAL_WORKER_SCRATCH="$SCRATCH_ROOT/runtime/eval"
-export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER
+export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER B4_SHELL_UTILS
 
 bash "$RUNNER"
 [[ -s "$OUTPUT_STAGE/evaluation_evidence.json" ]] || die "terminal evaluation evidence missing"

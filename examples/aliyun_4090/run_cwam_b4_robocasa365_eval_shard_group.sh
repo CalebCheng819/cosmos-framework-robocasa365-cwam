@@ -7,13 +7,19 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 
 required=(
-    ROBOCASA_PY EVALUATOR EVAL_PYTHONPATH EVAL_EGL_VENDOR_JSON
+    ROBOCASA_PY ROBOCASA_ENV B4_SHELL_UTILS EVALUATOR EVAL_PYTHONPATH EVAL_EGL_VENDOR_JSON
     SERVING_CHECKPOINT_PATH RESULTS_ROOT RESULTS_DIR EVAL_RUN_NAME
     EVALUATOR_TIMEOUT_SECONDS EVAL_GROUP_CONTROL_DIR
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
 done
+[[ -f "$B4_SHELL_UTILS" && ! -L "$B4_SHELL_UTILS" ]] || {
+    printf 'ERROR: missing B4 shell utilities\n' >&2
+    exit 2
+}
+# shellcheck source=examples/aliyun_4090/cwam_b4_eval_shell_utils.sh
+source "$B4_SHELL_UTILS"
 
 [[ "$#" -ge 4 ]] || {
     printf 'Usage: %s LABEL PORT SERVER_PID SHARD...\n' "$0" >&2
@@ -29,7 +35,7 @@ readonly -a SHARDS=("$@")
 [[ "$SERVER_LABEL" =~ ^server-[ab]$ ]] || { printf 'ERROR: invalid server label\n' >&2; exit 2; }
 [[ "$PORT" =~ ^[0-9]+$ ]] || { printf 'ERROR: invalid port\n' >&2; exit 2; }
 [[ "$SERVER_PID" =~ ^[1-9][0-9]*$ ]] || { printf 'ERROR: invalid server PID\n' >&2; exit 2; }
-[[ -f "$ROBOCASA_PY" && ! -L "$ROBOCASA_PY" ]] || { printf 'ERROR: missing RoboCasa Python\n' >&2; exit 2; }
+cwam_require_trusted_executable "$ROBOCASA_PY" "$(dirname -- "$ROBOCASA_ENV")" || exit 2
 [[ -f "$EVALUATOR" && ! -L "$EVALUATOR" ]] || { printf 'ERROR: missing evaluator\n' >&2; exit 2; }
 [[ -d "$EVAL_GROUP_CONTROL_DIR" && ! -L "$EVAL_GROUP_CONTROL_DIR" ]] || {
     printf 'ERROR: missing group control directory\n' >&2

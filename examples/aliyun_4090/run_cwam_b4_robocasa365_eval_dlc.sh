@@ -11,11 +11,18 @@ required=(
     ROBOSUITE_REPO CHECKPOINT_ARTIFACT_ROOT SERVING_CHECKPOINT_PATH
     TRAINING_CONFIG ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER
     EVAL_OUTPUT_ROOT EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID EVAL_RUN_NAME
-    EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER EVAL_WORKER_SCRATCH
+    EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER B4_SHELL_UTILS SHARD_GROUP_RUNNER
+    EVAL_WORKER_SCRATCH
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
 done
+[[ -f "$B4_SHELL_UTILS" && ! -L "$B4_SHELL_UTILS" ]] || {
+    printf 'ERROR: missing B4 shell utilities\n' >&2
+    exit 2
+}
+# shellcheck source=examples/aliyun_4090/cwam_b4_eval_shell_utils.sh
+source "$B4_SHELL_UTILS"
 
 readonly SOURCE_COMMIT=e7775ffcea0a2d577597fbeb05c8bb92905aba0f
 readonly DEMIAN_COMMIT=2600ece5bf0eeacf010a95f084dcda2de6d30d59
@@ -133,10 +140,15 @@ for directory in "$COSMOS_SOURCE" "$COSMOS_ENV" "$ROBOCASA_ENV" "$DEMIAN_REPO" \
     [[ -d "$directory" && ! -L "$directory" ]] || die "missing directory: $directory"
 done
 for file in "$TRAINING_CONFIG" "$ACTION_STATS" "$WAN2PT2_VAE" \
-    "$EVAL_EGL_VENDOR_JSON" "$HELPER" "$SHARD_GROUP_RUNNER" "$EVALUATOR" \
-    "$COSMOS_PY" "$TORCHRUN" "$ROBOCASA_PY"; do
+    "$EVAL_EGL_VENDOR_JSON" "$HELPER" "$SHARD_GROUP_RUNNER" "$EVALUATOR"; do
     [[ -f "$file" && ! -L "$file" ]] || die "missing regular file: $file"
 done
+cwam_require_trusted_executable "$COSMOS_PY" "$COSMOS_ENV" ||
+    die "untrusted Cosmos Python entrypoint"
+cwam_require_trusted_executable "$TORCHRUN" "$COSMOS_ENV" ||
+    die "untrusted torchrun entrypoint"
+cwam_require_trusted_executable "$ROBOCASA_PY" "$(dirname -- "$ROBOCASA_ENV")" ||
+    die "untrusted RoboCasa Python entrypoint"
 [[ "$(git_revision "$COSMOS_SOURCE")" == "$SOURCE_COMMIT" ]] || die "Cosmos source revision mismatch"
 [[ "$(git_revision "$DEMIAN_REPO")" == "$DEMIAN_COMMIT" ]] || die "DeMiAn revision mismatch"
 [[ "$(git_revision "$ROBOCASA_REPO")" == "$ROBOCASA_COMMIT" ]] || die "RoboCasa revision mismatch"
@@ -288,7 +300,7 @@ run_gate 0
 run_gate 1
 write_status RUNNING "two_graphics_gates_passed_formal_340_running"
 
-export ROBOCASA_PY EVALUATOR EVAL_PYTHONPATH EVAL_EGL_VENDOR_JSON
+export ROBOCASA_PY ROBOCASA_ENV EVALUATOR EVAL_PYTHONPATH EVAL_EGL_VENDOR_JSON B4_SHELL_UTILS
 export SERVING_CHECKPOINT_PATH RESULTS_ROOT RESULTS_DIR EVAL_RUN_NAME
 export EVALUATOR_TIMEOUT_SECONDS
 
