@@ -7,9 +7,15 @@ set -Eeuo pipefail
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${COSMOS_SOURCE:?Set COSMOS_SOURCE to the immutable C1 source snapshot.}"
 : "${FORMAL_RUN_NAME:=CWAM-COSMOS3-C1-20260817-R1}"
+: "${WORLD_SIZE:=6}"
+
+[[ "$WORLD_SIZE" == 6 || "$WORLD_SIZE" == 8 ]] || {
+    echo "ERROR: WORLD_SIZE must be exactly 6 or 8" >&2
+    exit 1
+}
 
 export EXPERIMENT_LABEL=C1
-export WORLD_SIZE=6
+export WORLD_SIZE
 export RECIPE_NAME=action_policy_robocasa365_causal_state_nano
 export EXPECTED_HOST="${EXPECTED_HOST:-gpu-l-lg-cmc-h-h200-0299.host.h.pjlab.org.cn}"
 export CONTROL_ROOT="${CONTROL_ROOT:-/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/experiments/cwam-c1-20260817/control}"

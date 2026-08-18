@@ -65,6 +65,7 @@ def test_resume_submission_records_dynamic_host_and_checkpoint() -> None:
                 "RJOB_NAME": "cwam-c1-20260817-r7",
                 "EXPECTED_HOST": expected_host,
                 "CONTROL_ROOT": str(control_root),
+                "C1_GPU_COUNT": "8",
                 "RESUME_FROM_OSS": "1",
                 "RESUME_CHECKPOINT_REMOTE": checkpoint_remote,
                 "RESUME_CHECKPOINT_NAME": checkpoint_name,
@@ -78,12 +79,19 @@ def test_resume_submission_records_dynamic_host_and_checkpoint() -> None:
         assert "RESUME_FROM_OSS=1" in submitted
         assert checkpoint_remote in submitted
         assert checkpoint_name in submitted
+        assert "WORLD_SIZE=8" in submitted
+        assert "--gpu\n8" in submitted
+        assert "--cpu\n128" in submitted
+        assert "--memory\n1500000" in submitted
 
         receipt_path = control_root / "results" / f"{run_id}.submission.json"
         receipt = json.loads(receipt_path.read_text())
         assert receipt["status"] == "accepted"
         assert receipt["scheduler_rjob_name"] == "cwam-c1-20260817-r7-12345678"
         assert receipt["expected_host"] == expected_host
+        assert receipt["gpu_count"] == 8
+        assert receipt["cpu"] == 128
+        assert receipt["memory_mib"] == 1500000
         assert receipt["resume_from_oss"] is True
         assert receipt["resume_checkpoint_remote"] == checkpoint_remote
         assert receipt["resume_checkpoint_name"] == checkpoint_name
