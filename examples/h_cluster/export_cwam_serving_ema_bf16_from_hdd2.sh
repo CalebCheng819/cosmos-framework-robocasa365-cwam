@@ -31,6 +31,7 @@ readonly EVIDENCE_ROOT="$HANDOFF_ROOT/evidence"
 readonly STATUS_JSON="$EVIDENCE_ROOT/status.json"
 readonly INVENTORY="$EVIDENCE_ROOT/published-inventory.txt"
 readonly PERSONAL_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
+readonly RCLONE_BIN="${RCLONE_BIN:-$PERSONAL_HANDOFF_ROOT/tools/rclone}"
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -91,6 +92,8 @@ on_exit() {
 [[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* ]] || die "handoff root escapes personal GPFS"
 [[ "$WORK_ROOT_BASE" == "$PERSONAL_HANDOFF_ROOT/"* ]] || die "work root base escapes personal GPFS"
 [[ -d "$WORK_ROOT_BASE" && ! -L "$WORK_ROOT_BASE" && -w "$WORK_ROOT_BASE" ]] || die "work root base is not writable"
+[[ "$RCLONE_BIN" == "$PERSONAL_HANDOFF_ROOT/"* ]] || die "rclone binary escapes personal GPFS"
+[[ -f "$RCLONE_BIN" && ! -L "$RCLONE_BIN" && -x "$RCLONE_BIN" ]] || die "rclone binary is unavailable"
 [[ ! -e "$WORK_ROOT" ]] || die "worker work root already exists"
 [[ ! -e "$HANDOFF_ROOT" ]] || die "handoff root already exists"
 
@@ -134,12 +137,12 @@ chmod 0555 "$HANDOFF_ROOT"
 openssl cms -decrypt -binary -inform DER -in "$ENCRYPTED_CONFIG" \
     -recip "$CERTIFICATE" -inkey "$PRIVATE_KEY" -out "$RCLONE_CONFIG"
 chmod 0400 "$RCLONE_CONFIG"
-rclone --config "$RCLONE_CONFIG" listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
 
-write_status RUNNING "downloading source checkpoint to worker NVMe"
-rclone --config "$RCLONE_CONFIG" copy "$SOURCE_REMOTE/model" "$SOURCE_ROOT/model" \
+write_status RUNNING "downloading source checkpoint to worker GPFS"
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" copy "$SOURCE_REMOTE/model" "$SOURCE_ROOT/model" \
     --size-only --immutable --transfers 8 --checkers 16 --retries 5 --low-level-retries 10
-rclone --config "$RCLONE_CONFIG" copyto "$SOURCE_CONFIG_REMOTE" "$SOURCE_ROOT/config.yaml" \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" copyto "$SOURCE_CONFIG_REMOTE" "$SOURCE_ROOT/config.yaml" \
     --size-only --immutable --retries 5 --low-level-retries 10
 
 IFS=',' read -r -a sample_keys <<<"$SAMPLE_KEYS_CSV"
@@ -166,13 +169,13 @@ PYTHONPATH="$COSMOS_SOURCE:$CONTROL_ROOT" \
     >"$EVIDENCE_ROOT/export.log" 2>&1
 
 write_status RUNNING "publishing exact artifact to H object storage"
-rclone --config "$RCLONE_CONFIG" copy "$ARTIFACT_ROOT" "$TARGET_REMOTE" \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" copy "$ARTIFACT_ROOT" "$TARGET_REMOTE" \
     --size-only --immutable --transfers 8 --checkers 16 --retries 5 --low-level-retries 10
 (
     cd "$ARTIFACT_ROOT"
     find . -type f -printf '%s|%P\n' | LC_ALL=C sort
 ) >"$EVIDENCE_ROOT/local-inventory.txt"
-rclone --config "$RCLONE_CONFIG" lsf --recursive --files-only --format sp --separator '|' \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" lsf --recursive --files-only --format sp --separator '|' \
     "$TARGET_REMOTE" | LC_ALL=C sort >"$INVENTORY"
 cmp "$EVIDENCE_ROOT/local-inventory.txt" "$INVENTORY" || die "published path/size inventory mismatch"
 
