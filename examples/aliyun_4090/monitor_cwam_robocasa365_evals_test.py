@@ -6,6 +6,7 @@ import csv
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,6 +94,74 @@ def test_submitted_jobs_binds_controller_identities() -> None:
     assert MODULE.submitted_jobs(controller, {CONFIG["experiment_id"]: CONFIG}) == {
         CONFIG["experiment_id"]: JOB_ID
     }
+
+
+def test_make_get_job_bounds_control_plane_call() -> None:
+    calls = []
+
+    class Request:
+        def __init__(self, *, need_detail: bool) -> None:
+            self.need_detail = need_detail
+
+    class Runtime:
+        def __init__(self, **kwargs) -> None:
+            self.options = kwargs
+
+    class Client:
+        def get_job_with_options(self, job_id, request, headers, runtime):
+            calls.append((job_id, request, headers, runtime))
+            return SimpleNamespace(body=SimpleNamespace(to_map=lambda: {"JobId": job_id}))
+
+    get_job = MODULE.make_get_job(Client(), Request, Runtime)
+    assert get_job(JOB_ID) == {"JobId": JOB_ID}
+    job_id, request, headers, runtime = calls[0]
+    assert job_id == JOB_ID
+    assert request.need_detail is True
+    assert headers == {}
+    assert runtime.options == {
+        "autoretry": True,
+        "max_attempts": 2,
+        "connect_timeout": 5_000,
+        "read_timeout": 15_000,
+    }
+
+
+def test_monitor_once_validates_a_succeeded_job_before_queued_peer(tmp_path: Path, monkeypatch) -> None:
+    second_config = {
+        **CONFIG,
+        "experiment_id": "EXP-B3",
+        "logical_run_id": "RUN-B3",
+        "display_name": "exp-b3",
+    }
+    configs = {CONFIG["experiment_id"]: CONFIG, second_config["experiment_id"]: second_config}
+    jobs = {CONFIG["experiment_id"]: JOB_ID, second_config["experiment_id"]: "dlcsecond"}
+
+    def readback(job_id: str) -> dict:
+        config = CONFIG if job_id == JOB_ID else second_config
+        value = _job("Succeeded" if job_id == JOB_ID else "Queuing")
+        value["JobId"] = job_id
+        value["DisplayName"] = config["display_name"]
+        value["Envs"]["EVAL_EXPERIMENT_ID"] = config["experiment_id"]
+        value["Envs"]["EVAL_LOGICAL_RUN_ID"] = config["logical_run_id"]
+        return value
+
+    validated = []
+
+    def validate_output(parent, config, job_id, control_commit):
+        validated.append((config["experiment_id"], job_id))
+        return {"status": "complete", "successes": 1}
+
+    monkeypatch.setattr(MODULE, "validate_terminal_output", validate_output)
+    aggregate, complete, failed = MODULE.monitor_once(
+        configs, jobs, readback, tmp_path, COMMIT, tmp_path / "records"
+    )
+    assert aggregate["status"] == "queued"
+    assert aggregate["formal_results"] == {
+        CONFIG["experiment_id"]: {"status": "complete", "successes": 1}
+    }
+    assert validated == [(CONFIG["experiment_id"], JOB_ID)]
+    assert complete is False
+    assert failed is False
 
 
 def test_validate_terminal_output_requires_340_by_17_formal_result(tmp_path: Path) -> None:

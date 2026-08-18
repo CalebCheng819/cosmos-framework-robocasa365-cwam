@@ -22,6 +22,9 @@ DEFAULT_PERSISTENT_RUN_PARENT = Path(
 )
 SUCCESS_STATUS = "Succeeded"
 FAILURE_STATUSES = {"Failed", "Stopped"}
+GET_JOB_CONNECT_TIMEOUT_MS = 5_000
+GET_JOB_READ_TIMEOUT_MS = 15_000
+GET_JOB_MAX_ATTEMPTS = 2
 
 
 def utc_now() -> str:
@@ -93,6 +96,31 @@ def submitted_jobs(
         require(job_id.startswith("dlc"), f"invalid DLC job ID for {experiment_id}: {job_id}")
         result[experiment_id] = job_id
     return result
+
+
+def make_get_job(
+    client: Any,
+    request_type: Callable[..., Any],
+    runtime_options_type: Callable[..., Any],
+) -> Callable[[str], dict[str, Any]]:
+    """Build a bounded DLC readback call so a transient API stall cannot stop monitoring."""
+    runtime = runtime_options_type(
+        autoretry=True,
+        max_attempts=GET_JOB_MAX_ATTEMPTS,
+        connect_timeout=GET_JOB_CONNECT_TIMEOUT_MS,
+        read_timeout=GET_JOB_READ_TIMEOUT_MS,
+    )
+
+    def get_job(job_id: str) -> dict[str, Any]:
+        response = client.get_job_with_options(
+            job_id,
+            request_type(need_detail=True),
+            {},
+            runtime,
+        )
+        return response.body.to_map()
+
+    return get_job
 
 
 def validate_job_readback(
@@ -249,19 +277,22 @@ def monitor_once(
             failed = True
         if snapshot["status"] != SUCCESS_STATUS:
             all_succeeded = False
-    state = "failed" if failed else "succeeded_pending_evidence" if all_succeeded else (
-        "running" if any(item["status"] == "Running" for item in snapshots.values()) else "queued"
-    )
-    if all_succeeded:
-        for experiment_id, config in configs.items():
+    for experiment_id, config in configs.items():
+        if snapshots[experiment_id]["status"] == SUCCESS_STATUS:
             try:
                 results[experiment_id] = validate_terminal_output(
                     persistent_run_parent, config, jobs[experiment_id], control_commit
                 )
             except RuntimeError as error:
                 results[experiment_id] = {"status": "pending_or_invalid", "error": str(error)}
-        if all(value.get("status") == "complete" for value in results.values()):
-            state = "complete"
+    all_evidence_complete = len(results) == len(configs) and all(
+        value.get("status") == "complete" for value in results.values()
+    )
+    state = "failed" if failed else "complete" if all_succeeded and all_evidence_complete else (
+        "succeeded_pending_evidence" if all_succeeded else
+        "running" if any(item["status"] == "Running" for item in snapshots.values()) else
+        "queued"
+    )
     aggregate = {
         "captured_at_utc": utc_now(),
         "status": state,
@@ -314,8 +345,9 @@ def main() -> int:
         if client is None:
             namespace = runpy.run_path(str(args.submitter))
             client = namespace["make_client"]()
-            get_job_readback = namespace["get_job_readback"]
-            get_job = lambda job_id: get_job_readback(client, job_id)
+            from alibabacloud_tea_util.models import RuntimeOptions
+
+            get_job = make_get_job(client, namespace["models"].GetJobRequest, RuntimeOptions)
         try:
             aggregate, complete, failed = monitor_once(
                 configs,
