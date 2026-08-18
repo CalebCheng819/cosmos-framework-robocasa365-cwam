@@ -64,7 +64,7 @@ export FORMAL_RUN_NAME=$q_formal
 export DIAG_RUN_ID=$q_diag
 export EXPECTED_HOST=$q_host
 export CONTROL_ROOT=$q_control
-bash \"\$COSMOS_SOURCE/examples/h_cluster/run_cwam_c1_diag_then_v2_h8.sh\"
+bash "\$COSMOS_SOURCE/examples/h_cluster/run_cwam_c1_diag_then_v2_h8.sh"
 EOF
 )"
 
