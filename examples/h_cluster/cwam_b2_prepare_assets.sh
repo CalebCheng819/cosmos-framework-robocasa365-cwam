@@ -21,6 +21,11 @@ umask 077
 : "${QWEN3_VL_TOKENIZER_PATH:=/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Qwen--Qwen3-VL-8B-Instruct}"
 : "${B2_INPUT_ROOT:=/nvme/cwam-b2/inputs}"
 : "${LATENT_REMOTE:=eailab-hdd2:eailab/chengjuntao/caches/robocasa365-wan22-triple480-fullpad-bf16/CWAM-E35STRONG-FULLPAD-WAN-CACHE-R3-8H200-20260804}"
+: "${AUX_RUNTIME_REMOTE:=}"
+: "${AUX_RUNTIME_OVERLAY_REMOTE:=}"
+: "${AUX_RUNTIME_ROOT:=}"
+: "${AUX_RUNTIME_REQUIRED_FILE:=}"
+: "${AUX_RUNTIME_REQUIRED_DATA_FILE:=}"
 
 PYTHON_BIN="$COSMOS_ENV/bin/python"
 : "${RCLONE_BIN:=$PERSONAL_ROOT/tools/rclone}"
@@ -101,6 +106,75 @@ fi
 
 RCLONE_CONFIG="$RCLONE_CONFIG" "$RCLONE_BIN" listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
 echo "RCLONE_HANDOFF_READY remote=eailab-hdd2"
+
+if [[ -n "$AUX_RUNTIME_REMOTE" || -n "$AUX_RUNTIME_ROOT" || -n "$AUX_RUNTIME_REQUIRED_FILE" ]]; then
+    [[ -n "$AUX_RUNTIME_REMOTE" && -n "$AUX_RUNTIME_ROOT" && -n "$AUX_RUNTIME_REQUIRED_FILE" ]] || {
+        echo "ERROR: auxiliary runtime restore requires remote, root, and required file" >&2
+        exit 1
+    }
+    runtime_complete=false
+    if [[ -x "$AUX_RUNTIME_REQUIRED_FILE" ]]; then
+        if [[ -z "$AUX_RUNTIME_REQUIRED_DATA_FILE" || -f "$AUX_RUNTIME_REQUIRED_DATA_FILE" ]]; then
+            runtime_complete=true
+        fi
+    fi
+    if [[ "$runtime_complete" != true ]]; then
+        runtime_stage="${AUX_RUNTIME_ROOT}.partial.$$"
+        [[ ! -e "$AUX_RUNTIME_ROOT" ]] || {
+            echo "ERROR: incomplete auxiliary runtime exists: $AUX_RUNTIME_ROOT" >&2
+            exit 1
+        }
+        rm -rf "$runtime_stage"
+        mkdir -p "$runtime_stage"
+        echo "AUX_RUNTIME_STAGE_STARTED remote=$AUX_RUNTIME_REMOTE destination=$runtime_stage"
+        RCLONE_CONFIG="$RCLONE_CONFIG" "$RCLONE_BIN" copy "$AUX_RUNTIME_REMOTE" "$runtime_stage" \
+            --links \
+            --transfers 16 \
+            --checkers 32 \
+            --retries 5 \
+            --low-level-retries 20 \
+            --stats 30s \
+            --stats-one-line
+        if [[ -n "$AUX_RUNTIME_OVERLAY_REMOTE" ]]; then
+            echo "AUX_RUNTIME_OVERLAY_STARTED remote=$AUX_RUNTIME_OVERLAY_REMOTE destination=$runtime_stage"
+            RCLONE_CONFIG="$RCLONE_CONFIG" "$RCLONE_BIN" copy "$AUX_RUNTIME_OVERLAY_REMOTE" "$runtime_stage" \
+                --links \
+                --transfers 16 \
+                --checkers 32 \
+                --retries 5 \
+                --low-level-retries 20 \
+                --stats 30s \
+                --stats-one-line
+        fi
+        staged_required="$runtime_stage/${AUX_RUNTIME_REQUIRED_FILE#"$AUX_RUNTIME_ROOT"/}"
+        [[ -f "$staged_required" ]] || {
+            echo "ERROR: staged auxiliary runtime is missing file: $staged_required" >&2
+            exit 1
+        }
+        chmod 0755 "$staged_required"
+        [[ -x "$staged_required" ]] || {
+            echo "ERROR: staged auxiliary runtime is missing executable: $staged_required" >&2
+            exit 1
+        }
+        if [[ -n "$AUX_RUNTIME_REQUIRED_DATA_FILE" ]]; then
+            staged_data="$runtime_stage/${AUX_RUNTIME_REQUIRED_DATA_FILE#"$AUX_RUNTIME_ROOT"/}"
+            [[ -f "$staged_data" ]] || {
+                echo "ERROR: staged auxiliary runtime is missing data file: $staged_data" >&2
+                exit 1
+            }
+        fi
+        mv "$runtime_stage" "$AUX_RUNTIME_ROOT"
+    fi
+    [[ -x "$AUX_RUNTIME_REQUIRED_FILE" ]] || {
+        echo "ERROR: auxiliary runtime did not become ready: $AUX_RUNTIME_REQUIRED_FILE" >&2
+        exit 1
+    }
+    if [[ -n "$AUX_RUNTIME_REQUIRED_DATA_FILE" && ! -f "$AUX_RUNTIME_REQUIRED_DATA_FILE" ]]; then
+        echo "ERROR: auxiliary runtime data did not become ready: $AUX_RUNTIME_REQUIRED_DATA_FILE" >&2
+        exit 1
+    fi
+    echo "AUX_RUNTIME_READY root=$AUX_RUNTIME_ROOT"
+fi
 
 control_pid=""
 if [[ ! -s "$CONTROL_CACHE_ROOT/manifest.json" || ! -s "$CONTROL_CACHE_ROOT/_SUCCESS.json" ]]; then
