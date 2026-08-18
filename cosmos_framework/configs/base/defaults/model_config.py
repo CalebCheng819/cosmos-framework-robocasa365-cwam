@@ -306,6 +306,21 @@ class OmniMoTModelConfig:
     causal_action_state_dynamics_warmup_iters: int = 1000
     causal_action_state_variance_loss_weight: float = 0.01
     causal_action_state_input_resolution: str = "480"
+    # CWAM-v2 keeps the action decoder C-only while adding typed slots and
+    # observation-only self-supervision. All switches default off so C1
+    # checkpoints retain their exact module structure.
+    causal_action_state_v2_enabled: bool = False
+    causal_action_state_object_slots: int = 12
+    causal_action_state_geometry_slots: int = 8
+    causal_action_state_dynamics_slots: int = 8
+    causal_action_state_causal_memory_slots: int = 4
+    causal_action_state_spatial_decoder_layers: int = 2
+    causal_action_state_relative_geometry_max_patches: int = 32
+    causal_action_state_vision_lora_rank: int = 16
+    causal_action_state_history_replay_enabled: bool = True
+    causal_action_state_spatial_loss_weight: float = 0.0
+    causal_action_state_relative_geometry_loss_weight: float = 0.0
+    causal_action_state_history_replay_loss_weight: float = 0.0
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

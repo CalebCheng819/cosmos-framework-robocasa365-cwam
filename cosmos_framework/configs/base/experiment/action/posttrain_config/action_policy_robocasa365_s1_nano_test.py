@@ -6,6 +6,7 @@ from omegaconf import OmegaConf
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_robocasa365_nano import (
     action_policy_robocasa365_b2_nano,
     action_policy_robocasa365_causal_state_nano,
+    action_policy_robocasa365_cwam_v2_nano,
     action_policy_robocasa365_nano,
     action_policy_robocasa365_s1_nano,
     action_policy_robocasa365_strong_nano,
@@ -160,3 +161,23 @@ def test_causal_state_gradient_evidence_covers_state_and_action_heads() -> None:
         "action_modality_embed",
         "causal_action_state",
     ]
+
+
+def test_cwam_v2_enables_factorized_observation_only_objectives() -> None:
+    v2 = action_policy_robocasa365_cwam_v2_nano
+
+    assert v2.model.config.causal_action_state_enabled is True
+    assert v2.model.config.causal_action_state_v2_enabled is True
+    assert (
+        v2.model.config.causal_action_state_object_slots
+        + v2.model.config.causal_action_state_geometry_slots
+        + v2.model.config.causal_action_state_dynamics_slots
+        + v2.model.config.causal_action_state_causal_memory_slots
+        == v2.model.config.causal_action_state_slots
+    )
+    assert v2.model.config.causal_action_state_spatial_loss_weight == 0.20
+    assert v2.model.config.causal_action_state_relative_geometry_loss_weight == 0.10
+    assert v2.model.config.causal_action_state_history_replay_loss_weight == 0.10
+    assert list(v2.optimizer.keys_to_select) == list(
+        action_policy_robocasa365_causal_state_nano.optimizer.keys_to_select
+    )

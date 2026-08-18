@@ -592,3 +592,39 @@ cs.store(
     name="action_policy_robocasa365_causal_state_nano",
     node=action_policy_robocasa365_causal_state_nano,
 )
+
+
+def _action_policy_robocasa365_cwam_v2_nano_model_config() -> dict:
+    """C2: factorized online state with observation-only spatial and history objectives."""
+    cfg = _action_policy_robocasa365_causal_state_nano_model_config()
+    cfg.update(
+        causal_action_state_v2_enabled=True,
+        causal_action_state_object_slots=12,
+        causal_action_state_geometry_slots=8,
+        causal_action_state_dynamics_slots=8,
+        causal_action_state_causal_memory_slots=4,
+        causal_action_state_spatial_decoder_layers=2,
+        causal_action_state_relative_geometry_max_patches=32,
+        causal_action_state_vision_lora_rank=16,
+        causal_action_state_history_replay_enabled=True,
+        causal_action_state_spatial_loss_weight=0.20,
+        causal_action_state_relative_geometry_loss_weight=0.10,
+        causal_action_state_history_replay_loss_weight=0.10,
+    )
+    return cfg
+
+
+action_policy_robocasa365_cwam_v2_nano = copy.deepcopy(
+    action_policy_robocasa365_causal_state_nano
+)
+action_policy_robocasa365_cwam_v2_nano.job.name = "action_policy_robocasa365_cwam_v2_nano"
+action_policy_robocasa365_cwam_v2_nano.model.config = (
+    _action_policy_robocasa365_cwam_v2_nano_model_config()
+)
+
+cs.store(
+    group="experiment",
+    package="_global_",
+    name="action_policy_robocasa365_cwam_v2_nano",
+    node=action_policy_robocasa365_cwam_v2_nano,
+)

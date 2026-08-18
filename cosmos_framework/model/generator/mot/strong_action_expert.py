@@ -224,7 +224,7 @@ class RelationAwareCrossAttention(nn.Module):
         context_type: torch.Tensor,
         context_view: torch.Tensor,
         context_age: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, query_length = query.shape[:2]
         context_length = context.shape[1]
         q = self.q_proj(query).view(batch_size, query_length, self.num_heads, self.head_dim).transpose(1, 2)
@@ -250,7 +250,11 @@ class RelationAwareCrossAttention(nn.Module):
         normalized_entropy = entropy / denominator
         valid_queries = query_valid[:, None, :].expand(-1, self.num_heads, -1)
         entropy_mean = normalized_entropy.masked_fill(~valid_queries, 0.0).sum() / valid_queries.sum().clamp_min(1)
-        return attended, entropy_mean
+        valid_query_weights = valid_queries[:, :, :, None].to(weights.dtype)
+        context_importance = (weights * valid_query_weights).sum(dim=(1, 2))
+        context_importance = context_importance / valid_query_weights.sum(dim=(1, 2)).clamp_min(1)
+        context_importance = context_importance.masked_fill(~context_valid, 0.0)
+        return attended, entropy_mean, context_importance
 
 
 class ActionExpertBlock(nn.Module):
@@ -296,7 +300,7 @@ class ActionExpertBlock(nn.Module):
         context_type: torch.Tensor,
         context_view: torch.Tensor,
         context_age: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         normalized = self.self_norm(action)
         residual, _ = self.self_attention(
             normalized,
@@ -306,7 +310,7 @@ class ActionExpertBlock(nn.Module):
             need_weights=False,
         )
         action = action + residual.masked_fill(~action_valid[:, :, None], 0.0)
-        residual, entropy = self.cross_attention(
+        residual, entropy, context_importance = self.cross_attention(
             self.cross_norm(action),
             self.context_norm(context),
             query_valid=action_valid,
@@ -319,7 +323,7 @@ class ActionExpertBlock(nn.Module):
         left, right = self.ffn_in(self.ffn_norm(action)).chunk(2, dim=-1)
         residual = self.ffn_out(F.silu(left) * right)
         action = action + residual.masked_fill(~action_valid[:, :, None], 0.0)
-        return action, entropy
+        return action, entropy, context_importance
 
 
 class StrongActionContextExpert(nn.Module):
@@ -616,7 +620,7 @@ class StrongActionContextExpert(nn.Module):
 
         entropies = []
         for layer in self.layers:
-            action_batch, entropy = layer(
+            action_batch, entropy, _context_importance = layer(
                 action_batch,
                 context_batch,
                 action_valid=action_valid,

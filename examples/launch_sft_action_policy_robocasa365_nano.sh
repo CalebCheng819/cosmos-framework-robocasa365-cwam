@@ -143,17 +143,17 @@ action_policy_robocasa365_strong_nano.toml|action_policy_robocasa365_b2_nano.tom
     [[ -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/_SUCCESS.json" ]] ||
         { echo "ERROR: Strong-v1/B2 triple-view 480 latent cache is incomplete" >&2; exit 1; }
     ;;
-action_policy_robocasa365_causal_state_nano.toml)
+action_policy_robocasa365_causal_state_nano.toml|action_policy_robocasa365_cwam_v2_nano.toml)
     [[ "$NPROC_PER_NODE" -eq 6 || "$NPROC_PER_NODE" -eq 8 ]] ||
-        { echo "ERROR: C1 formal training requires exactly 6 or 8 ranks" >&2; exit 1; }
+        { echo "ERROR: C1/CWAM-v2 formal training requires exactly 6 or 8 ranks" >&2; exit 1; }
     [[ "$ROBOCASA365_STRONG_LATENT_CACHE_MODE" == required ]] ||
-        { echo "ERROR: C1 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
+        { echo "ERROR: C1/CWAM-v2 requires ROBOCASA365_STRONG_LATENT_CACHE_MODE=required" >&2; exit 1; }
     [[ "$CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER" == 1 ]] ||
-        { echo "ERROR: C1 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
+        { echo "ERROR: C1/CWAM-v2 requires CWAM_STRONG_METADATA_ONLY_VIDEO_TOKENIZER=1" >&2; exit 1; }
     [[ -f "$ROBOCASA365_CONTROL_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_CONTROL_CACHE_ROOT/_SUCCESS.json" ]] ||
-        { echo "ERROR: C1 control cache is incomplete" >&2; exit 1; }
+        { echo "ERROR: C1/CWAM-v2 control cache is incomplete" >&2; exit 1; }
     [[ -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/manifest.json" && -f "$ROBOCASA365_STRONG_LATENT_CACHE_ROOT/_SUCCESS.json" ]] ||
-        { echo "ERROR: C1 triple-view 480 latent cache is incomplete" >&2; exit 1; }
+        { echo "ERROR: C1/CWAM-v2 triple-view 480 latent cache is incomplete" >&2; exit 1; }
     ;;
 esac
 '

@@ -117,7 +117,7 @@ def test_denoise_accepts_causal_state_without_video_prediction() -> None:
 
 @pytest.mark.L0
 @pytest.mark.CPU
-def test_causal_state_loss_skips_video_prediction() -> None:
+def test_causal_state_loss_skips_video_prediction_and_adds_v2_auxiliaries() -> None:
     metric_names = (
         "causal_action_state_dynamics_loss",
         "causal_action_state_variance_loss",
@@ -126,7 +126,15 @@ def test_causal_state_loss_skips_video_prediction() -> None:
         "causal_action_state_state_rms",
         "causal_action_state_state_attention_entropy",
         "causal_action_state_action_attention_entropy",
+        "causal_action_state_action_slot_retained_fraction",
+        "causal_action_state_action_slot_retained_importance",
         "causal_action_state_dynamics_attention_entropy",
+        "causal_action_state_spatial_reconstruction_loss",
+        "causal_action_state_spatial_reconstruction_cosine",
+        "causal_action_state_relative_geometry_loss",
+        "causal_action_state_history_replay_loss",
+        "causal_action_state_vision_lora_rms",
+        "causal_action_state_causal_memory_rms",
     )
     out_net = {name: torch.tensor(1.0) for name in metric_names}
     config = SimpleNamespace(
@@ -138,6 +146,9 @@ def test_causal_state_loss_skips_video_prediction() -> None:
         causal_action_state_dynamics_loss_weight=0.25,
         causal_action_state_dynamics_warmup_iters=1000,
         causal_action_state_variance_loss_weight=0.01,
+        causal_action_state_spatial_loss_weight=0.20,
+        causal_action_state_relative_geometry_loss_weight=0.10,
+        causal_action_state_history_replay_loss_weight=0.10,
         sound_gen=False,
         rectified_flow_training_config=SimpleNamespace(normalize_loss_by_active=False),
         lbl=SimpleNamespace(coeff_und=0.0, coeff_gen=0.0, method="uniform"),
@@ -158,6 +169,6 @@ def test_causal_state_loss_skips_video_prediction() -> None:
         iteration=0,
     )
 
-    assert loss.item() == pytest.approx(0.01025)
+    assert loss.item() == pytest.approx(0.41025)
     assert losses["flow_matching_loss_vision"].item() == 0.0
     assert losses["flow_matching_loss_vision_per_instance"].shape == (2,)

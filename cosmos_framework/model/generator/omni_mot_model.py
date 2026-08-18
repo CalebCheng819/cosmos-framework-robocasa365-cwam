@@ -270,6 +270,17 @@ class OmniMoTModel(ImaginaireModel):
                 causal_action_state_memory_tokens=self.config.causal_action_state_memory_tokens,
                 causal_action_state_num_views=self.config.causal_action_state_num_views,
                 causal_action_state_view_token_width=self.config.causal_action_state_view_token_width,
+                causal_action_state_v2_enabled=self.config.causal_action_state_v2_enabled,
+                causal_action_state_object_slots=self.config.causal_action_state_object_slots,
+                causal_action_state_geometry_slots=self.config.causal_action_state_geometry_slots,
+                causal_action_state_dynamics_slots=self.config.causal_action_state_dynamics_slots,
+                causal_action_state_causal_memory_slots=self.config.causal_action_state_causal_memory_slots,
+                causal_action_state_spatial_decoder_layers=self.config.causal_action_state_spatial_decoder_layers,
+                causal_action_state_relative_geometry_max_patches=(
+                    self.config.causal_action_state_relative_geometry_max_patches
+                ),
+                causal_action_state_vision_lora_rank=self.config.causal_action_state_vision_lora_rank,
+                causal_action_state_history_replay_enabled=self.config.causal_action_state_history_replay_enabled,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -1382,7 +1393,15 @@ class OmniMoTModel(ImaginaireModel):
                 "causal_action_state_state_rms",
                 "causal_action_state_state_attention_entropy",
                 "causal_action_state_action_attention_entropy",
+                "causal_action_state_action_slot_retained_fraction",
+                "causal_action_state_action_slot_retained_importance",
                 "causal_action_state_dynamics_attention_entropy",
+                "causal_action_state_spatial_reconstruction_loss",
+                "causal_action_state_spatial_reconstruction_cosine",
+                "causal_action_state_relative_geometry_loss",
+                "causal_action_state_history_replay_loss",
+                "causal_action_state_vision_lora_rms",
+                "causal_action_state_causal_memory_rms",
             )
             missing_metrics = [name for name in required_metrics if name not in out_net]
             if missing_metrics:
@@ -1390,7 +1409,17 @@ class OmniMoTModel(ImaginaireModel):
             dynamics_weight = self.config.causal_action_state_dynamics_loss_weight
             dynamics_warmup = self.config.causal_action_state_dynamics_warmup_iters
             variance_weight = self.config.causal_action_state_variance_loss_weight
-            if dynamics_weight < 0.0 or dynamics_warmup < 0 or variance_weight < 0.0:
+            spatial_weight = self.config.causal_action_state_spatial_loss_weight
+            relation_weight = self.config.causal_action_state_relative_geometry_loss_weight
+            replay_weight = self.config.causal_action_state_history_replay_loss_weight
+            if (
+                dynamics_weight < 0.0
+                or dynamics_warmup < 0
+                or variance_weight < 0.0
+                or spatial_weight < 0.0
+                or relation_weight < 0.0
+                or replay_weight < 0.0
+            ):
                 raise ValueError("Causal action-state loss weights and warmup must be non-negative")
             warmup_fraction = 1.0 if dynamics_warmup == 0 else min((iteration + 1) / dynamics_warmup, 1.0)
             effective_dynamics_weight = dynamics_weight * warmup_fraction
@@ -1398,6 +1427,9 @@ class OmniMoTModel(ImaginaireModel):
             variance_loss = out_net["causal_action_state_variance_loss"]
             total_loss += dynamics_loss * effective_dynamics_weight
             total_loss += variance_loss * variance_weight
+            total_loss += out_net["causal_action_state_spatial_reconstruction_loss"] * spatial_weight
+            total_loss += out_net["causal_action_state_relative_geometry_loss"] * relation_weight
+            total_loss += out_net["causal_action_state_history_replay_loss"] * replay_weight
             losses_dict.update({name: out_net[name] for name in required_metrics})
             losses_dict.update(
                 causal_action_state_dynamics_weight=torch.tensor(
@@ -1406,6 +1438,18 @@ class OmniMoTModel(ImaginaireModel):
                 ),
                 causal_action_state_variance_weight=torch.tensor(
                     variance_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+                causal_action_state_spatial_weight=torch.tensor(
+                    spatial_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+                causal_action_state_relative_geometry_weight=torch.tensor(
+                    relation_weight,
+                    **self.tensor_kwargs_fp32,
+                ),
+                causal_action_state_history_replay_weight=torch.tensor(
+                    replay_weight,
                     **self.tensor_kwargs_fp32,
                 ),
             )

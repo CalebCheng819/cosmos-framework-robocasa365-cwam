@@ -516,6 +516,7 @@ def main() -> None:
         "action_policy_robocasa365_strong_nano.toml",
         "action_policy_robocasa365_b2_nano.toml",
         "action_policy_robocasa365_causal_state_nano.toml",
+        "action_policy_robocasa365_cwam_v2_nano.toml",
     }
     _configure_runtime(args, strong=control_history)
 

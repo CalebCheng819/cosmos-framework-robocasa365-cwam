@@ -90,6 +90,15 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         causal_action_state_memory_tokens=4,
         causal_action_state_num_views=3,
         causal_action_state_view_token_width=8,
+        causal_action_state_v2_enabled=False,
+        causal_action_state_object_slots=12,
+        causal_action_state_geometry_slots=8,
+        causal_action_state_dynamics_slots=8,
+        causal_action_state_causal_memory_slots=4,
+        causal_action_state_spatial_decoder_layers=2,
+        causal_action_state_relative_geometry_max_patches=32,
+        causal_action_state_vision_lora_rank=16,
+        causal_action_state_history_replay_enabled=True,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -164,6 +173,15 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.causal_action_state_memory_tokens = causal_action_state_memory_tokens
         self.causal_action_state_num_views = causal_action_state_num_views
         self.causal_action_state_view_token_width = causal_action_state_view_token_width
+        self.causal_action_state_v2_enabled = causal_action_state_v2_enabled
+        self.causal_action_state_object_slots = causal_action_state_object_slots
+        self.causal_action_state_geometry_slots = causal_action_state_geometry_slots
+        self.causal_action_state_dynamics_slots = causal_action_state_dynamics_slots
+        self.causal_action_state_causal_memory_slots = causal_action_state_causal_memory_slots
+        self.causal_action_state_spatial_decoder_layers = causal_action_state_spatial_decoder_layers
+        self.causal_action_state_relative_geometry_max_patches = causal_action_state_relative_geometry_max_patches
+        self.causal_action_state_vision_lora_rank = causal_action_state_vision_lora_rank
+        self.causal_action_state_history_replay_enabled = causal_action_state_history_replay_enabled
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
@@ -341,6 +359,15 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     memory_tokens=config.causal_action_state_memory_tokens,
                     num_views=config.causal_action_state_num_views,
                     view_token_width=config.causal_action_state_view_token_width,
+                    v2_enabled=config.causal_action_state_v2_enabled,
+                    object_slots=config.causal_action_state_object_slots,
+                    geometry_slots=config.causal_action_state_geometry_slots,
+                    dynamics_slots=config.causal_action_state_dynamics_slots,
+                    causal_memory_slots=config.causal_action_state_causal_memory_slots,
+                    spatial_decoder_layers=config.causal_action_state_spatial_decoder_layers,
+                    relative_geometry_max_patches=config.causal_action_state_relative_geometry_max_patches,
+                    vision_lora_rank=config.causal_action_state_vision_lora_rank,
+                    history_replay_enabled=config.causal_action_state_history_replay_enabled,
                 )
 
         if config.sound_gen:

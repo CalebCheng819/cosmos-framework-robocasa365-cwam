@@ -544,9 +544,12 @@ def test_strong_infer_commits_causal_history_only_after_success_and_reset_clears
     service.distributed_rank = 0
     service.distributed_world_size = 1
     service.strong_action_enabled = True
+    service.causal_action_state_enabled = False
+    service.control_history_enabled = True
     service.open_loop_horizon = 12
-    service._proprio_history = deque(maxlen=3)
+    service._proprio_history = deque(maxlen=37)
     service._normalized_action_history = deque(maxlen=16)
+    service._current_frame_index = 0
     captured: list[dict] = []
 
     def execute(request: dict) -> dict:
@@ -594,9 +597,12 @@ def test_strong_infer_does_not_commit_history_when_model_fails() -> None:
     service.distributed_rank = 0
     service.distributed_world_size = 1
     service.strong_action_enabled = True
+    service.causal_action_state_enabled = False
+    service.control_history_enabled = True
     service.open_loop_horizon = 12
-    service._proprio_history = deque(maxlen=3)
+    service._proprio_history = deque(maxlen=37)
     service._normalized_action_history = deque(maxlen=16)
+    service._current_frame_index = 0
 
     def fail(_request: dict) -> dict:
         raise RuntimeError("model failed")
@@ -607,6 +613,45 @@ def test_strong_infer_does_not_commit_history_when_model_fails() -> None:
 
     assert not service._proprio_history
     assert not service._normalized_action_history
+
+
+@pytest.mark.parametrize("horizon", [1, 4, 12])
+def test_causal_history_uses_exact_training_stride_for_each_replan_horizon(horizon: int) -> None:
+    service = object.__new__(server.RoboCasa365PolicyService)
+    service.camera_height = 256
+    service.camera_width = 256
+    service.domain_name = "robocasa365"
+    service.distributed_rank = 0
+    service.distributed_world_size = 1
+    service.strong_action_enabled = True
+    service.causal_action_state_enabled = False
+    service.control_history_enabled = True
+    service.open_loop_horizon = horizon
+    service._proprio_history = deque(maxlen=37)
+    service._normalized_action_history = deque(maxlen=16)
+    service._current_frame_index = 0
+    captured: list[dict] = []
+
+    def execute(request: dict) -> dict:
+        captured.append(request)
+        return {
+            "actions": np.zeros((16, 7), dtype=np.float32),
+            server._STRONG_ACTION_HISTORY_RESPONSE_KEY: np.zeros((horizon, 10), dtype=np.float32),
+        }
+
+    service._execute_canonical_request = execute
+    for frame in range(0, 37, horizon):
+        observation = _observation()
+        observation["observation/state"] = np.full(16, frame, dtype=np.float32)
+        service.infer(observation)
+
+    request_at_36 = captured[-1]
+    assert request_at_36["control_proprio_history_mask"] == [True, True, True, True]
+    np.testing.assert_array_equal(
+        np.asarray(request_at_36["control_proprio_history"])[:, 0],
+        np.asarray([0, 12, 24, 36], dtype=np.float32),
+    )
+    assert service._current_frame_index == 36 + horizon
 
 
 def test_generic_policy_preparation_honors_strong_resolution_and_control_context() -> None:
@@ -817,6 +862,102 @@ def test_rank0_nonce_bound_shutdown_control_acks_and_stops_workers(
     assert stages == ["shutdown"]
     assert scheduled_targets == [service._exit_rank0_after_shutdown_ack]
     assert service._shutdown_requested is True
+
+
+def test_single_rank_nonce_bound_reset_control_clears_episode_history() -> None:
+    service = object.__new__(server.RoboCasa365PolicyService)
+    service.launch_nonce = "a" * 64
+    service.distributed_rank = 0
+    service.distributed_world_size = 1
+    service.control_history_enabled = True
+    service._proprio_history = deque([(0, np.ones(16, dtype=np.float32))], maxlen=37)
+    service._normalized_action_history = deque([np.ones(10, dtype=np.float32)], maxlen=16)
+    service._current_frame_index = 12
+    service._c_episode_active = True
+    service._c_episode_index = 3
+    service._c_replan_index = 7
+
+    response = service.infer(
+        {
+            "__cwam_control__": "reset",
+            "launch_nonce": "a" * 64,
+        }
+    )
+
+    assert response == {
+        "actions": [],
+        "cwam_control": "reset_ack",
+        "launch_nonce": "a" * 64,
+    }
+    assert len(service._proprio_history) == 0
+    assert len(service._normalized_action_history) == 0
+    assert service._current_frame_index == 0
+    assert service._c_episode_index == 4
+    assert service._c_replan_index == 0
+    assert service._c_episode_active is False
+
+
+def test_cross_episode_trace_uses_nearest_same_task_replan(tmp_path: Path) -> None:
+    trace_root = tmp_path / "traces"
+    prompt = "pick the pan from the counter and place it on the stove"
+    for episode_index, replans in ((0, (0, 3)), (1, (0, 2)), (2, (0, 1))):
+        episode_dir = trace_root / f"episode_{episode_index:06d}"
+        episode_dir.mkdir(parents=True)
+        for replan_index in replans:
+            tensor = torch.full((4, 16), float(100 * episode_index + replan_index))
+            torch.save(tensor, episode_dir / f"replan_{replan_index:06d}.pt")
+            (episode_dir / f"replan_{replan_index:06d}.json").write_text(
+                json.dumps(
+                    {
+                        "episode_index": episode_index,
+                        "replan_index": replan_index,
+                        "prompt": prompt,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    service = object.__new__(server.RoboCasa365PolicyService)
+    service._c_intervention = "cross_episode"
+    service._c_intervention_trace_root = trace_root
+    service._c_episode_index = 2
+    service._c_replan_index = 4
+
+    donor = service._select_external_c_trace({"prompt": prompt})
+
+    # Episode 0 is selected deterministically and its nearest available replan
+    # is 3, even though the requested replan 4 does not exist.
+    torch.testing.assert_close(donor, torch.full((4, 16), 3.0))
+
+
+def test_shuffle_trace_uses_global_same_task_donor_for_single_replan_episode(tmp_path: Path) -> None:
+    trace_root = tmp_path / "traces"
+    prompt = "close the blender lid"
+    for episode_index in (0, 1):
+        episode_dir = trace_root / f"episode_{episode_index:06d}"
+        episode_dir.mkdir(parents=True)
+        tensor = torch.full((4, 16), float(episode_index))
+        torch.save(tensor, episode_dir / "replan_000000.pt")
+        (episode_dir / "replan_000000.json").write_text(
+            json.dumps(
+                {
+                    "episode_index": episode_index,
+                    "replan_index": 0,
+                    "prompt": prompt,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    service = object.__new__(server.RoboCasa365PolicyService)
+    service._c_intervention = "shuffle"
+    service._c_intervention_trace_root = trace_root
+    service._c_episode_index = 0
+    service._c_replan_index = 0
+
+    donor = service._select_external_c_trace({"prompt": prompt})
+
+    torch.testing.assert_close(donor, torch.ones(4, 16))
 
 
 def test_distributed_worker_model_exception_fails_closed() -> None:

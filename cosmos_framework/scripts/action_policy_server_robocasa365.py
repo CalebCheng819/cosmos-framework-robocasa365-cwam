@@ -53,6 +53,7 @@ from cosmos_framework.data.generator.action.datasets.robocasa365_segment_dataset
 from cosmos_framework.data.generator.action.json_formatter import ActionPromptJsonFormatter
 from cosmos_framework.data.generator.action.pose_utils import convert_rotation
 from cosmos_framework.inference.common.args import tyro_cli
+from cosmos_framework.model.generator.mot.causal_action_state import CausalActionStateExpert
 from cosmos_framework.scripts.action_policy_server_libero import ActionModelService, ActionServerArgs
 from cosmos_framework.utils import log
 
@@ -531,7 +532,15 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     camera_width: int = 256
     """Width of each DeMiAn camera image after its client-side resize."""
     open_loop_horizon: int = 12
-    """Actions actually executed before replanning; Strong-v1 history requires 12."""
+    """Actions executed before replanning; must divide the 12-frame training stride."""
+    c_intervention: Literal["normal", "zero", "shuffle", "cross_episode", "selected", "complement"] = (
+        "normal"
+    )
+    """Evaluation-only intervention applied to the C slots consumed by ActionDiT."""
+    c_intervention_trace_root: Path | None = None
+    """Local trace directory used to record normal C or load donor C slots."""
+    c_intervention_selected_slots: int = 8
+    """Number of attention-ranked C slots retained or removed by selected/complement."""
     domain_name: str = "robocasa365"
     """Action domain ID used by the formal training recipe."""
     launch_nonce: str
@@ -658,14 +667,53 @@ class RoboCasa365PolicyService(ActionModelService):
                     "Loaded causal-control model config does not match the serving contract: "
                     f"expected={expected_control_config}, actual={actual_control_config}"
                 )
-            if self.open_loop_horizon != expected_control_config[f"{prefix}_proprio_history_stride"]:
+            history_stride = expected_control_config[f"{prefix}_proprio_history_stride"]
+            if history_stride % self.open_loop_horizon:
                 raise RuntimeError(
-                    "Causal-control serving requires open_loop_horizon=12 so online state history matches training"
+                    "Causal-control open_loop_horizon must divide the 12-frame training history stride; "
+                    f"got horizon={self.open_loop_horizon}, stride={history_stride}"
                 )
-        # Three committed replans plus the current observation produce the
-        # training-time [t-36, t-24, t-12, t] state window.
-        self._proprio_history: deque[np.ndarray] = deque(maxlen=3)
+        # Frame-indexed observations recover the exact training-time
+        # [t-36, t-24, t-12, t] window for horizons 1, 4, and 12.
+        self._proprio_history: deque[tuple[int, np.ndarray]] = deque(maxlen=37)
         self._normalized_action_history: deque[np.ndarray] = deque(maxlen=16)
+        self._current_frame_index = 0
+
+        self._c_intervention = args.c_intervention
+        if type(args.c_intervention_selected_slots) is not int or args.c_intervention_selected_slots < 1:
+            raise ValueError("c_intervention_selected_slots must be a positive integer")
+        self._c_intervention_selected_slots = args.c_intervention_selected_slots
+        self._c_intervention_trace_root: Path | None = None
+        if args.c_intervention_trace_root is not None:
+            trace_root = Path(args.c_intervention_trace_root).expanduser()
+            if self._c_intervention == "normal":
+                trace_root.mkdir(parents=True, exist_ok=True)
+            elif not trace_root.is_dir():
+                raise FileNotFoundError(f"C intervention trace root does not exist: {trace_root}")
+            self._c_intervention_trace_root = trace_root.resolve()
+        if self._c_intervention in {"shuffle", "cross_episode"} and self._c_intervention_trace_root is None:
+            raise ValueError(f"C intervention {self._c_intervention!r} requires c_intervention_trace_root")
+        if self._c_intervention != "normal" and not self.causal_action_state_enabled:
+            raise RuntimeError("C interventions require a causal-action-state checkpoint")
+        self._c_episode_index = 0
+        self._c_replan_index = 0
+        self._c_episode_active = False
+        self._latest_c_slots: torch.Tensor | None = None
+        self._causal_state_expert: CausalActionStateExpert | None = None
+        self._c_state_hook: Any | None = None
+        causal_state_experts = [
+            module for module in self.model.modules() if isinstance(module, CausalActionStateExpert)
+        ]
+        if self.causal_action_state_enabled:
+            if len(causal_state_experts) != 1:
+                raise RuntimeError(
+                    "Causal-action-state serving requires exactly one CausalActionStateExpert, "
+                    f"found {len(causal_state_experts)}"
+                )
+            self._causal_state_expert = causal_state_experts[0]
+            self._c_state_hook = self._causal_state_expert.state_norm.register_forward_hook(
+                self._capture_c_slots
+            )
 
         self.distributed_rank, self.distributed_world_size = _distributed_rank_and_world_size()
         _validate_fsdp_topology(
@@ -757,9 +805,15 @@ class RoboCasa365PolicyService(ActionModelService):
             )
             proprio_history = np.zeros((4, 16), dtype=np.float32)
             proprio_mask = np.zeros(4, dtype=np.bool_)
-            observed_states = [*self._proprio_history, current_state]
-            proprio_history[-len(observed_states) :] = np.asarray(observed_states, dtype=np.float32)
-            proprio_mask[-len(observed_states) :] = True
+            frame_to_state = {frame: state for frame, state in self._proprio_history}
+            target_frames = [self._current_frame_index - offset for offset in (36, 24, 12, 0)]
+            for slot, target_frame in enumerate(target_frames):
+                if target_frame == self._current_frame_index:
+                    proprio_history[slot] = current_state
+                    proprio_mask[slot] = True
+                elif target_frame in frame_to_state:
+                    proprio_history[slot] = frame_to_state[target_frame]
+                    proprio_mask[slot] = True
 
             action_history = np.zeros((16, 10), dtype=np.float32)
             action_mask = np.zeros(16, dtype=np.bool_)
@@ -837,8 +891,142 @@ class RoboCasa365PolicyService(ActionModelService):
         normalized_actions = np.asarray(normalized_actions, dtype=np.float32)
         if normalized_actions.shape != (self.open_loop_horizon, _RAW_ACTION_DIM):
             raise RuntimeError("Strong-v1 response action history does not match open_loop_horizon")
-        self._proprio_history.append(proprio[-1].copy())
+        self._proprio_history.append((self._current_frame_index, proprio[-1].copy()))
         self._normalized_action_history.extend(row.copy() for row in normalized_actions)
+        self._current_frame_index += self.open_loop_horizon
+
+    def _capture_c_slots(self, _module: torch.nn.Module, _inputs: tuple[Any, ...], output: Any) -> None:
+        if not isinstance(output, torch.Tensor) or output.ndim != 3 or output.shape[0] != 1:
+            raise RuntimeError(f"Captured C slots must have shape [1,S,D], got {type(output).__name__}")
+        self._latest_c_slots = output.detach().float().cpu()[0]
+
+    def _c_trace_path(self, episode_index: int, replan_index: int, *, suffix: str) -> Path:
+        if self._c_intervention_trace_root is None:
+            raise RuntimeError("C trace root is not configured")
+        return (
+            self._c_intervention_trace_root
+            / f"episode_{episode_index:06d}"
+            / f"replan_{replan_index:06d}.{suffix}"
+        )
+
+    def _load_c_trace(self, path: Path) -> torch.Tensor:
+        if not path.is_file():
+            raise FileNotFoundError(f"Required C trace is missing: {path}")
+        state = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(state, torch.Tensor):
+            raise TypeError(f"C trace must contain one tensor, got {type(state).__name__}: {path}")
+        return state
+
+    def _select_external_c_trace(self, request: dict[str, Any]) -> torch.Tensor:
+        assert self._c_intervention_trace_root is not None
+        if self._c_intervention == "shuffle":
+            candidates: list[Path] = []
+            current = (self._c_episode_index, self._c_replan_index)
+            for metadata_path in sorted(self._c_intervention_trace_root.glob("episode_*/replan_*.json")):
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(f"Invalid C trace metadata: {metadata_path}") from exc
+                if metadata.get("prompt") != request["prompt"]:
+                    continue
+                donor_key = (metadata.get("episode_index"), metadata.get("replan_index"))
+                if not all(isinstance(value, int) for value in donor_key):
+                    raise RuntimeError(f"C trace metadata has invalid indices: {metadata_path}")
+                if donor_key != current:
+                    candidates.append(metadata_path.with_suffix(".pt"))
+            if not candidates:
+                raise RuntimeError(
+                    "Shuffle intervention found no mismatched same-task donor for "
+                    f"episode={self._c_episode_index}, replan={self._c_replan_index}"
+                )
+            permutation_index = (self._c_episode_index * 1_000_003 + self._c_replan_index * 9_176) % len(
+                candidates
+            )
+            donor = candidates[permutation_index]
+            log.info(
+                "Shuffled C donor: target_episode=%d target_replan=%d donor=%s",
+                self._c_episode_index,
+                self._c_replan_index,
+                donor,
+            )
+            return self._load_c_trace(donor)
+
+        if self._c_intervention != "cross_episode":
+            raise RuntimeError(f"No external C trace is defined for {self._c_intervention!r}")
+        candidates: list[Path] = []
+        for episode_dir in sorted(self._c_intervention_trace_root.glob("episode_*")):
+            if not episode_dir.is_dir() or episode_dir.name == f"episode_{self._c_episode_index:06d}":
+                continue
+            same_task: list[tuple[int, Path]] = []
+            for metadata_path in sorted(episode_dir.glob("replan_*.json")):
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(f"Invalid C trace metadata: {metadata_path}") from exc
+                if metadata.get("prompt") != request["prompt"]:
+                    continue
+                donor_replan = metadata.get("replan_index")
+                if not isinstance(donor_replan, int):
+                    raise RuntimeError(f"C trace metadata is missing integer replan_index: {metadata_path}")
+                same_task.append((abs(donor_replan - self._c_replan_index), metadata_path.with_suffix(".pt")))
+            if same_task:
+                candidates.append(min(same_task, key=lambda item: (item[0], str(item[1])))[1])
+        if not candidates:
+            raise RuntimeError(
+                "Cross-episode intervention found no same-task donor for "
+                f"episode={self._c_episode_index}, replan={self._c_replan_index}"
+            )
+        donor = candidates[self._c_episode_index % len(candidates)]
+        log.info(
+            "Cross-episode C donor: target_episode=%d target_replan=%d donor=%s",
+            self._c_episode_index,
+            self._c_replan_index,
+            donor,
+        )
+        return self._load_c_trace(donor)
+
+    def _prepare_c_intervention(self, request: dict[str, Any]) -> None:
+        if getattr(self, "_causal_state_expert", None) is None:
+            return
+        external_state = None
+        if self._c_intervention in {"shuffle", "cross_episode"}:
+            external_state = self._select_external_c_trace(request)
+        self._latest_c_slots = None
+        self._causal_state_expert.configure_intervention(
+            self._c_intervention,
+            topk=self._c_intervention_selected_slots,
+            external_state_slots=external_state,
+        )
+
+    def _finalize_c_intervention(self, request: dict[str, Any]) -> None:
+        if getattr(self, "_causal_state_expert", None) is None:
+            return
+        if self._latest_c_slots is None:
+            raise RuntimeError("Causal-action-state inference completed without capturing C slots")
+        if self._c_intervention == "normal" and self._c_intervention_trace_root is not None:
+            tensor_path = self._c_trace_path(self._c_episode_index, self._c_replan_index, suffix="pt")
+            if self.distributed_rank == 0:
+                tensor_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_path = tensor_path.with_suffix(".pt.tmp")
+                torch.save(self._latest_c_slots, temporary_path)
+                os.replace(temporary_path, tensor_path)
+                metadata_path = tensor_path.with_suffix(".json")
+                metadata_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "episode_index": self._c_episode_index,
+                            "replan_index": self._c_replan_index,
+                            "prompt": request["prompt"],
+                            "state_shape": list(self._latest_c_slots.shape),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+        self._c_replan_index += 1
+        self._c_episode_active = True
 
     def _run_synchronized_stage(self, stage: str, operation: Callable[[], Any]) -> Any:
         """Run one stage and make every rank fail when any participant fails."""
@@ -881,8 +1069,11 @@ class RoboCasa365PolicyService(ActionModelService):
     def _execute_canonical_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Execute the same validated request on every FSDP rank."""
         request = _validate_canonical_policy_request(request)
+        self._prepare_c_intervention(request)
         if self.distributed_world_size == 1:
-            return self._convert_model_response(self.predict_policy_batch([request]))
+            response = self._convert_model_response(self.predict_policy_batch([request]))
+            self._finalize_c_intervention(request)
+            return response
 
         # Preflight input preparation before any rank can enter FSDP collectives.
         # ``predict_policy_batch`` repeats this deterministic preparation, but
@@ -912,10 +1103,12 @@ class RoboCasa365PolicyService(ActionModelService):
                 # worker forces torchrun to terminate the complete local group.
                 os._exit(70)
             raise
-        return self._run_synchronized_stage(
+        response = self._run_synchronized_stage(
             "postprocess",
             lambda: self._convert_model_response(model_response),
         )
+        self._finalize_c_intervention(request)
+        return response
 
     def _validate_distributed_command(
         self,
@@ -978,7 +1171,7 @@ class RoboCasa365PolicyService(ActionModelService):
 
     def infer(self, obs: dict[str, Any]) -> dict[str, Any]:
         if isinstance(obs, dict) and "__cwam_control__" in obs:
-            return self._handle_shutdown_control(obs)
+            return self._handle_control_request(obs)
         request = self._canonicalize_observation(obs)
         if self.distributed_world_size == 1:
             response = self._execute_canonical_request(request)
@@ -992,18 +1185,26 @@ class RoboCasa365PolicyService(ActionModelService):
             self._commit_strong_history(request, response)
             return response
 
-    def _handle_shutdown_control(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Acknowledge a nonce-bound local shutdown and let torchrun exit cleanly."""
-        if self.distributed_world_size <= 1 or self.distributed_rank != 0:
-            raise RuntimeError("Controlled shutdown is valid only on distributed rank 0")
+    def _handle_control_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Execute a nonce-bound reset or distributed shutdown request."""
         if set(request) != _CONTROL_REQUEST_KEYS:
             raise ValueError(
-                f"Shutdown control keys drifted: expected={sorted(_CONTROL_REQUEST_KEYS)}, got={sorted(request)}"
+                f"Control request keys drifted: expected={sorted(_CONTROL_REQUEST_KEYS)}, got={sorted(request)}"
             )
-        if request["__cwam_control__"] != "shutdown":
-            raise ValueError(f"Unsupported CWAM control operation: {request['__cwam_control__']!r}")
         if request["launch_nonce"] != self.launch_nonce:
-            raise ValueError("Shutdown control launch nonce mismatch")
+            raise ValueError("CWAM control launch nonce mismatch")
+        operation = request["__cwam_control__"]
+        if operation == "reset":
+            self.reset({"source": "websocket_control_v1"})
+            return {
+                "actions": [],
+                "cwam_control": "reset_ack",
+                "launch_nonce": self.launch_nonce,
+            }
+        if operation != "shutdown":
+            raise ValueError(f"Unsupported CWAM control operation: {operation!r}")
+        if self.distributed_world_size <= 1 or self.distributed_rank != 0:
+            raise RuntimeError("Controlled shutdown is valid only on distributed rank 0")
         with self._dispatch_lock:
             if self._shutdown_requested:
                 raise RuntimeError("Distributed shutdown was already requested")
@@ -1031,6 +1232,11 @@ class RoboCasa365PolicyService(ActionModelService):
         if getattr(self, "control_history_enabled", False):
             self._proprio_history.clear()
             self._normalized_action_history.clear()
+            self._current_frame_index = 0
+        if getattr(self, "_c_episode_active", False):
+            self._c_episode_index += 1
+        self._c_replan_index = 0
+        self._c_episode_active = False
 
     def reset(self, reset_info: dict[str, Any] | None = None) -> None:
         if reset_info is not None and not isinstance(reset_info, dict):
@@ -1118,6 +1324,12 @@ class RoboCasa365PolicyService(ActionModelService):
             "guardrails": bool(self.setup_args.guardrails),
             "vision_tokenizer": _ONLINE_WAN2PT2_TARGET,
             "online_pixel_encoding": True,
+            "open_loop_horizon": self.open_loop_horizon,
+            "c_intervention": self._c_intervention,
+            "c_intervention_selected_slots": self._c_intervention_selected_slots,
+            "c_intervention_trace_root": (
+                str(self._c_intervention_trace_root) if self._c_intervention_trace_root is not None else None
+            ),
             "wan2pt2_vae_path": (str(self.wan2pt2_vae_path) if self.wan2pt2_vae_path is not None else None),
             "qwen_tokenizer_path": (str(self.qwen_tokenizer_path) if self.qwen_tokenizer_path is not None else None),
             "distributed_world_size": self.distributed_world_size,
@@ -1129,6 +1341,7 @@ class RoboCasa365PolicyService(ActionModelService):
             },
             "control_protocol": {
                 "shutdown": "nonce_bound_websocket_control_v1",
+                "reset": "nonce_bound_websocket_control_v1",
                 "requires_loopback_endpoint": True,
             },
         }
