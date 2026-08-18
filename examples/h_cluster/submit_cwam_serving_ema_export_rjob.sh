@@ -69,7 +69,6 @@ submit_args=(
     --termination-grace-period-seconds 60
     --backoff_limit 1
     --enable-sshd
-    --host-network
     --image "$PINNED_IMAGE"
     --cpu 32
     --gpu 1
