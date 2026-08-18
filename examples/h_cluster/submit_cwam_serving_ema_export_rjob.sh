@@ -63,7 +63,6 @@ submit_args=(
     --name "$RJOB_NAME"
     --group "$PINNED_QUOTA_GROUP"
     --charged-group "$PINNED_QUOTA_GROUP"
-    --private-machine group
     --priority 9
     --task-type normal
     --replicas 1
