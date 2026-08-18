@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "DLC submission - queued"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "Submitted at 2026-08-19 04:55:23 Asia/Shanghai as DLC Job dlcevin0qtvtccar. Verified control-plane state: Queuing / JobEnqueued, zero Pods. Requested contract: one worker, eight RTX 4090 GPUs, 126 CPU, 960 GiB memory/shared memory, priority 7, RestartPolicy Never. The checkpoint transfer is complete; GPU execution and formal result evidence are pending."}}]
+      }
+    }
+  ]
+}

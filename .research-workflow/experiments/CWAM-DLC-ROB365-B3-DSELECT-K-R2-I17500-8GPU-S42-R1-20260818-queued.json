@@ -1,0 +1,60 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "experiment_id": "CWAM-DLC-ROB365-B3-DSELECT-K-R2-I17500-8GPU-S42-R1-20260818",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "confirmatory",
+  "status": "queued",
+  "lifecycle_state": "submitted_queued",
+  "notion": {
+    "page_id": "3c021e77-89cc-813b-a95a-cf3048bccda0",
+    "status": "Queued",
+    "sync_state": "synced"
+  },
+  "git": {
+    "control_commit": "f5d1206efb1198c87b6fbb2bbe91f8d26decbc02",
+    "monitor_commit": "ed62a652565faf38e55229f9f508f5b72cf23272",
+    "source_commit": "1d3edfdf5fe22ca5c0bcb18b5449b258826f0da9"
+  },
+  "checkpoint": {
+    "version": "B3-DSELECT-K-R2-I17500-EMA-BF16-v1",
+    "source_run_id": "CWAM-B3-DSELECT-K-20260812-R2",
+    "iteration": 17500,
+    "training_target_iteration": 20000,
+    "file_count": 8,
+    "bytes": 30626541843,
+    "ema_parameter_keys": 984
+  },
+  "submission": {
+    "submitted_at_utc": "2026-08-18T20:55:28Z",
+    "job_id": "dlcgjg7bep2tda24",
+    "display_name": "cwam-b3-dselect-k-r2-i17500-rob365-8g-s42-r1-20260818",
+    "logical_run_id": "CWAM-DLC-ROB365-COSMOS3-B3-DSELECT-K-R2-I17500-EMA-340EP-S42-R1-20260818",
+    "status": "Queuing",
+    "reason_code": "JobEnqueued",
+    "priority": 7,
+    "worker_pods": 1,
+    "gpus_per_worker": 8,
+    "cpus_per_worker": 126,
+    "memory_per_worker": "960Gi",
+    "shared_memory_per_worker": "960Gi",
+    "pods": 0,
+    "persistent_output_root": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/runs/CWAM-DLC-ROB365-B3-DSELECT-K-R2-I17500-8GPU-S42-R1-20260818/CWAM-DLC-ROB365-COSMOS3-B3-DSELECT-K-R2-I17500-EMA-340EP-S42-R1-20260818"
+  },
+  "transfer": {
+    "completed_at_utc": "2026-08-18T20:55:11Z",
+    "completed_bytes": 61257219418,
+    "expected_bytes": 61257219418,
+    "complete_state_files": 12,
+    "errors": 0
+  },
+  "formal_acceptance": {
+    "tasks": 17,
+    "episodes_per_task": 20,
+    "episodes": 340,
+    "physical_gpus": 8,
+    "terminal_evidence": "pending"
+  },
+  "started_at": null,
+  "completed_at": null,
+  "primary_metrics": {}
+}

@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "ITER-2026-08-18-B2-B3-DLC-8GPU-EVAL - submitted"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Checkpoint transfer completed at 2026-08-19 04:55:11 Asia/Shanghai: 61,257,219,418 of 61,257,219,418 bytes, 12 of 12 transfer-state files complete, zero final errors. B2 R5 was submitted exactly once as DLC Job dlcevin0qtvtccar with Run ID CWAM-DLC-ROB365-COSMOS3-B2-R5-I20000-EMA-340EP-S42-R1-20260818. B3 DSelect-K R2 was submitted exactly once as DLC Job dlcgjg7bep2tda24 with Run ID CWAM-DLC-ROB365-COSMOS3-B3-DSELECT-K-R2-I17500-EMA-340EP-S42-R1-20260818. Each job requests one worker with eight RTX 4090 GPUs, 126 CPU, 960 GiB memory/shared memory, priority 7, and RestartPolicy Never. Verified GetJob state is Queuing / JobEnqueued with zero Pods because the quota currently has one eight-GPU B4 evaluation running. This is submission evidence only; Running requires an allocated Pod, and success requires eight physical GPUs plus 17 tasks and exactly 340 terminal episodes with complete OSS evidence. Control commit f5d1206efb1198c87b6fbb2bbe91f8d26decbc02; bounded lifecycle monitor commit ed62a652565faf38e55229f9f508f5b72cf23272."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
