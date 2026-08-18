@@ -1,4 +1,4 @@
-"""Structural tests for the exact-once B4 DLC submitter."""
+"""Structural tests for the model-specified exact-once DLC submitter."""
 
 from __future__ import annotations
 
@@ -61,3 +61,39 @@ def test_submitter_requires_local_output_persistence_controls() -> None:
     assert '"cwam_b4_eval_shell_utils.sh"' in source
     assert '"cwam_dlc_persist_eval_output.py"' in source
     assert '"Priority": 7' in source
+
+
+def test_submitter_binds_generic_model_identity() -> None:
+    source = SUBMITTER.read_text(encoding="utf-8")
+
+    for name in (
+        "EVAL_CHECKPOINT_NAME",
+        "EVAL_CONTROL_ROOT",
+        "EVAL_EXPECTED_EMA_KEY_COUNT",
+        "EVAL_RUN_NAME",
+        "EVAL_SOURCE_COMMIT",
+        "EVAL_SOURCE_ROOT",
+        "EVAL_SOURCE_RUN_ID",
+    ):
+        assert name in source
+    assert 'MODEL_SPEC = CONTROL_ROOT / "model-spec.json"' in source
+    assert 'expected = expected_checkpoint_inventory(load_model_spec())' in source
+    assert '"checkpoint inventory differs from model spec"' in source
+
+
+def test_source_snapshot_supports_metadata_only_export() -> None:
+    function = _function(_tree(), "source_revision")
+    constants = {
+        node.value for node in ast.walk(function) if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+    assert "RUN_ID" in constants
+    assert "GIT_REVISION" in constants
+    assert "rev-parse" in constants
+
+
+def test_reconciliation_binds_model_specific_identity() -> None:
+    source = SUBMITTER.read_text(encoding="utf-8")
+
+    for key in ("source_run_id", "checkpoint_name", "model_id", "expected_ema_key_count"):
+        assert f'"{key}"' in source

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit and submit the B4 RoboCasa365 DLC evaluation exactly once."""
+"""Audit and submit one model-specified RoboCasa365 DLC evaluation exactly once."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import shlex
 import stat
 import subprocess
 import sys
@@ -20,23 +21,37 @@ from alibabacloud_pai_dlc20201203.client import Client
 from alibabacloud_tea_openapi.models import Config
 
 
-EXPERIMENT_ID = "CWAM-DLC-ROB365-B4-I20000-8GPU-S42-R4-20260817"
-LOGICAL_RUN_ID = "CWAM-DLC-ROB365-COSMOS3-B4-I20000-EMA-340EP-S42-R4-20260817"
-DISPLAY_NAME = "cwam-b4-i20000-rob365-8g-s42-r4-20260817"
+EXPERIMENT_ID = os.environ.get(
+    "EVAL_EXPERIMENT_ID", "CWAM-DLC-ROB365-B4-I20000-8GPU-S42-R4-20260817"
+)
+LOGICAL_RUN_ID = os.environ.get(
+    "EVAL_LOGICAL_RUN_ID", "CWAM-DLC-ROB365-COSMOS3-B4-I20000-EMA-340EP-S42-R4-20260817"
+)
+DISPLAY_NAME = os.environ.get(
+    "EVAL_DISPLAY_NAME", "cwam-b4-i20000-rob365-8g-s42-r4-20260817"
+)
 WORKSPACE_ID = "270969"
 RESOURCE_ID = "quotaksvqq2oh2pg"
-PROJECT_ROOT = pathlib.Path("/mnt/workspace/cwam_cosmos3_robocasa365_eval")
-OSS_ROOT = pathlib.Path(
-    "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval"
+PROJECT_ROOT = pathlib.Path(
+    os.environ.get("EVAL_PROJECT_ROOT", "/mnt/workspace/cwam_cosmos3_robocasa365_eval")
 )
-CONTROL_ROOT = PROJECT_ROOT / "control" / "scripts" / f"{EXPERIMENT_ID}-control-v3"
+OSS_ROOT = pathlib.Path(os.environ.get(
+    "EVAL_OSS_ROOT", "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval"
+))
+CONTROL_ROOT = pathlib.Path(os.environ.get(
+    "EVAL_CONTROL_ROOT", str(PROJECT_ROOT / "control" / "scripts" / f"{EXPERIMENT_ID}-control-v3")
+))
 LAUNCHER = CONTROL_ROOT / "launch_cwam_b4_robocasa365_eval_dlc.sh"
-CHECKPOINT_ROOT = OSS_ROOT / "inputs" / "checkpoints" / (
-    "B4-iter_000020000-serving-ema-bf16-metadata-v1"
+CHECKPOINT_NAME = os.environ.get(
+    "EVAL_CHECKPOINT_NAME", "B4-iter_000020000-serving-ema-bf16-metadata-v1"
 )
-SOURCE_ROOT = PROJECT_ROOT / "inputs" / "source" / "CWAM-B4-e7775ff-20260817"
+CHECKPOINT_ROOT = OSS_ROOT / "inputs" / "checkpoints" / CHECKPOINT_NAME
+SOURCE_ROOT = pathlib.Path(os.environ.get(
+    "EVAL_SOURCE_ROOT", str(PROJECT_ROOT / "inputs" / "source" / "CWAM-B4-e7775ff-20260817")
+))
 OUTPUT_ROOT = OSS_ROOT / "runs" / EXPERIMENT_ID / LOGICAL_RUN_ID
 RECEIPT = OSS_ROOT / "control" / "receipts" / f"{EXPERIMENT_ID}-dlc-submit.json"
+MODEL_SPEC = CONTROL_ROOT / "model-spec.json"
 SDK_PYTHON = pathlib.Path(
     "/mnt/workspace/tools/pai-control-py311/"
     "20260817-credentials1.0.10-dlc1.9.2/bin/python"
@@ -45,7 +60,20 @@ IMAGE = (
     "dsw-registry-vpc.cn-beijing.cr.aliyuncs.com/pai/"
     "pytorch:2.7.1-gpu-py310-cu128-ubuntu22.04-3995b779-1764350887"
 )
-SOURCE_COMMIT = "e7775ffcea0a2d577597fbeb05c8bb92905aba0f"
+SOURCE_COMMIT = os.environ.get(
+    "EVAL_SOURCE_COMMIT", "e7775ffcea0a2d577597fbeb05c8bb92905aba0f"
+)
+SOURCE_RUN_ID = os.environ.get(
+    "EVAL_SOURCE_RUN_ID", "CWAM-COSMOS3-B4-ADAPTIVE-DSELECT-R1-20260814"
+)
+RUN_NAME = os.environ.get("EVAL_RUN_NAME", LOGICAL_RUN_ID)
+MODEL_ID = os.environ.get("EVAL_MODEL_ID", "CWAM-COSMOS3-B4")
+MODEL_TAG = os.environ.get("EVAL_MODEL_TAG", "b4-iter20000-eval")
+EXPECTED_EMA_KEY_COUNT = int(os.environ.get("EVAL_EXPECTED_EMA_KEY_COUNT", "984"))
+DESCRIPTION = os.environ.get(
+    "EVAL_DESCRIPTION",
+    f"{EXPERIMENT_ID}: {MODEL_ID} checkpoint {CHECKPOINT_NAME}, RoboCasa365 17x20 seed 42",
+)
 DATA_SOURCES = [
     {"DataSourceId": "d-a5mu77ymwjio71dkmw", "MountAccess": "RW", "MountPath": "/mnt/workspace"},
     {"DataSourceId": "d-n7rly4fll0q2z6v91h", "MountAccess": "RW", "MountPath": "/oss-chengjuntao"},
@@ -132,32 +160,71 @@ def control_commit() -> str:
     return value
 
 
+def source_revision() -> str:
+    run_id_path = SOURCE_ROOT / "RUN_ID"
+    require(run_id_path.is_file() and not run_id_path.is_symlink(), "source RUN_ID missing")
+    require(run_id_path.read_text(encoding="utf-8").strip() == SOURCE_RUN_ID, "source RUN_ID mismatch")
+    if (SOURCE_ROOT / ".git").exists():
+        revision = subprocess.check_output(
+            ["git", "-c", f"safe.directory={SOURCE_ROOT}", "-C", str(SOURCE_ROOT), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+        dirty = subprocess.check_output(
+            ["git", "-c", f"safe.directory={SOURCE_ROOT}", "-C", str(SOURCE_ROOT), "status", "--porcelain"],
+            text=True,
+        )
+        require(not dirty, "source checkout is dirty")
+        return revision
+    revision_path = SOURCE_ROOT / "GIT_REVISION"
+    require(revision_path.is_file() and not revision_path.is_symlink(), "source GIT_REVISION missing")
+    return revision_path.read_text(encoding="utf-8").strip()
+
+
+def load_model_spec() -> dict:
+    metadata = os.stat(MODEL_SPEC, follow_symlinks=False)
+    require(stat.S_ISREG(metadata.st_mode), f"model spec is not regular: {MODEL_SPEC}")
+    spec = json.loads(MODEL_SPEC.read_text(encoding="utf-8"))
+    require(isinstance(spec, dict), "model spec is not a JSON object")
+    require(spec.get("kind") == "cwam_robocasa365_eval_model_spec", "unexpected model spec kind")
+    require(spec.get("model_id") == MODEL_ID, "model spec model_id mismatch")
+    require(spec.get("checkpoint_name") == CHECKPOINT_NAME, "model spec checkpoint_name mismatch")
+    require(spec.get("source") == {"revision": SOURCE_COMMIT, "run_id": SOURCE_RUN_ID}, "model spec source mismatch")
+    require((spec.get("ema") or {}).get("key_count") == EXPECTED_EMA_KEY_COUNT, "model spec EMA key count mismatch")
+    artifact = spec.get("artifact") or {}
+    model_files = artifact.get("model_files")
+    aux_files = artifact.get("aux_files")
+    require(isinstance(model_files, dict) and model_files, "model spec has no model files")
+    require(isinstance(aux_files, dict) and aux_files, "model spec has no auxiliary files")
+    require(artifact.get("file_count") == len(model_files), "model spec model file count mismatch")
+    require(artifact.get("total_physical_bytes") == sum(model_files.values()), "model spec model byte total mismatch")
+    return spec
+
+
+def expected_checkpoint_inventory(spec: dict) -> dict[str, int]:
+    expected: dict[str, int] = {}
+    for prefix, files in (("model", spec["artifact"]["model_files"]), ("", spec["artifact"]["aux_files"])):
+        for name, size in files.items():
+            relative = pathlib.PurePosixPath(name)
+            require(not relative.is_absolute() and ".." not in relative.parts, f"unsafe model spec path: {name}")
+            require(isinstance(size, int) and size > 0, f"invalid model spec size: {name}")
+            path = (pathlib.PurePosixPath(prefix) / relative).as_posix() if prefix else relative.as_posix()
+            require(path not in expected, f"duplicate model spec path: {path}")
+            expected[path] = size
+    return expected
+
+
 def validate_local(*, require_unsubmitted: bool) -> None:
     require(mounted_target(PROJECT_ROOT) == "/mnt/workspace", "CPFS mount missing")
     require(mounted_target(OSS_ROOT) == "/oss-chengjuntao", "OSS mount missing")
     require(SOURCE_ROOT.is_dir() and not SOURCE_ROOT.is_symlink(), "source snapshot missing")
-    revision = subprocess.check_output(["git", "-c", f"safe.directory={SOURCE_ROOT}", "-C", str(SOURCE_ROOT), "rev-parse", "HEAD"], text=True).strip()
-    require(revision == SOURCE_COMMIT, "source snapshot revision mismatch")
+    require(source_revision() == SOURCE_COMMIT, "source snapshot revision mismatch")
     require(CHECKPOINT_ROOT.is_dir() and not CHECKPOINT_ROOT.is_symlink(), "checkpoint missing")
-    expected = {
-        "config.yaml": 22139,
-        "ema-bf16-metadata-receipt.json": 2482,
-        "serving-checkpoint-size-manifest.json": 997,
-        "model/.metadata": 1612962,
-        "model/__0_0.distcp": 3828985322,
-        "model/__1_0.distcp": 3828985194,
-        "model/__2_0.distcp": 3828980056,
-        "model/__3_0.distcp": 3828978543,
-        "model/__4_0.distcp": 3828974063,
-        "model/__5_0.distcp": 3828962489,
-        "model/__6_0.distcp": 3828951514,
-        "model/__7_0.distcp": 3828948488,
-    }
+    expected = expected_checkpoint_inventory(load_model_spec())
     observed = {
         path.relative_to(CHECKPOINT_ROOT).as_posix(): path.stat().st_size
         for path in CHECKPOINT_ROOT.rglob("*") if path.is_file()
     }
-    require(observed == expected, "checkpoint inventory differs from audited B4 serving artifact")
+    require(observed == expected, "checkpoint inventory differs from model spec")
     for name in (
         "launch_cwam_b4_robocasa365_eval_dlc.sh",
         "run_cwam_b4_robocasa365_eval_dlc.sh",
@@ -168,6 +235,7 @@ def validate_local(*, require_unsubmitted: bool) -> None:
         "cwam_robocasa_asset_source_package.py",
         "cwam_dlc_persist_eval_output.py",
         "probe_mujoco_egl_mapping.py",
+        "model-spec.json",
     ):
         path = CONTROL_ROOT / name
         metadata = os.stat(path, follow_symlinks=False)
@@ -180,23 +248,31 @@ def validate_local(*, require_unsubmitted: bool) -> None:
 
 
 def request_body(commit: str) -> dict:
+    exported = {
+        "EVAL_CHECKPOINT_NAME": CHECKPOINT_NAME,
+        "EVAL_CONTROL_COMMIT": commit,
+        "EVAL_CONTROL_ROOT": str(CONTROL_ROOT),
+        "EVAL_EXPECTED_EMA_KEY_COUNT": str(EXPECTED_EMA_KEY_COUNT),
+        "EVAL_EXPERIMENT_ID": EXPERIMENT_ID,
+        "EVAL_LOGICAL_RUN_ID": LOGICAL_RUN_ID,
+        "EVAL_RUN_NAME": RUN_NAME,
+        "EVAL_SOURCE_COMMIT": SOURCE_COMMIT,
+        "EVAL_SOURCE_ROOT": str(SOURCE_ROOT),
+        "EVAL_SOURCE_RUN_ID": SOURCE_RUN_ID,
+    }
     shell = (
         "set -Eeuo pipefail; "
-        f"export EVAL_CONTROL_COMMIT={commit}; "
-        f"export EVAL_EXPERIMENT_ID={EXPERIMENT_ID}; "
-        f"export EVAL_LOGICAL_RUN_ID={LOGICAL_RUN_ID}; "
-        f"exec bash {LAUNCHER}"
+        + " ".join(f"export {name}={shlex.quote(value)};" for name, value in exported.items())
+        + f" exec bash {shlex.quote(str(LAUNCHER))}"
     )
     return {
         "Accessibility": "PRIVATE",
         "CustomEnvs": [],
         "DataSources": DATA_SOURCES,
-        "Description": f"{EXPERIMENT_ID}: B4 iter 20000 EMA, RoboCasa365 17x20 seed 42",
+        "Description": DESCRIPTION,
         "DisplayName": DISPLAY_NAME,
         "Envs": {
-            "EVAL_CONTROL_COMMIT": commit,
-            "EVAL_EXPERIMENT_ID": EXPERIMENT_ID,
-            "EVAL_LOGICAL_RUN_ID": LOGICAL_RUN_ID,
+            **exported,
             "NVIDIA_DRIVER_CAPABILITIES": "compute,utility,graphics,display",
         },
         "JobMaxRunningTimeMinutes": 8640,
@@ -221,7 +297,7 @@ def request_body(commit: str) -> dict:
             "EnableRDMA": False,
             "EnableSanityCheck": False,
             "Tags": {
-                "experiment": "B4-iter20000-eval",
+                "experiment": MODEL_TAG,
                 "protocol": "robocasa365-17x20-seed42",
                 "provenance": "git-path-time-no-new-hash",
                 "topology": "1x8-physical-dual-4rank-policy",
@@ -288,6 +364,10 @@ def reconcile_existing(client: Client, base: dict) -> dict:
         "resource_id",
         "control_commit",
         "source_commit",
+        "source_run_id",
+        "checkpoint_name",
+        "model_id",
+        "expected_ema_key_count",
         "checkpoint_root",
         "output_root",
         "request",
@@ -342,6 +422,10 @@ def main() -> int:
         "resource_id": RESOURCE_ID,
         "control_commit": commit,
         "source_commit": SOURCE_COMMIT,
+        "source_run_id": SOURCE_RUN_ID,
+        "checkpoint_name": CHECKPOINT_NAME,
+        "model_id": MODEL_ID,
+        "expected_ema_key_count": EXPECTED_EMA_KEY_COUNT,
         "checkpoint_root": str(CHECKPOINT_ROOT),
         "output_root": str(OUTPUT_ROOT),
         "request": body,
