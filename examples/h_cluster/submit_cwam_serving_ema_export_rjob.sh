@@ -16,13 +16,13 @@ required=(
     SOURCE_CONFIG_REMOTE TARGET_REMOTE SOURCE_RUN_ID SOURCE_REVISION
     EXPECTED_EMA_KEY_COUNT EXPECTED_REGULAR_KEY_COUNT EXPECTED_SHARD_COUNT
     EXPECTED_SOURCE_EMA_LOGICAL_BYTES EXPECTED_TARGET_LOGICAL_BYTES SAMPLE_KEYS_CSV
-    HANDOFF_ROOT SUBMISSION_ROOT
+    HANDOFF_ROOT WORK_ROOT_BASE SUBMISSION_ROOT
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
 done
 : "${RJOB_PREDICT_ONLY:=1}"
-export EXPORT_ID RJOB_NAME SOURCE_RUN_ID SOURCE_REVISION SOURCE_REMOTE TARGET_REMOTE
+export EXPORT_ID RJOB_NAME SOURCE_RUN_ID SOURCE_REVISION SOURCE_REMOTE TARGET_REMOTE WORK_ROOT_BASE
 
 [[ "$EXPORT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "ERROR: unsafe EXPORT_ID" >&2; exit 1; }
 [[ "$RJOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#RJOB_NAME}" -le 50 ]] || {
@@ -35,6 +35,7 @@ export EXPORT_ID RJOB_NAME SOURCE_RUN_ID SOURCE_REVISION SOURCE_REMOTE TARGET_RE
 [[ "$COSMOS_SOURCE" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid source root" >&2; exit 1; }
 [[ "$COSMOS_ENV" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid environment root" >&2; exit 1; }
 [[ "$HANDOFF_ROOT" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid handoff root" >&2; exit 1; }
+[[ "$WORK_ROOT_BASE" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid work root base" >&2; exit 1; }
 [[ "$SUBMISSION_ROOT" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid submission root" >&2; exit 1; }
 [[ "$SOURCE_REMOTE" == eailab-hdd2:eailab/chengjuntao/* ]] || { echo "ERROR: invalid source remote" >&2; exit 1; }
 [[ "$SOURCE_CONFIG_REMOTE" == eailab-hdd2:eailab/chengjuntao/* ]] || { echo "ERROR: invalid config remote" >&2; exit 1; }
@@ -72,7 +73,6 @@ submit_args=(
     --image "$PINNED_IMAGE"
     --cpu 32
     --memory 250000
-    --store-host-nvme
     --mount "$PERSONAL_GPFS_MOUNT"
 )
 if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then
@@ -107,6 +107,7 @@ payload = {
     "source_revision": os.environ["SOURCE_REVISION"],
     "source_remote": os.environ["SOURCE_REMOTE"],
     "target_remote": os.environ["TARGET_REMOTE"],
+    "work_root_base": os.environ["WORK_ROOT_BASE"],
     "resources": {"replicas": 1, "cpu": 32, "gpu": 0, "memory_mib": 250000},
 }
 path = pathlib.Path(os.sys.argv[1])

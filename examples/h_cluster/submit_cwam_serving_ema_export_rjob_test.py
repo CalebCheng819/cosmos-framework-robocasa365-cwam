@@ -31,9 +31,10 @@ def test_export_uses_non_private_cpu_task_scheduling_for_shared_handoff() -> Non
     assert "--private-machine" not in script
 
 
-def test_cpu_export_retains_large_local_workspace() -> None:
+def test_cpu_export_uses_explicit_gpfs_workspace() -> None:
     script = SUBMITTER.read_text(encoding="utf-8")
 
     assert "--cpu 32" in script
     assert "--memory 250000" in script
-    assert "--store-host-nvme" in script
+    assert "--store-host-nvme" not in script
+    assert "WORK_ROOT_BASE" in script

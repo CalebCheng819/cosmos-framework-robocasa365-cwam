@@ -10,7 +10,7 @@ required=(
     EXPORT_ID CONTROL_ROOT COSMOS_SOURCE COSMOS_ENV SOURCE_REMOTE SOURCE_CONFIG_REMOTE
     TARGET_REMOTE SOURCE_RUN_ID SOURCE_REVISION EXPECTED_EMA_KEY_COUNT
     EXPECTED_REGULAR_KEY_COUNT EXPECTED_SHARD_COUNT EXPECTED_SOURCE_EMA_LOGICAL_BYTES
-    EXPECTED_TARGET_LOGICAL_BYTES SAMPLE_KEYS_CSV HANDOFF_ROOT
+    EXPECTED_TARGET_LOGICAL_BYTES SAMPLE_KEYS_CSV HANDOFF_ROOT WORK_ROOT_BASE
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -18,7 +18,7 @@ done
 export EXPORT_ID SOURCE_RUN_ID SOURCE_REVISION SOURCE_REMOTE TARGET_REMOTE
 
 readonly EXPORTER="$CONTROL_ROOT/examples/h_cluster/export_cwam_serving_ema_bf16_dcp_metadata.py"
-readonly WORK_ROOT="/nvme/cwam-serving-export/$EXPORT_ID"
+readonly WORK_ROOT="$WORK_ROOT_BASE/$EXPORT_ID"
 readonly SOURCE_ROOT="$WORK_ROOT/source"
 readonly ARTIFACT_ROOT="$WORK_ROOT/artifact"
 readonly PRIVATE_ROOT="$WORK_ROOT/private"
@@ -89,7 +89,9 @@ on_exit() {
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/GIT_REVISION")" == "$SOURCE_REVISION" ]] || die "source revision mismatch"
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/RUN_ID")" == "$SOURCE_RUN_ID" ]] || die "source run ID mismatch"
 [[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* ]] || die "handoff root escapes personal GPFS"
-[[ ! -e "$WORK_ROOT" ]] || die "worker NVMe root already exists"
+[[ "$WORK_ROOT_BASE" == "$PERSONAL_HANDOFF_ROOT/"* ]] || die "work root base escapes personal GPFS"
+[[ -d "$WORK_ROOT_BASE" && ! -L "$WORK_ROOT_BASE" && -w "$WORK_ROOT_BASE" ]] || die "work root base is not writable"
+[[ ! -e "$WORK_ROOT" ]] || die "worker work root already exists"
 [[ ! -e "$HANDOFF_ROOT" ]] || die "handoff root already exists"
 
 mkdir -p "$PRIVATE_ROOT" "$SOURCE_ROOT/model" "$(dirname "$ARTIFACT_ROOT")" "$HANDOFF_ROOT" "$EVIDENCE_ROOT"
