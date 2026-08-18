@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path, PurePosixPath
 
 import relay_chunk_transfer as module
@@ -38,6 +39,10 @@ class RelayChunkTransferTest(unittest.TestCase):
             module._url("https://relay.example/", PurePosixPath("a b/c+d")),
             "https://relay.example/a%20b/c%2Bd",
         )
+
+    def test_curl_insecure_is_explicit(self):
+        self.assertEqual(module._curl_transport_args(Namespace(curl_insecure=False)), [])
+        self.assertEqual(module._curl_transport_args(Namespace(curl_insecure=True)), ["--insecure"])
 
 
 if __name__ == "__main__":

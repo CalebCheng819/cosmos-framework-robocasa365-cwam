@@ -123,12 +123,17 @@ def _url(base_url: str, relay_path: PurePosixPath) -> str:
     return f"{base_url.rstrip('/')}/{encoded}"
 
 
-def _head_size(curl: Path, curl_config: Path, url: str) -> int | None:
+def _curl_transport_args(args: argparse.Namespace) -> list[str]:
+    return ["--insecure"] if args.curl_insecure else []
+
+
+def _head_size(args: argparse.Namespace, url: str) -> int | None:
     result = _run(
         [
-            str(curl),
+            str(args.curl),
             "--config",
-            str(curl_config),
+            str(args.curl_config),
+            *_curl_transport_args(args),
             "--silent",
             "--show-error",
             "--head",
@@ -196,7 +201,7 @@ def _source_size(rclone: Path, rclone_config: Path, source: str) -> int:
 
 def _upload_chunk(args: argparse.Namespace, chunk: ChunkSpec) -> str:
     url = _url(args.relay_url, chunk.relay_path)
-    remote_size = _head_size(args.curl, args.curl_config, url)
+    remote_size = _head_size(args, url)
     if remote_size == chunk.count:
         _record(args.state_dir, chunk, "upload", "complete")
         return f"upload_skip_complete\t{chunk.relay_path}\t{chunk.count}"
@@ -240,6 +245,7 @@ def _upload_chunk(args: argparse.Namespace, chunk: ChunkSpec) -> str:
                 str(args.curl),
                 "--config",
                 str(args.curl_config),
+                *_curl_transport_args(args),
                 "--silent",
                 "--show-error",
                 "--request",
@@ -260,7 +266,7 @@ def _upload_chunk(args: argparse.Namespace, chunk: ChunkSpec) -> str:
         if result.returncode != 0 or status != "201":
             error = result.stderr.decode("utf-8", errors="replace")[-1000:]
             raise RuntimeError(f"Relay PUT failed: status={status}, return_code={result.returncode}: {error}")
-        if _head_size(args.curl, args.curl_config, url) != chunk.count:
+        if _head_size(args, url) != chunk.count:
             raise RuntimeError(f"Relay chunk verification failed: {chunk.relay_path}.")
         _record(args.state_dir, chunk, "upload", "complete")
         return f"upload_complete\t{chunk.relay_path}\t{chunk.count}"
@@ -274,7 +280,7 @@ def _chunk_destination(staging_dir: Path, chunk: ChunkSpec) -> Path:
 
 def _download_chunk(args: argparse.Namespace, chunk: ChunkSpec) -> str:
     url = _url(args.relay_url, chunk.relay_path)
-    remote_size = _head_size(args.curl, args.curl_config, url)
+    remote_size = _head_size(args, url)
     if remote_size != chunk.count:
         raise RuntimeError(
             f"Relay chunk is unavailable or wrong-sized: {chunk.relay_path}: "
@@ -295,6 +301,7 @@ def _download_chunk(args: argparse.Namespace, chunk: ChunkSpec) -> str:
                     str(args.curl),
                     "--config",
                     str(args.curl_config),
+                    *_curl_transport_args(args),
                     "--silent",
                     "--show-error",
                     "--location",
@@ -385,6 +392,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--relay-url", required=True)
     parser.add_argument("--curl", type=Path, default=Path("/usr/bin/curl"))
     parser.add_argument("--curl-config", type=Path, required=True)
+    parser.add_argument("--curl-insecure", action="store_true")
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--chunk-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--parallelism", type=int, default=8)
