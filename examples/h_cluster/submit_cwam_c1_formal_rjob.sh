@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-# Submit one six-H200 C1 run. The worker stages inputs on NVMe, runs a two-step
-# production-batch smoke, then starts the 20k-step formal training. Large
-# outputs are uploaded to OSS by the worker controller.
+# Submit one six-H200 C1 run. New runs execute a two-step production-batch
+# smoke; explicit resume runs stage and validate a full DCP checkpoint before
+# continuing the 20k-step schedule. Large outputs are uploaded to OSS.
 
 set -Eeuo pipefail
 umask 022
@@ -17,6 +17,10 @@ umask 022
 : "${RJOB_IMAGE:=registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7}"
 : "${RJOB_QUOTA_GROUP:=eailabagent_gpu}"
 : "${CONTROL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/experiments/cwam-c1-20260817/control}"
+: "${RESUME_FROM_OSS:=0}"
+: "${RESUME_CHECKPOINT_REMOTE:=}"
+: "${RESUME_CHECKPOINT_NAME:=}"
+: "${RESUME_SOURCE_RUN_NAME:=}"
 
 [[ "$RJOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#RJOB_NAME}" -le 50 ]] || {
     echo "ERROR: RJOB_NAME must be a lowercase Kubernetes name of at most 50 characters" >&2
@@ -26,6 +30,28 @@ umask 022
     echo "ERROR: unsupported FORMAL_RUN_NAME: $FORMAL_RUN_NAME" >&2
     exit 1
 }
+[[ "$RESUME_FROM_OSS" =~ ^[01]$ ]] || {
+    echo "ERROR: RESUME_FROM_OSS must be 0 or 1" >&2
+    exit 1
+}
+if [[ "$RESUME_FROM_OSS" == 1 ]]; then
+    [[ "$RESUME_CHECKPOINT_NAME" =~ ^iter_[0-9]{9}$ ]] || {
+        echo "ERROR: RESUME_CHECKPOINT_NAME must match iter_NNNNNNNNN" >&2
+        exit 1
+    }
+    [[ "$RESUME_SOURCE_RUN_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || {
+        echo "ERROR: invalid RESUME_SOURCE_RUN_NAME" >&2
+        exit 1
+    }
+    [[ "$RESUME_CHECKPOINT_REMOTE" =~ ^[A-Za-z0-9._:/-]+$ ]] || {
+        echo "ERROR: invalid RESUME_CHECKPOINT_REMOTE" >&2
+        exit 1
+    }
+    [[ "${RESUME_CHECKPOINT_REMOTE##*/}" == "$RESUME_CHECKPOINT_NAME" ]] || {
+        echo "ERROR: resume remote basename must match RESUME_CHECKPOINT_NAME" >&2
+        exit 1
+    }
+fi
 [[ -f "$COSMOS_SOURCE/GIT_REVISION" && "$(cat "$COSMOS_SOURCE/GIT_REVISION")" == "$GIT_REVISION" ]] || {
     echo "ERROR: source snapshot Git revision does not match GIT_REVISION" >&2
     exit 1
@@ -53,6 +79,10 @@ printf -v q_run '%q' "$FORMAL_RUN_NAME"
 printf -v q_revision '%q' "$GIT_REVISION"
 printf -v q_host '%q' "$EXPECTED_HOST"
 printf -v q_control '%q' "$CONTROL_ROOT"
+printf -v q_resume '%q' "$RESUME_FROM_OSS"
+printf -v q_resume_remote '%q' "$RESUME_CHECKPOINT_REMOTE"
+printf -v q_resume_name '%q' "$RESUME_CHECKPOINT_NAME"
+printf -v q_resume_source_run '%q' "$RESUME_SOURCE_RUN_NAME"
 worker_command="$(cat <<EOF
 set -Eeuo pipefail
 export COSMOS_SOURCE=$q_source
@@ -60,6 +90,10 @@ export FORMAL_RUN_NAME=$q_run
 export GIT_REVISION=$q_revision
 export EXPECTED_HOST=$q_host
 export CONTROL_ROOT=$q_control
+export RESUME_FROM_OSS=$q_resume
+export RESUME_CHECKPOINT_REMOTE=$q_resume_remote
+export RESUME_CHECKPOINT_NAME=$q_resume_name
+export RESUME_SOURCE_RUN_NAME=$q_resume_source_run
 export NCCL_IB_DISABLE=1
 export NCCL_NVLS_ENABLE=0
 export PYTHONDONTWRITEBYTECODE=1
@@ -108,11 +142,21 @@ grep -Fq "rjob $scheduler_name (showname=$RJOB_NAME):" <<<"$get_output" || {
     echo "ERROR: scheduler readback did not match the submitted job" >&2
     exit 1
 }
+grep -Eq "rjob $scheduler_name \(showname=$RJOB_NAME\): (Inqueue|Running)$" <<<"$get_output" || {
+    echo "ERROR: submitted job was not accepted into the queue" >&2
+    printf '%s\n' "$get_output" >&2
+    exit 1
+}
 export C1_RECEIPT_PATH="$receipt_path"
 export C1_SCHEDULER_NAME="$scheduler_name"
 export C1_SHOW_NAME="$RJOB_NAME"
 export C1_RUN_NAME="$FORMAL_RUN_NAME"
 export C1_GIT_REVISION="$GIT_REVISION"
+export C1_EXPECTED_HOST="$EXPECTED_HOST"
+export C1_RESUME_FROM_OSS="$RESUME_FROM_OSS"
+export C1_RESUME_CHECKPOINT_REMOTE="$RESUME_CHECKPOINT_REMOTE"
+export C1_RESUME_CHECKPOINT_NAME="$RESUME_CHECKPOINT_NAME"
+export C1_RESUME_SOURCE_RUN_NAME="$RESUME_SOURCE_RUN_NAME"
 python3 - <<'PY'
 import datetime
 import json
@@ -127,7 +171,12 @@ payload = {
     "run_id": os.environ["C1_RUN_NAME"],
     "git_revision": os.environ["C1_GIT_REVISION"],
     "gpu_count": 6,
-    "expected_host": "gpu-l-lg-cmc-h-h200-0299.host.h.pjlab.org.cn",
+    "expected_host": os.environ["C1_EXPECTED_HOST"],
+    "resume_from_oss": os.environ["C1_RESUME_FROM_OSS"] == "1",
+    "resume_checkpoint_remote": os.environ["C1_RESUME_CHECKPOINT_REMOTE"] or None,
+    "resume_checkpoint_name": os.environ["C1_RESUME_CHECKPOINT_NAME"] or None,
+    "resume_source_run_id": os.environ["C1_RESUME_SOURCE_RUN_NAME"] or None,
+    "data_stream_replay_acknowledged": os.environ["C1_RESUME_FROM_OSS"] == "1",
     "oss_root": f"eailab-hdd2:eailab/chengjuntao/experiments/cwam-cosmos3/C1/{os.environ['C1_RUN_NAME']}",
 }
 path = Path(os.environ["C1_RECEIPT_PATH"])

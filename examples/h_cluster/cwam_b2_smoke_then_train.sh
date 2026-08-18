@@ -35,6 +35,10 @@ umask 077
 : "${NVIDIA_SMI_INTERVAL_SECONDS:=2}"
 : "${UPLOAD_INTERVAL_SECONDS:=120}"
 : "${TOML_FILE:=$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_b2_nano.toml}"
+: "${RESUME_FROM_OSS:=0}"
+: "${RESUME_CHECKPOINT_REMOTE:=}"
+: "${RESUME_CHECKPOINT_NAME:=}"
+: "${RESUME_SOURCE_RUN_NAME:=}"
 
 [[ "$FORMAL_RUN_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || {
     echo "ERROR: unsupported FORMAL_RUN_NAME: $FORMAL_RUN_NAME" >&2
@@ -48,6 +52,33 @@ umask 077
     echo "ERROR: UPLOAD_INTERVAL_SECONDS must be a positive integer" >&2
     exit 1
 }
+[[ "$RESUME_FROM_OSS" =~ ^[01]$ ]] || {
+    echo "ERROR: RESUME_FROM_OSS must be 0 or 1" >&2
+    exit 1
+}
+if [[ "$RESUME_FROM_OSS" == 1 ]]; then
+    [[ "$RESUME_CHECKPOINT_NAME" =~ ^iter_[0-9]{9}$ ]] || {
+        echo "ERROR: RESUME_CHECKPOINT_NAME must match iter_NNNNNNNNN" >&2
+        exit 1
+    }
+    [[ "$RESUME_SOURCE_RUN_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || {
+        echo "ERROR: invalid RESUME_SOURCE_RUN_NAME" >&2
+        exit 1
+    }
+    [[ "$RESUME_CHECKPOINT_REMOTE" =~ ^[A-Za-z0-9._:/-]+$ ]] || {
+        echo "ERROR: invalid RESUME_CHECKPOINT_REMOTE" >&2
+        exit 1
+    }
+    [[ "${RESUME_CHECKPOINT_REMOTE##*/}" == "$RESUME_CHECKPOINT_NAME" ]] || {
+        echo "ERROR: resume remote basename must match RESUME_CHECKPOINT_NAME" >&2
+        exit 1
+    }
+    resume_iteration="$((10#${RESUME_CHECKPOINT_NAME#iter_}))"
+    first_formal_iteration="$((resume_iteration + 1))"
+else
+    resume_iteration=0
+    first_formal_iteration=1
+fi
 
 readonly TOML_FILE
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_robocasa365_nano.sh"
@@ -68,6 +99,8 @@ readonly SMOKE_LOG="$SMOKE_OUTPUT_ROOT/logs/$SMOKE_LOG_NAME"
 readonly FORMAL_LOG="$FORMAL_OUTPUT_ROOT/logs/$FORMAL_LOG_NAME"
 readonly UPLOADED_CHECKPOINTS="$EVIDENCE_DIR/uploaded-checkpoints.txt"
 readonly UPLOADER_STOP="$EVIDENCE_DIR/uploader.stop"
+readonly RESUME_ITERATION="$resume_iteration"
+readonly FIRST_FORMAL_ITERATION="$first_formal_iteration"
 
 SAMPLER_PID=""
 TRAIN_PID=""
@@ -206,6 +239,7 @@ run_training_phase() {
     local telemetry="$4"
     local log_name="$5"
     local overrides="$6"
+    local resume_existing_run="${7:-0}"
     local outer_log="$EVIDENCE_DIR/${phase}.outer.log"
 
     start_sampler "$telemetry"
@@ -217,7 +251,8 @@ run_training_phase() {
         LOG_FILENAME="$log_name" \
         EXTRA_TAIL_OVERRIDES="$overrides" \
         NPROC_PER_NODE="$WORLD_SIZE" \
-        RESUME_EXISTING_RUN=0 \
+        RESUME_EXISTING_RUN="$resume_existing_run" \
+        ALLOW_DATA_STREAM_REPLAY="$resume_existing_run" \
         ROBOCASA365_ROOT="$ROBOCASA365_ROOT" \
         ROBOCASA365_SOURCE_ROOT="$ROBOCASA365_SOURCE_ROOT" \
         BASE_CHECKPOINT_PATH="$BASE_CHECKPOINT_PATH" \
@@ -319,6 +354,54 @@ rclone_copy_and_check() {
         --checkers 32 --retries 5 --low-level-retries 20
 }
 
+stage_resume_checkpoint() {
+    local checkpoint_root="$FORMAL_RUN_DIR/checkpoints"
+    local destination="$checkpoint_root/$RESUME_CHECKPOINT_NAME"
+    local remote_parent="${RESUME_CHECKPOINT_REMOTE%/*}"
+    local remote_latest
+
+    remote_latest="$(rclone_cmd cat "$remote_parent/latest_checkpoint.txt" | tr -d '[:space:]')"
+    [[ "$remote_latest" == "$RESUME_CHECKPOINT_NAME" ]] || {
+        echo "ERROR: remote latest checkpoint is $remote_latest, expected $RESUME_CHECKPOINT_NAME" >&2
+        return 1
+    }
+    [[ ! -e "$destination" ]] || {
+        echo "ERROR: refusing to overwrite staged resume checkpoint: $destination" >&2
+        return 1
+    }
+    mkdir -p "$destination"
+    rclone_copy_and_check "$RESUME_CHECKPOINT_REMOTE" "$destination"
+    printf '%s\n' "$RESUME_CHECKPOINT_NAME" > "$checkpoint_root/latest_checkpoint.txt"
+    verify_checkpoint "$FORMAL_RUN_DIR" "$RESUME_CHECKPOINT_NAME"
+    printf '%s\n' "$RESUME_CHECKPOINT_NAME" >> "$UPLOADED_CHECKPOINTS"
+    "$COSMOS_ENV/bin/python" - \
+        "$EVIDENCE_DIR/resume-source.json" \
+        "$RESUME_SOURCE_RUN_NAME" \
+        "$RESUME_CHECKPOINT_REMOTE" \
+        "$RESUME_CHECKPOINT_NAME" \
+        "$RESUME_ITERATION" <<'PY'
+import datetime
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = {
+    "schema_version": 1,
+    "source_run_id": sys.argv[2],
+    "source_checkpoint_remote": sys.argv[3],
+    "source_checkpoint_name": sys.argv[4],
+    "source_iteration": int(sys.argv[5]),
+    "optimizer_scheduler_trainer_restored": True,
+    "packed_data_stream_replayed": True,
+    "staged_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+    date -Is > "$EVIDENCE_DIR/resume-staged.ready"
+    echo "RESUME_CHECKPOINT_STAGED checkpoint=$RESUME_CHECKPOINT_NAME source=$RESUME_CHECKPOINT_REMOTE"
+}
+
 upload_run_metadata() {
     if [[ -d "$FORMAL_OUTPUT_ROOT/logs" ]]; then
         rclone_cmd copy "$FORMAL_OUTPUT_ROOT/logs" "$OSS_ROOT/formal/logs" \
@@ -374,7 +457,7 @@ formal_uploader_loop() {
         if ! upload_run_metadata; then
             echo "UPLOAD_RETRY metadata recorded_at=$(date -Is)" >&2
         fi
-        if [[ -s "$FORMAL_LOG" ]] && validate_training_log "$FORMAL_LOG" 1 >/dev/null 2>&1; then
+        if [[ -s "$FORMAL_LOG" ]] && validate_training_log "$FORMAL_LOG" "$FIRST_FORMAL_ITERATION" >/dev/null 2>&1; then
             if [[ ! -e "$EVIDENCE_DIR/formal-first-iteration.ready" ]]; then
                 date -Is > "$EVIDENCE_DIR/formal-first-iteration.ready"
                 write_status running formal_training
@@ -480,10 +563,13 @@ source "$COSMOS_SOURCE/examples/h_cluster/configure_torchcodec_runtime.sh"
     "$COSMOS_SOURCE/examples/h_cluster/validate_cu128_train_env_marker.py" \
     --environment "$COSMOS_ENV"
 
-"$COSMOS_ENV/bin/python" - "$EVIDENCE_DIR/run-metadata.json" <<PY
+"$COSMOS_ENV/bin/python" - "$EVIDENCE_DIR/run-metadata.json" \
+    "$RESUME_FROM_OSS" "$RESUME_SOURCE_RUN_NAME" "$RESUME_CHECKPOINT_REMOTE" \
+    "$RESUME_CHECKPOINT_NAME" "$RESUME_ITERATION" "$FIRST_FORMAL_ITERATION" <<PY
 import datetime
 import json
 import os
+import sys
 from pathlib import Path
 
 payload = {
@@ -496,6 +582,13 @@ payload = {
     "max_iter": 20000,
     "oss_root": "$OSS_ROOT",
     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "resume_from_oss": sys.argv[2] == "1",
+    "resume_source_run_id": sys.argv[3] or None,
+    "resume_checkpoint_remote": sys.argv[4] or None,
+    "resume_checkpoint_name": sys.argv[5] or None,
+    "resume_iteration": int(sys.argv[6]),
+    "first_expected_iteration": int(sys.argv[7]),
+    "packed_data_stream_replayed": sys.argv[2] == "1",
 }
 Path("$EVIDENCE_DIR/run-metadata.json").write_text(
     json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -503,18 +596,25 @@ Path("$EVIDENCE_DIR/run-metadata.json").write_text(
 PY
 write_status running preflight
 
-CURRENT_PHASE="smoke"
-write_status running smoke
-SMOKE_OVERRIDES="trainer.max_iter=2 trainer.run_validation=false trainer.run_validation_on_start=false trainer.validation_iter=1000 trainer.logging_iter=1 checkpoint.save_iter=2 checkpoint.dcp_async_mode_enabled=false scheduler.cycle_lengths=[2] scheduler.warm_up_steps=[0]"
-run_training_phase smoke "$SMOKE_RUN_NAME" "$SMOKE_OUTPUT_ROOT" \
-    "$SMOKE_TELEMETRY" "$SMOKE_LOG_NAME" "$SMOKE_OVERRIDES"
-validate_training_log "$SMOKE_LOG" 2
-validate_gpu_telemetry "$SMOKE_TELEMETRY"
-verify_checkpoint "$SMOKE_RUN_DIR" iter_000000002
-rclone_copy_and_check "$SMOKE_OUTPUT_ROOT" "$OSS_ROOT/smoke"
-rclone_copy_and_check "$EVIDENCE_DIR" "$OSS_ROOT/evidence"
-date -Is > "$EVIDENCE_DIR/smoke-passed.ready"
-write_status running smoke_passed
+if [[ "$RESUME_FROM_OSS" == 1 ]]; then
+    CURRENT_PHASE="resume_staging"
+    write_status running resume_staging
+    stage_resume_checkpoint
+    write_status running resume_staged
+else
+    CURRENT_PHASE="smoke"
+    write_status running smoke
+    SMOKE_OVERRIDES="trainer.max_iter=2 trainer.run_validation=false trainer.run_validation_on_start=false trainer.validation_iter=1000 trainer.logging_iter=1 checkpoint.save_iter=2 checkpoint.dcp_async_mode_enabled=false scheduler.cycle_lengths=[2] scheduler.warm_up_steps=[0]"
+    run_training_phase smoke "$SMOKE_RUN_NAME" "$SMOKE_OUTPUT_ROOT" \
+        "$SMOKE_TELEMETRY" "$SMOKE_LOG_NAME" "$SMOKE_OVERRIDES" 0
+    validate_training_log "$SMOKE_LOG" 2
+    validate_gpu_telemetry "$SMOKE_TELEMETRY"
+    verify_checkpoint "$SMOKE_RUN_DIR" iter_000000002
+    rclone_copy_and_check "$SMOKE_OUTPUT_ROOT" "$OSS_ROOT/smoke"
+    rclone_copy_and_check "$EVIDENCE_DIR" "$OSS_ROOT/evidence"
+    date -Is > "$EVIDENCE_DIR/smoke-passed.ready"
+    write_status running smoke_passed
+fi
 
 CURRENT_PHASE="formal_training"
 write_status running formal_starting
@@ -522,7 +622,7 @@ formal_uploader_loop > >(tee "$EVIDENCE_DIR/uploader.log") 2>&1 &
 UPLOADER_PID=$!
 set +e
 run_training_phase formal "$FORMAL_RUN_NAME" "$FORMAL_OUTPUT_ROOT" \
-    "$FORMAL_TELEMETRY" "$FORMAL_LOG_NAME" ""
+    "$FORMAL_TELEMETRY" "$FORMAL_LOG_NAME" "" "$RESUME_FROM_OSS"
 formal_rc=$?
 set -e
 touch "$UPLOADER_STOP"
