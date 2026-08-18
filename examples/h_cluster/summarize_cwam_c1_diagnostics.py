@@ -72,7 +72,7 @@ def summarize(root: Path, episodes_per_task: int) -> dict[str, Any]:
             all_episodes.extend(episodes)
             stage_metrics = {stage: _stage_summary(episodes, stage) for stage in STAGE_ORDER}
             transitions = {}
-            for previous, current in zip(STAGE_ORDER, STAGE_ORDER[1:], strict=True):
+            for previous, current in zip(STAGE_ORDER, STAGE_ORDER[1:]):
                 previous_count = stage_metrics[previous]["reach_count"]
                 current_count = stage_metrics[current]["reach_count"]
                 transitions[f"{previous}_to_{current}"] = (

@@ -150,7 +150,7 @@ def test_causal_state_v2_trains_spatial_geometry_memory_replay_and_local_lora() 
     assert metrics["history_replay_loss"] > 0
     assert expert.vision_lora_up.weight.grad is not None
     assert torch.count_nonzero(expert.vision_lora_up.weight.grad) > 0
-    assert expert.slot_type_embedding.grad is not None
+    assert expert.slot_type_embed.grad is not None
     assert torch.count_nonzero(expert.slot_type_embedding.grad) > 0
     assert any(parameter.grad is not None for parameter in expert.spatial_decoder.parameters())
 

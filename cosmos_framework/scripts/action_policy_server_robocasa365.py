@@ -944,10 +944,8 @@ class RoboCasa365PolicyService(ActionModelService):
             )
             donor = candidates[permutation_index]
             log.info(
-                "Shuffled C donor: target_episode=%d target_replan=%d donor=%s",
-                self._c_episode_index,
-                self._c_replan_index,
-                donor,
+                "Shuffled C donor: "
+                f"target_episode={self._c_episode_index} target_replan={self._c_replan_index} donor={donor}"
             )
             return self._load_c_trace(donor)
 
@@ -978,10 +976,8 @@ class RoboCasa365PolicyService(ActionModelService):
             )
         donor = candidates[self._c_episode_index % len(candidates)]
         log.info(
-            "Cross-episode C donor: target_episode=%d target_replan=%d donor=%s",
-            self._c_episode_index,
-            self._c_replan_index,
-            donor,
+            "Cross-episode C donor: "
+            f"target_episode={self._c_episode_index} target_replan={self._c_replan_index} donor={donor}"
         )
         return self._load_c_trace(donor)
 
@@ -1324,11 +1320,13 @@ class RoboCasa365PolicyService(ActionModelService):
             "guardrails": bool(self.setup_args.guardrails),
             "vision_tokenizer": _ONLINE_WAN2PT2_TARGET,
             "online_pixel_encoding": True,
-            "open_loop_horizon": self.open_loop_horizon,
-            "c_intervention": self._c_intervention,
-            "c_intervention_selected_slots": self._c_intervention_selected_slots,
+            "open_loop_horizon": getattr(self, "open_loop_horizon", self.cfg.action_chunk_size),
+            "c_intervention": getattr(self, "_c_intervention", "normal"),
+            "c_intervention_selected_slots": getattr(self, "_c_intervention_selected_slots", 8),
             "c_intervention_trace_root": (
-                str(self._c_intervention_trace_root) if self._c_intervention_trace_root is not None else None
+                str(getattr(self, "_c_intervention_trace_root", None))
+                if getattr(self, "_c_intervention_trace_root", None) is not None
+                else None
             ),
             "wan2pt2_vae_path": (str(self.wan2pt2_vae_path) if self.wan2pt2_vae_path is not None else None),
             "qwen_tokenizer_path": (str(self.qwen_tokenizer_path) if self.qwen_tokenizer_path is not None else None),
