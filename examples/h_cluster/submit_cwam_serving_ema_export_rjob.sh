@@ -18,7 +18,7 @@ required=(
     SOURCE_CONFIG_REMOTE TARGET_REMOTE SOURCE_RUN_ID SOURCE_REVISION
     EXPECTED_EMA_KEY_COUNT EXPECTED_REGULAR_KEY_COUNT EXPECTED_SHARD_COUNT
     EXPECTED_SOURCE_EMA_LOGICAL_BYTES EXPECTED_TARGET_LOGICAL_BYTES SAMPLE_KEYS_CSV
-    HANDOFF_ROOT SUBMISSION_ROOT
+    HANDOFF_ROOT SUBMISSION_ROOT RCLONE_BIN
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -44,6 +44,8 @@ export EXPORT_ID RJOB_NAME SOURCE_RUN_ID SOURCE_REVISION SOURCE_REMOTE TARGET_RE
 [[ -d "$CONTROL_ROOT" && ! -L "$CONTROL_ROOT" ]] || { echo "ERROR: control root missing" >&2; exit 1; }
 [[ -d "$COSMOS_SOURCE" && ! -L "$COSMOS_SOURCE" ]] || { echo "ERROR: source snapshot missing" >&2; exit 1; }
 [[ -x "$COSMOS_ENV/bin/python" ]] || { echo "ERROR: Cosmos Python missing" >&2; exit 1; }
+[[ "$RCLONE_BIN" == "$PERSONAL_MOUNT/chengjuntao/"* ]] || { echo "ERROR: invalid rclone path" >&2; exit 1; }
+[[ -f "$RCLONE_BIN" && ! -L "$RCLONE_BIN" && -x "$RCLONE_BIN" ]] || { echo "ERROR: rclone binary missing or not executable" >&2; exit 1; }
 readonly WORKER="$CONTROL_ROOT/examples/h_cluster/export_cwam_serving_ema_bf16_from_hdd2.sh"
 [[ -f "$WORKER" && ! -L "$WORKER" ]] || { echo "ERROR: worker script missing" >&2; exit 1; }
 [[ ! -e "$HANDOFF_ROOT" ]] || { echo "ERROR: handoff root already exists" >&2; exit 1; }

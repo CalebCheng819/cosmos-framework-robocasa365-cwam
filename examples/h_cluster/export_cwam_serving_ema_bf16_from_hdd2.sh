@@ -10,7 +10,7 @@ required=(
     EXPORT_ID CONTROL_ROOT COSMOS_SOURCE COSMOS_ENV SOURCE_REMOTE SOURCE_CONFIG_REMOTE
     TARGET_REMOTE SOURCE_RUN_ID SOURCE_REVISION EXPECTED_EMA_KEY_COUNT
     EXPECTED_REGULAR_KEY_COUNT EXPECTED_SHARD_COUNT EXPECTED_SOURCE_EMA_LOGICAL_BYTES
-    EXPECTED_TARGET_LOGICAL_BYTES SAMPLE_KEYS_CSV HANDOFF_ROOT
+    EXPECTED_TARGET_LOGICAL_BYTES SAMPLE_KEYS_CSV HANDOFF_ROOT RCLONE_BIN
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -83,6 +83,8 @@ on_exit() {
 [[ -d "$CONTROL_ROOT" && ! -L "$CONTROL_ROOT" ]] || die "control root missing"
 [[ -d "$COSMOS_SOURCE" && ! -L "$COSMOS_SOURCE" ]] || die "source snapshot missing"
 [[ -x "$COSMOS_ENV/bin/python" ]] || die "Cosmos Python missing"
+[[ "$RCLONE_BIN" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/* ]] || die "rclone binary escapes personal GPFS"
+[[ -f "$RCLONE_BIN" && ! -L "$RCLONE_BIN" && -x "$RCLONE_BIN" ]] || die "rclone binary missing or not executable"
 [[ -f "$EXPORTER" && ! -L "$EXPORTER" ]] || die "exporter missing"
 [[ -f "$COSMOS_SOURCE/GIT_REVISION" && -f "$COSMOS_SOURCE/RUN_ID" ]] || die "source identity receipts missing"
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/GIT_REVISION")" == "$SOURCE_REVISION" ]] || die "source revision mismatch"
@@ -126,12 +128,12 @@ while [[ ! -s "$ENCRYPTED_CONFIG" && $SECONDS -lt $deadline ]]; do sleep 5; done
 openssl cms -decrypt -binary -inform DER -in "$ENCRYPTED_CONFIG" \
     -recip "$CERTIFICATE" -inkey "$PRIVATE_KEY" -out "$RCLONE_CONFIG"
 chmod 0400 "$RCLONE_CONFIG"
-rclone --config "$RCLONE_CONFIG" listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
 
 write_status RUNNING "downloading source checkpoint to worker NVMe"
-rclone --config "$RCLONE_CONFIG" copy "$SOURCE_REMOTE/model" "$SOURCE_ROOT/model" \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" copy "$SOURCE_REMOTE/model" "$SOURCE_ROOT/model" \
     --size-only --immutable --transfers 8 --checkers 16 --retries 5 --low-level-retries 10
-rclone --config "$RCLONE_CONFIG" copyto "$SOURCE_CONFIG_REMOTE" "$SOURCE_ROOT/config.yaml" \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" copyto "$SOURCE_CONFIG_REMOTE" "$SOURCE_ROOT/config.yaml" \
     --size-only --immutable --retries 5 --low-level-retries 10
 
 IFS=',' read -r -a sample_keys <<<"$SAMPLE_KEYS_CSV"
@@ -158,13 +160,13 @@ PYTHONPATH="$COSMOS_SOURCE:$CONTROL_ROOT" \
     >"$EVIDENCE_ROOT/export.log" 2>&1
 
 write_status RUNNING "publishing exact artifact to H object storage"
-rclone --config "$RCLONE_CONFIG" copy "$ARTIFACT_ROOT" "$TARGET_REMOTE" \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" copy "$ARTIFACT_ROOT" "$TARGET_REMOTE" \
     --size-only --immutable --transfers 8 --checkers 16 --retries 5 --low-level-retries 10
 (
     cd "$ARTIFACT_ROOT"
     find . -type f -printf '%s|%P\n' | LC_ALL=C sort
 ) >"$EVIDENCE_ROOT/local-inventory.txt"
-rclone --config "$RCLONE_CONFIG" lsf --recursive --files-only --format sp --separator '|' \
+"$RCLONE_BIN" --config "$RCLONE_CONFIG" lsf --recursive --files-only --format sp --separator '|' \
     "$TARGET_REMOTE" | LC_ALL=C sort >"$INVENTORY"
 cmp "$EVIDENCE_ROOT/local-inventory.txt" "$INVENTORY" || die "published path/size inventory mismatch"
 
