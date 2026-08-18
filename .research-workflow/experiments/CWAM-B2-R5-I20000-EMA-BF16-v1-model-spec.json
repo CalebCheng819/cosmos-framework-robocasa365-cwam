@@ -1,0 +1,41 @@
+{
+  "artifact": {
+    "aux_files": {
+      "config.yaml": 22153,
+      "ema-bf16-metadata-receipt.json": 2335,
+      "serving-checkpoint-size-manifest.json": 992
+    },
+    "file_count": 9,
+    "model_files": {
+      ".metadata": 1603659,
+      "__0_0.distcp": 3828961204,
+      "__1_0.distcp": 3828961076,
+      "__2_0.distcp": 3828955938,
+      "__3_0.distcp": 3828954425,
+      "__4_0.distcp": 3828949945,
+      "__5_0.distcp": 3828938371,
+      "__6_0.distcp": 3828927780,
+      "__7_0.distcp": 3828927780
+    },
+    "shard_count": 8,
+    "total_physical_bytes": 30633180178
+  },
+  "checkpoint_name": "B2-R5-I20000-EMA-BF16-v1",
+  "ema": {
+    "chunk_count": 7791,
+    "key_count": 980,
+    "source_logical_bytes": 61238660344,
+    "target_logical_bytes": 30619330172
+  },
+  "kind": "cwam_robocasa365_eval_model_spec",
+  "model_id": "CWAM-COSMOS3-B2-R5",
+  "source": {
+    "revision": "1d149883511ce582b55dad54979e531974c70cfe",
+    "run_id": "CWAM-B2-20260811-R5"
+  },
+  "training": {
+    "checkpoint_iteration": 20000,
+    "complete": true,
+    "target_iteration": 20000
+  }
+}

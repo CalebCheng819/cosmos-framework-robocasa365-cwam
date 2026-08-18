@@ -1,0 +1,37 @@
+{
+  "artifact": {
+    "aux_files": {
+      "config.yaml": 22467,
+      "ema-bf16-metadata-receipt.json": 2356,
+      "serving-checkpoint-size-manifest.json": 659
+    },
+    "file_count": 5,
+    "model_files": {
+      ".metadata": 873462,
+      "__0_0.distcp": 7656415512,
+      "__1_0.distcp": 7656415384,
+      "__2_0.distcp": 7656407942,
+      "__3_0.distcp": 7656404061
+    },
+    "shard_count": 4,
+    "total_physical_bytes": 30626516361
+  },
+  "checkpoint_name": "B3-DSELECT-K-R2-I17500-EMA-BF16-v1",
+  "ema": {
+    "chunk_count": 3931,
+    "key_count": 984,
+    "source_logical_bytes": 61238891512,
+    "target_logical_bytes": 30619445756
+  },
+  "kind": "cwam_robocasa365_eval_model_spec",
+  "model_id": "CWAM-COSMOS3-B3-DSELECT-K-R2",
+  "source": {
+    "revision": "1d3edfdf5fe22ca5c0bcb18b5449b258826f0da9",
+    "run_id": "CWAM-B3-DSELECT-K-20260812-R2"
+  },
+  "training": {
+    "checkpoint_iteration": 17500,
+    "complete": false,
+    "target_iteration": 20000
+  }
+}
