@@ -30,6 +30,8 @@ readonly RCLONE_CONFIG="$PRIVATE_ROOT/rclone.conf"
 readonly EVIDENCE_ROOT="$HANDOFF_ROOT/evidence"
 readonly STATUS_JSON="$EVIDENCE_ROOT/status.json"
 readonly INVENTORY="$EVIDENCE_ROOT/published-inventory.txt"
+readonly PERSONAL_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
+readonly PUBLIC_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/gpfs2-shared-public/cwam-chengjuntao/handoffs"
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -87,11 +89,15 @@ on_exit() {
 [[ -f "$COSMOS_SOURCE/GIT_REVISION" && -f "$COSMOS_SOURCE/RUN_ID" ]] || die "source identity receipts missing"
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/GIT_REVISION")" == "$SOURCE_REVISION" ]] || die "source revision mismatch"
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/RUN_ID")" == "$SOURCE_RUN_ID" ]] || die "source run ID mismatch"
-[[ "$HANDOFF_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/* ]] || die "handoff root escapes personal GPFS"
+[[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* || "$HANDOFF_ROOT" == "$PUBLIC_HANDOFF_ROOT/"* ]] || {
+    die "handoff root escapes approved GPFS roots"
+}
 [[ ! -e "$WORK_ROOT" ]] || die "worker NVMe root already exists"
 [[ ! -e "$HANDOFF_ROOT" ]] || die "handoff root already exists"
 
 mkdir -p "$PRIVATE_ROOT" "$SOURCE_ROOT/model" "$(dirname "$ARTIFACT_ROOT")" "$HANDOFF_ROOT" "$EVIDENCE_ROOT"
+chmod 0733 "$HANDOFF_ROOT"
+chmod 0755 "$EVIDENCE_ROOT"
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -123,6 +129,7 @@ write_status WAITING_FOR_CREDENTIAL "recipient request published"
 deadline=$((SECONDS + 3600))
 while [[ ! -s "$ENCRYPTED_CONFIG" && $SECONDS -lt $deadline ]]; do sleep 5; done
 [[ -s "$ENCRYPTED_CONFIG" ]] || die "timed out waiting for encrypted rclone config"
+chmod 0555 "$HANDOFF_ROOT"
 openssl cms -decrypt -binary -inform DER -in "$ENCRYPTED_CONFIG" \
     -recip "$CERTIFICATE" -inkey "$PRIVATE_KEY" -out "$RCLONE_CONFIG"
 chmod 0400 "$RCLONE_CONFIG"

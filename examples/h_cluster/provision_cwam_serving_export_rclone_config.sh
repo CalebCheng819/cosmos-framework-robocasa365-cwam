@@ -11,9 +11,11 @@ readonly REQUEST="$HANDOFF_ROOT/request.json"
 readonly CERTIFICATE="$HANDOFF_ROOT/recipient.pem"
 readonly RCLONE_CONFIG=/root/.config/rclone/rclone.conf
 readonly OUTPUT="$HANDOFF_ROOT/rclone-config.cms.der"
+readonly PERSONAL_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
+readonly PUBLIC_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/gpfs2-shared-public/cwam-chengjuntao/handoffs"
 
-[[ "$HANDOFF_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/* ]] || {
-    echo "ERROR: handoff root escapes personal GPFS" >&2
+[[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* || "$HANDOFF_ROOT" == "$PUBLIC_HANDOFF_ROOT/"* ]] || {
+    echo "ERROR: handoff root escapes approved GPFS roots" >&2
     exit 1
 }
 [[ -f "$REQUEST" && ! -L "$REQUEST" && -f "$CERTIFICATE" && ! -L "$CERTIFICATE" ]] || {
@@ -51,9 +53,8 @@ temporary="$OUTPUT.tmp.$$"
 trap 'rm -f "$temporary"' EXIT INT TERM
 openssl cms -encrypt -binary -aes-256-cbc -outform DER \
     -in "$RCLONE_CONFIG" -out "$temporary" "$CERTIFICATE"
-chmod 0400 "$temporary"
+chmod 0444 "$temporary"
 mv "$temporary" "$OUTPUT"
 trap - EXIT INT TERM
 printf 'CWAM_RCLONE_HANDOFF_COMPLETE export_id=%s output=%s bytes=%s\n' \
     "$EXPORT_ID" "$OUTPUT" "$(stat -c %s "$OUTPUT")"
-

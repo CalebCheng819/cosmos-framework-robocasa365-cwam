@@ -9,3 +9,13 @@ def test_single_gpu_export_does_not_request_host_network() -> None:
 
     assert "--gpu 1" in script
     assert "--host-network" not in script
+
+
+def test_export_packages_control_and_uses_explicit_gpfs_mounts() -> None:
+    script = SUBMITTER.read_text(encoding="utf-8")
+
+    assert '--folder "$CONTROL_ROOT"' in script
+    assert 'worker_env+=("CONTROL_ROOT=.")' in script
+    assert "gpfs://gpfs2/ailab-eailabagent-gpfs:" in script
+    assert "gpfs://gpfs2/gpfs2-shared-public:" in script
+    assert '--mount "$PERSONAL_GPFS_MOUNT" "$PUBLIC_GPFS_MOUNT"' in script
