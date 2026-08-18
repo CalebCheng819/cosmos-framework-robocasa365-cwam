@@ -130,7 +130,7 @@ def test_causal_state_recipe_has_one_state_only_action_path() -> None:
     assert causal.model.config.causal_action_state_dynamics_loss_weight == 0.25
     assert causal.dataloader_train.max_samples_per_batch == 32
     assert causal.trainer.grad_accum_iter == 2
-    assert list(causal.trainer.callbacks.production_batch_memory_gate.allowed_world_sizes) == [6]
+    assert list(causal.trainer.callbacks.production_batch_memory_gate.allowed_world_sizes) == [6, 8]
     assert "causal_action_state" in causal.optimizer.keys_to_select
     assert "strong_action_expert" not in causal.optimizer.keys_to_select
     assert "moe_gen" not in causal.optimizer.keys_to_select

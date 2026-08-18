@@ -576,7 +576,7 @@ action_policy_robocasa365_causal_state_nano.trainer.callbacks.action_gradient_ev
 causal_memory_gate = (
     action_policy_robocasa365_causal_state_nano.trainer.callbacks.production_batch_memory_gate
 )
-causal_memory_gate.allowed_world_sizes = [6]
+causal_memory_gate.allowed_world_sizes = [6, 8]
 action_policy_robocasa365_causal_state_nano.checkpoint.keys_to_skip_loading = [
     key
     for key in action_policy_robocasa365_causal_state_nano.checkpoint.keys_to_skip_loading
