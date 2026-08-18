@@ -210,7 +210,7 @@ launch_server() {
     local nonce
     local pid
     local pgid=
-    nonce="$("$COSMOS_PY" -c 'import secrets; print(secrets.token_hex(24))')"
+    nonce="$("$COSMOS_PY" -c 'import secrets; print(secrets.token_hex(32))')"
     SERVER_NONCES[$index]="$nonce"
     (
         cd "$COSMOS_SOURCE"

@@ -84,6 +84,15 @@ def test_launcher_stages_cosmos_runtime_closure_at_wrapper_path() -> None:
     assert script.index("stage_runtime_directory \\\n    cosmos_private_glibc") < script.index('bash "$RUNNER"')
 
 
+def test_policy_server_launch_nonce_satisfies_server_contract() -> None:
+    runner = LAUNCHER.with_name("run_cwam_b4_robocasa365_eval_dlc.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "secrets.token_hex(32)" in runner
+    assert "secrets.token_hex(24)" not in runner
+
+
 def test_trusted_executable_accepts_in_root_symlink_and_rejects_escape(tmp_path: Path) -> None:
     trusted_root = tmp_path / "envs"
     target = trusted_root / "python" / "bin" / "python3.11"
