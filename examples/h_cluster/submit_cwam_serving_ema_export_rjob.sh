@@ -10,6 +10,8 @@ readonly PINNED_IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88
 readonly PINNED_QUOTA_GROUP="eailabagent_gpu"
 readonly PERSONAL_MOUNT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs"
 readonly PUBLIC_MOUNT="/mnt/shared-storage-gpfs2/gpfs2-shared-public"
+readonly PERSONAL_MOUNT_SPEC="gpfs://gpfs2/ailab-eailabagent-gpfs:$PERSONAL_MOUNT"
+readonly PUBLIC_MOUNT_SPEC="gpfs://gpfs2/gpfs2-shared-public:$PUBLIC_MOUNT"
 
 required=(
     EXPORT_ID RJOB_NAME CONTROL_ROOT COSMOS_SOURCE COSMOS_ENV SOURCE_REMOTE
@@ -74,7 +76,7 @@ submit_args=(
     --gpu 1
     --memory 250000
     --store-host-nvme
-    --mount "$PERSONAL_MOUNT" "$PUBLIC_MOUNT"
+    --mount "$PERSONAL_MOUNT_SPEC" "$PUBLIC_MOUNT_SPEC"
 )
 if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then
     submit_args+=(--predict-only true)
