@@ -151,7 +151,7 @@ def test_causal_state_v2_trains_spatial_geometry_memory_replay_and_local_lora() 
     assert expert.vision_lora_up.weight.grad is not None
     assert torch.count_nonzero(expert.vision_lora_up.weight.grad) > 0
     assert expert.slot_type_embed.weight.grad is not None
-    assert torch.count_nonzero(expert.slot_type_embedding.grad) > 0
+    assert torch.count_nonzero(expert.slot_type_embed.weight.grad) > 0
     assert any(parameter.grad is not None for parameter in expert.spatial_decoder.parameters())
 
     # The up projection is zero-initialized, so the down projection starts
