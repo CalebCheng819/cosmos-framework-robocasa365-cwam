@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and summarize the B4 RoboCasa365 DLC evaluation without hashes."""
+"""Validate and summarize a CWAM RoboCasa365 DLC evaluation without hashes."""
 
 from __future__ import annotations
 
@@ -103,6 +103,76 @@ def _load_object(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _legacy_b4_model_spec() -> dict[str, Any]:
+    return {
+        "kind": "cwam_robocasa365_eval_model_spec",
+        "model_id": "CWAM-B4-R1",
+        "checkpoint_name": "B4-iter_000020000-serving-ema-bf16-metadata-v1",
+        "source": {"revision": EXPECTED_SOURCE_COMMIT, "run_id": EXPECTED_RUN_ID},
+        "training": {"checkpoint_iteration": 20_000, "target_iteration": 20_000, "complete": True},
+        "ema": {
+            "key_count": 986,
+            "chunk_count": 7_837,
+            "source_logical_bytes": 61_238_894_608,
+            "target_logical_bytes": 30_619_447_304,
+        },
+        "artifact": {
+            "model_files": EXPECTED_MODEL_FILES,
+            "aux_files": EXPECTED_AUX_FILES,
+            "shard_count": 8,
+            "file_count": 9,
+            "total_physical_bytes": sum(EXPECTED_MODEL_FILES.values()),
+        },
+    }
+
+
+def _load_model_spec(path: Path | None) -> dict[str, Any]:
+    spec = _legacy_b4_model_spec() if path is None else _load_object(path, "model spec")
+    source = spec.get("source")
+    training = spec.get("training")
+    ema = spec.get("ema")
+    artifact = spec.get("artifact")
+    if (
+        spec.get("kind") != "cwam_robocasa365_eval_model_spec"
+        or not isinstance(spec.get("model_id"), str)
+        or not spec["model_id"].strip()
+        or not isinstance(spec.get("checkpoint_name"), str)
+        or not spec["checkpoint_name"].strip()
+        or not isinstance(source, dict)
+        or not isinstance(source.get("revision"), str)
+        or not isinstance(source.get("run_id"), str)
+        or not isinstance(training, dict)
+        or type(training.get("checkpoint_iteration")) is not int
+        or type(training.get("target_iteration")) is not int
+        or type(training.get("complete")) is not bool
+        or not isinstance(ema, dict)
+        or any(type(ema.get(name)) is not int for name in (
+            "key_count", "chunk_count", "source_logical_bytes", "target_logical_bytes"
+        ))
+        or not isinstance(artifact, dict)
+        or not isinstance(artifact.get("model_files"), dict)
+        or not isinstance(artifact.get("aux_files"), dict)
+        or any(type(artifact.get(name)) is not int for name in (
+            "shard_count", "file_count", "total_physical_bytes"
+        ))
+    ):
+        raise ContractError("model spec has an invalid schema")
+    model_files = artifact["model_files"]
+    aux_files = artifact["aux_files"]
+    if (
+        not model_files
+        or any(not isinstance(name, str) or type(size) is not int or size <= 0 for name, size in model_files.items())
+        or any(not isinstance(name, str) or type(size) is not int or size <= 0 for name, size in aux_files.items())
+        or artifact["file_count"] != len(model_files)
+        or artifact["shard_count"] != sum(name.endswith(".distcp") for name in model_files)
+        or artifact["total_physical_bytes"] != sum(model_files.values())
+        or training["checkpoint_iteration"] > training["target_iteration"]
+        or training["complete"] != (training["checkpoint_iteration"] == training["target_iteration"])
+    ):
+        raise ContractError("model spec contains inconsistent counts, sizes, or training state")
+    return spec
+
+
 def _file_descriptor(path: Path) -> dict[str, Any]:
     metadata = path.lstat()
     if path.is_symlink() or not path.is_file():
@@ -114,13 +184,20 @@ def _file_descriptor(path: Path) -> dict[str, Any]:
     }
 
 
-def verify_checkpoint(root: Path, output: Path) -> dict[str, Any]:
+def verify_checkpoint(root: Path, output: Path, model_spec_path: Path | None = None) -> dict[str, Any]:
+    spec = _load_model_spec(model_spec_path)
+    source_spec = spec["source"]
+    training_spec = spec["training"]
+    ema_spec = spec["ema"]
+    artifact_spec = spec["artifact"]
+    expected_model_files = artifact_spec["model_files"]
+    expected_aux_files = artifact_spec["aux_files"]
     root = root.absolute()
     if root.is_symlink() or not root.is_dir() or root.resolve() != root:
         raise ContractError(f"checkpoint root must be a canonical directory: {root}")
     expected = {
-        **{f"model/{name}": size for name, size in EXPECTED_MODEL_FILES.items()},
-        **EXPECTED_AUX_FILES,
+        **{f"model/{name}": size for name, size in expected_model_files.items()},
+        **expected_aux_files,
     }
     observed: dict[str, int] = {}
     for path in sorted(root.rglob("*")):
@@ -145,47 +222,51 @@ def verify_checkpoint(root: Path, output: Path) -> dict[str, Any]:
         receipt.get("kind") != "cwam_serving_ema_bf16_metadata_receipt"
         or receipt.get("status") != "succeeded"
         or not isinstance(selection, dict)
-        or selection.get("key_count") != 986
-        or selection.get("chunk_count") != 7_837
+        or selection.get("key_count") != ema_spec["key_count"]
+        or selection.get("chunk_count") != ema_spec["chunk_count"]
+        or selection.get("source_logical_bytes") != ema_spec["source_logical_bytes"]
         or selection.get("target_dtype") != "torch.bfloat16"
-        or selection.get("target_logical_bytes") != 30_619_447_304
+        or selection.get("target_logical_bytes") != ema_spec["target_logical_bytes"]
         or not isinstance(source, dict)
-        or source.get("git_commit") != EXPECTED_SOURCE_COMMIT
-        or source.get("run_id") != EXPECTED_RUN_ID
+        or source.get("git_commit") != source_spec["revision"]
+        or source.get("run_id") != source_spec["run_id"]
         or not isinstance(target, dict)
-        or target.get("file_count") != 9
-        or target.get("shard_count") != 8
-        or target.get("total_physical_bytes") != sum(EXPECTED_MODEL_FILES.values())
+        or target.get("file_count") != artifact_spec["file_count"]
+        or target.get("shard_count") != artifact_spec["shard_count"]
+        or target.get("total_physical_bytes") != artifact_spec["total_physical_bytes"]
         or not isinstance(validation, dict)
         or validation.get("full_semantic_readback") is not True
         or validation.get("source_file_identities_stable") is not True
     ):
-        raise ContractError("EMA export receipt does not bind the validated B4 serving artifact")
+        raise ContractError("EMA export receipt does not bind the declared serving artifact")
     manifest = _load_object(root / "serving-checkpoint-size-manifest.json", "size manifest")
     manifest_files = manifest.get("files")
     if (
         manifest.get("kind") != "cwam_serving_checkpoint_size_manifest"
-        or manifest.get("file_count") != 9
-        or manifest.get("total_physical_bytes") != sum(EXPECTED_MODEL_FILES.values())
+        or manifest.get("file_count") != artifact_spec["file_count"]
+        or manifest.get("total_physical_bytes") != artifact_spec["total_physical_bytes"]
         or not isinstance(manifest_files, list)
-        or {item.get("relative_path"): item.get("size_bytes") for item in manifest_files} != EXPECTED_MODEL_FILES
+        or {item.get("relative_path"): item.get("size_bytes") for item in manifest_files} != expected_model_files
     ):
         raise ContractError("checkpoint size manifest differs from the fixed model inventory")
     result = {
         "schema_version": "metadata_no_hash_v1",
-        "kind": "cwam_b4_serving_checkpoint_verification",
+        "kind": "cwam_serving_checkpoint_verification",
         "status": "passed",
         "completed_at_utc": _utc_now(),
         "checkpoint_root": str(root),
         "model_path": str(root / "model"),
-        "source_commit": EXPECTED_SOURCE_COMMIT,
-        "source_run_id": EXPECTED_RUN_ID,
-        "ema_key_count": 986,
-        "ema_chunk_count": 7_837,
+        "model_id": spec["model_id"],
+        "checkpoint_name": spec["checkpoint_name"],
+        "training": training_spec,
+        "source_commit": source_spec["revision"],
+        "source_run_id": source_spec["run_id"],
+        "ema_key_count": ema_spec["key_count"],
+        "ema_chunk_count": ema_spec["chunk_count"],
         "file_count": len(observed),
         "total_physical_bytes": sum(observed.values()),
-        "model_file_count": len(EXPECTED_MODEL_FILES),
-        "model_physical_bytes": sum(EXPECTED_MODEL_FILES.values()),
+        "model_file_count": len(expected_model_files),
+        "model_physical_bytes": sum(expected_model_files.values()),
         "validation": {
             "exact_path_and_size_inventory": True,
             "full_semantic_readback_passed_at_export": True,
@@ -467,6 +548,7 @@ def verify_gate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def summarize(args: argparse.Namespace) -> dict[str, Any]:
+    model_spec = _load_model_spec(getattr(args, "model_spec", None))
     expected_labels = {"server-a", "server-b"}
     collections = {
         "runtime": [_load_object(path, f"runtime receipt {index}") for index, path in enumerate(args.runtime_receipt)],
@@ -596,7 +678,7 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
     successes = sum(int(row["success"] == "true") for row in episode_rows)
     evidence = {
         "schema_version": "metadata_no_hash_v1",
-        "kind": "cwam_b4_robocasa365_formal_eval_evidence",
+        "kind": "cwam_robocasa365_formal_eval_evidence",
         "status": "COMPLETE",
         "completed_at_utc": _utc_now(),
         "experiment_id": args.experiment_id,
@@ -604,6 +686,13 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
         "source_commit": args.source_commit,
         "demian_commit": args.demian_commit,
         "checkpoint_path": checkpoint,
+        "model": {
+            "model_id": model_spec["model_id"],
+            "checkpoint_name": model_spec["checkpoint_name"],
+            "source_run_id": model_spec["source"]["run_id"],
+            "training": model_spec["training"],
+            "ema": model_spec["ema"],
+        },
         "protocol": {
             "split": "atomic",
             "task_count": 17,
@@ -685,6 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     verify = commands.add_parser("verify-checkpoint")
     verify.add_argument("--root", type=Path, required=True)
+    verify.add_argument("--model-spec", type=Path)
     verify.add_argument("--output", type=Path, required=True)
     runtime = commands.add_parser("capture-runtime")
     runtime.add_argument("--uri", default="ws://127.0.0.1:16000")
@@ -718,6 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--experiment-id", required=True)
     summary.add_argument("--logical-run-id", required=True)
     summary.add_argument("--source-commit", required=True)
+    summary.add_argument("--model-spec", type=Path)
     summary.add_argument("--demian-commit", required=True)
     summary.add_argument("--run-name", required=True)
     summary.add_argument("--results-dir", type=Path, required=True)
@@ -744,7 +835,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if args.command == "verify-checkpoint":
-            result = verify_checkpoint(args.root, args.output)
+            result = verify_checkpoint(args.root, args.output, args.model_spec)
         elif args.command == "capture-runtime":
             result = capture_runtime(args)
         elif args.command == "shutdown-server":

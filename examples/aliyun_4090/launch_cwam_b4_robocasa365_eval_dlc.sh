@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Materialize the audited B4 inputs on worker NVMe and run the formal evaluation.
+# Materialize audited CWAM inputs on worker NVMe and run the formal evaluation.
 
 set -Eeuo pipefail
 umask 077
@@ -9,13 +9,21 @@ export PYTHONNOUSERSITE=1
 : "${EVAL_CONTROL_COMMIT:?Set EVAL_CONTROL_COMMIT}"
 : "${EVAL_EXPERIMENT_ID:?Set EVAL_EXPERIMENT_ID}"
 : "${EVAL_LOGICAL_RUN_ID:?Set EVAL_LOGICAL_RUN_ID}"
+: "${EVAL_CONTROL_ROOT:?Set EVAL_CONTROL_ROOT}"
+: "${EVAL_SOURCE_ROOT:?Set EVAL_SOURCE_ROOT}"
+: "${EVAL_SOURCE_COMMIT:?Set EVAL_SOURCE_COMMIT}"
+: "${EVAL_SOURCE_RUN_ID:?Set EVAL_SOURCE_RUN_ID}"
+: "${EVAL_CHECKPOINT_NAME:?Set EVAL_CHECKPOINT_NAME}"
+: "${EVAL_RUN_NAME:?Set EVAL_RUN_NAME}"
+: "${EVAL_EXPECTED_EMA_KEY_COUNT:?Set EVAL_EXPECTED_EMA_KEY_COUNT}"
 
-readonly SOURCE_COMMIT=e7775ffcea0a2d577597fbeb05c8bb92905aba0f
-readonly CONTROL_ROOT="/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/$EVAL_EXPERIMENT_ID-control-v3"
-readonly SOURCE_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B4-e7775ff-20260817
+readonly SOURCE_COMMIT="$EVAL_SOURCE_COMMIT"
+readonly SOURCE_RUN_ID="$EVAL_SOURCE_RUN_ID"
+readonly CONTROL_ROOT="$EVAL_CONTROL_ROOT"
+readonly SOURCE_ROOT="$EVAL_SOURCE_ROOT"
 readonly INPUT_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs
 readonly OSS_ROOT=/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval
-readonly CHECKPOINT_NAME=B4-iter_000020000-serving-ema-bf16-metadata-v1
+readonly CHECKPOINT_NAME="$EVAL_CHECKPOINT_NAME"
 readonly CHECKPOINT_SOURCE="$OSS_ROOT/inputs/checkpoints/$CHECKPOINT_NAME"
 readonly SOURCE_ENV_ARCHIVE="$OSS_ROOT/inputs/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
 readonly PUBLICATION_ENV_ARCHIVE="$INPUT_ROOT/envs/archives/cosmos-framework-09f23119-cu128-train-r22-complete.tar"
@@ -34,6 +42,7 @@ readonly RUNNER="$CONTROL_ROOT/run_cwam_b4_robocasa365_eval_dlc.sh"
 readonly SHARD_GROUP_RUNNER="$CONTROL_ROOT/run_cwam_b4_robocasa365_eval_shard_group.sh"
 readonly B4_SHELL_UTILS="$CONTROL_ROOT/cwam_b4_eval_shell_utils.sh"
 readonly B4_EVAL_HELPER="$CONTROL_ROOT/cwam_b4_robocasa365_eval.py"
+readonly EVAL_MODEL_SPEC="$CONTROL_ROOT/model-spec.json"
 readonly ENV_HELPER="$CONTROL_ROOT/cwam_cosmos_env_archive.py"
 readonly ASSET_HELPER="$CONTROL_ROOT/cwam_robocasa_asset_source_package.py"
 readonly EGL_PROBE="$CONTROL_ROOT/probe_mujoco_egl_mapping.py"
@@ -57,7 +66,6 @@ readonly EVAL_EGL_VENDOR_JSON=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 readonly DLC_LOCAL_FORMAL_PARENT=/tmp/cwam_b4_eval_formal
 readonly EVAL_LOCAL_OUTPUT_ROOT="$DLC_LOCAL_FORMAL_PARENT/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
 readonly EVAL_PERSISTENT_OUTPUT_ROOT="$OSS_ROOT/runs/$EVAL_EXPERIMENT_ID/$EVAL_LOGICAL_RUN_ID"
-readonly EVAL_RUN_NAME=b4-iter20000-robocasa365-seed42
 readonly LAUNCHER_TERMINAL="$EVAL_LOCAL_OUTPUT_ROOT/launcher-terminal.json"
 readonly REQUIRED_LOCAL_BYTES=161061273600
 
@@ -139,6 +147,16 @@ git_revision() {
     git -c safe.directory="$1" -C "$1" rev-parse HEAD
 }
 
+source_revision() {
+    local root="$1"
+    if [[ -d "$root/.git" ]]; then
+        git_revision "$root"
+    else
+        [[ -f "$root/GIT_REVISION" && ! -L "$root/GIT_REVISION" ]] || return 1
+        tr -d '[:space:]' <"$root/GIT_REVISION"
+    fi
+}
+
 write_launcher_terminal() {
     local status="$1"
     local exit_code="$2"
@@ -217,12 +235,35 @@ persist_formal_output() {
 [[ "$(findmnt -n -T /oss-chengjuntao -o TARGET)" == /oss-chengjuntao ]] || die "OSS mount missing"
 [[ -w /oss-chengjuntao ]] || die "OSS mount is not writable"
 [[ -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" ]] || die "source snapshot missing"
-[[ "$(git_revision "$SOURCE_ROOT")" == "$SOURCE_COMMIT" ]] || die "source snapshot revision mismatch"
-[[ -z "$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] || die "source snapshot is dirty"
+[[ "$(source_revision "$SOURCE_ROOT")" == "$SOURCE_COMMIT" ]] || die "source snapshot revision mismatch"
+[[ -f "$SOURCE_ROOT/RUN_ID" && ! -L "$SOURCE_ROOT/RUN_ID" ]] || die "source RUN_ID receipt missing"
+[[ "$(tr -d '[:space:]' <"$SOURCE_ROOT/RUN_ID")" == "$SOURCE_RUN_ID" ]] || die "source run ID mismatch"
+if [[ -d "$SOURCE_ROOT/.git" ]]; then
+    [[ -z "$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] || die "source snapshot is dirty"
+fi
 for file in "$RUNNER" "$SHARD_GROUP_RUNNER" "$B4_SHELL_UTILS" "$B4_EVAL_HELPER" \
-    "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE" "$PERSIST_OUTPUT_HELPER"; do
+    "$ENV_HELPER" "$ASSET_HELPER" "$EGL_PROBE" "$PERSIST_OUTPUT_HELPER" \
+    "$EVAL_MODEL_SPEC"; do
     require_control_file "$file"
 done
+python3 - "$EVAL_MODEL_SPEC" "$SOURCE_COMMIT" "$SOURCE_RUN_ID" "$CHECKPOINT_NAME" \
+    "$EVAL_EXPECTED_EMA_KEY_COUNT" <<'PY'
+import json
+import pathlib
+import sys
+
+spec = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = {
+    "source revision": (spec.get("source") or {}).get("revision"),
+    "source run ID": (spec.get("source") or {}).get("run_id"),
+    "checkpoint name": spec.get("checkpoint_name"),
+    "EMA key count": str((spec.get("ema") or {}).get("key_count")),
+}
+actual = dict(zip(expected, sys.argv[2:], strict=True))
+wrong = {name: {"spec": expected[name], "environment": actual[name]} for name in expected if str(expected[name]) != actual[name]}
+if wrong:
+    raise SystemExit(f"model spec and launcher environment differ: {wrong}")
+PY
 for file in "$SOURCE_ENV_ARCHIVE" "$SOURCE_ENV_RECEIPT" \
     "$SOURCE_ROBOCASA_ARCHIVE" "$SOURCE_ROBOCASA_OVERLAY" \
     "$ACTION_STATS" "$VAE_SOURCE" "$EGL_FRONTEND_SOURCE"; do
@@ -329,6 +370,7 @@ export TRAINING_CONFIG="$CHECKPOINT_ARTIFACT_ROOT/config.yaml"
 export EVAL_OUTPUT_ROOT="$EVAL_LOCAL_OUTPUT_ROOT"
 export EVAL_WORKER_SCRATCH="$SCRATCH_ROOT/runtime/eval"
 export EVAL_RUN_NAME EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER SHARD_GROUP_RUNNER B4_SHELL_UTILS
+export EVAL_MODEL_SPEC EVAL_SOURCE_COMMIT EVAL_SOURCE_RUN_ID EVAL_EXPECTED_EMA_KEY_COUNT
 
 bash "$RUNNER"
 [[ -s "$EVAL_LOCAL_OUTPUT_ROOT/evaluation_evidence.json" ]] || die "terminal evaluation evidence missing"

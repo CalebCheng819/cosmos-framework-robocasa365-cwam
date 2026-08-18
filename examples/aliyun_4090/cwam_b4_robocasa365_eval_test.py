@@ -140,8 +140,85 @@ def test_worker_scratch_is_local() -> None:
     assert 'readonly SCRATCH_DIR="$EVAL_OUTPUT_ROOT/scratch"' not in runner
 
 
+def test_model_spec_binds_incomplete_b3_checkpoint() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory) / "checkpoint"
+        model = root / "model"
+        model.mkdir(parents=True)
+        (model / ".metadata").write_bytes(b"meta")
+        (model / "__0_0.distcp").write_bytes(b"weights")
+        model_files = {".metadata": 4, "__0_0.distcp": 7}
+        receipt = {
+            "kind": "cwam_serving_ema_bf16_metadata_receipt",
+            "status": "succeeded",
+            "selection": {
+                "key_count": 984,
+                "chunk_count": 3931,
+                "source_logical_bytes": 61_238_891_512,
+                "target_dtype": "torch.bfloat16",
+                "target_logical_bytes": 30_619_445_756,
+            },
+            "source": {"git_commit": "b" * 40, "run_id": "CWAM-B3-R2"},
+            "target": {"file_count": 2, "shard_count": 1, "total_physical_bytes": 11},
+            "validation": {"full_semantic_readback": True, "source_file_identities_stable": True},
+        }
+        manifest = {
+            "kind": "cwam_serving_checkpoint_size_manifest",
+            "file_count": 2,
+            "total_physical_bytes": 11,
+            "files": [{"relative_path": name, "size_bytes": size} for name, size in model_files.items()],
+        }
+        _write(root / "ema-bf16-metadata-receipt.json", receipt)
+        _write(root / "serving-checkpoint-size-manifest.json", manifest)
+        aux_files = {
+            "ema-bf16-metadata-receipt.json": (root / "ema-bf16-metadata-receipt.json").stat().st_size,
+            "serving-checkpoint-size-manifest.json": (root / "serving-checkpoint-size-manifest.json").stat().st_size,
+        }
+        spec = {
+            "kind": "cwam_robocasa365_eval_model_spec",
+            "model_id": "CWAM-B3-DSelect-K-R2",
+            "checkpoint_name": "b3-r2-iter17500",
+            "source": {"revision": "b" * 40, "run_id": "CWAM-B3-R2"},
+            "training": {"checkpoint_iteration": 17_500, "target_iteration": 20_000, "complete": False},
+            "ema": {
+                "key_count": 984,
+                "chunk_count": 3931,
+                "source_logical_bytes": 61_238_891_512,
+                "target_logical_bytes": 30_619_445_756,
+            },
+            "artifact": {
+                "model_files": model_files,
+                "aux_files": aux_files,
+                "shard_count": 1,
+                "file_count": 2,
+                "total_physical_bytes": 11,
+            },
+        }
+        spec_path = Path(directory) / "model-spec.json"
+        _write(spec_path, spec)
+        result = module.verify_checkpoint(root, Path(directory) / "verification.json", spec_path)
+        assert result["model_id"] == "CWAM-B3-DSelect-K-R2"
+        assert result["training"]["complete"] is False
+
+
+def test_model_spec_rejects_false_training_complete_claim() -> None:
+    spec = module._legacy_b4_model_spec()
+    spec["training"] = {"checkpoint_iteration": 17_500, "target_iteration": 20_000, "complete": True}
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "bad-spec.json"
+        _write(path, spec)
+        try:
+            module._load_model_spec(path)
+        except module.ContractError as error:
+            assert "training state" in str(error)
+        else:
+            raise AssertionError("false training-complete claim was accepted")
+
+
 if __name__ == "__main__":
     test_complete_result()
     test_reject_bad_action_width()
     test_worker_scratch_is_local()
-    print("3 tests passed")
+    test_model_spec_binds_incomplete_b3_checkpoint()
+    test_model_spec_rejects_false_training_complete_claim()
+    print("5 tests passed")

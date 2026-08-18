@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the fixed 17-task x 20-episode B4 RoboCasa365 evaluation on one 8x4090 worker.
+# Run the fixed 17-task x 20-episode CWAM RoboCasa365 evaluation on one 8x4090 worker.
 
 set -Eeuo pipefail
 umask 077
@@ -12,7 +12,8 @@ required=(
     TRAINING_CONFIG ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER
     EVAL_OUTPUT_ROOT EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID EVAL_RUN_NAME
     EVAL_EGL_VENDOR_JSON B4_EVAL_HELPER B4_SHELL_UTILS SHARD_GROUP_RUNNER
-    EVAL_WORKER_SCRATCH
+    EVAL_WORKER_SCRATCH EVAL_MODEL_SPEC EVAL_SOURCE_COMMIT EVAL_SOURCE_RUN_ID
+    EVAL_EXPECTED_EMA_KEY_COUNT
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -24,7 +25,8 @@ done
 # shellcheck source=examples/aliyun_4090/cwam_b4_eval_shell_utils.sh
 source "$B4_SHELL_UTILS"
 
-readonly SOURCE_COMMIT=e7775ffcea0a2d577597fbeb05c8bb92905aba0f
+readonly SOURCE_COMMIT="$EVAL_SOURCE_COMMIT"
+readonly SOURCE_RUN_ID="$EVAL_SOURCE_RUN_ID"
 readonly DEMIAN_COMMIT=2600ece5bf0eeacf010a95f084dcda2de6d30d59
 readonly ROBOCASA_COMMIT=29f7ce8814c1547f5af762a0997fbd4b64848dd7
 readonly ROBOSUITE_COMMIT=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b
@@ -64,6 +66,16 @@ die() {
 
 git_revision() {
     git -c safe.directory="$1" -C "$1" rev-parse HEAD
+}
+
+source_revision() {
+    local root="$1"
+    if [[ -d "$root/.git" ]]; then
+        git_revision "$root"
+    else
+        [[ -f "$root/GIT_REVISION" && ! -L "$root/GIT_REVISION" ]] || return 1
+        tr -d '[:space:]' <"$root/GIT_REVISION"
+    fi
 }
 
 write_status() {
@@ -140,7 +152,8 @@ for directory in "$COSMOS_SOURCE" "$COSMOS_ENV" "$ROBOCASA_ENV" "$DEMIAN_REPO" \
     [[ -d "$directory" && ! -L "$directory" ]] || die "missing directory: $directory"
 done
 for file in "$TRAINING_CONFIG" "$ACTION_STATS" "$WAN2PT2_VAE" \
-    "$EVAL_EGL_VENDOR_JSON" "$HELPER" "$SHARD_GROUP_RUNNER" "$EVALUATOR"; do
+    "$EVAL_EGL_VENDOR_JSON" "$HELPER" "$SHARD_GROUP_RUNNER" "$EVALUATOR" \
+    "$EVAL_MODEL_SPEC"; do
     [[ -f "$file" && ! -L "$file" ]] || die "missing regular file: $file"
 done
 cwam_require_trusted_executable "$COSMOS_PY" "$COSMOS_ENV" ||
@@ -149,7 +162,9 @@ cwam_require_trusted_executable "$TORCHRUN" "$COSMOS_ENV" ||
     die "untrusted torchrun entrypoint"
 cwam_require_trusted_executable "$ROBOCASA_PY" "$(dirname -- "$ROBOCASA_ENV")" ||
     die "untrusted RoboCasa Python entrypoint"
-[[ "$(git_revision "$COSMOS_SOURCE")" == "$SOURCE_COMMIT" ]] || die "Cosmos source revision mismatch"
+[[ "$(source_revision "$COSMOS_SOURCE")" == "$SOURCE_COMMIT" ]] || die "Cosmos source revision mismatch"
+[[ -f "$COSMOS_SOURCE/RUN_ID" && ! -L "$COSMOS_SOURCE/RUN_ID" ]] || die "source RUN_ID receipt missing"
+[[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/RUN_ID")" == "$SOURCE_RUN_ID" ]] || die "source run ID mismatch"
 [[ "$(git_revision "$DEMIAN_REPO")" == "$DEMIAN_COMMIT" ]] || die "DeMiAn revision mismatch"
 [[ "$(git_revision "$ROBOCASA_REPO")" == "$ROBOCASA_COMMIT" ]] || die "RoboCasa revision mismatch"
 [[ "$(git_revision "$ROBOSUITE_REPO")" == "$ROBOSUITE_COMMIT" ]] || die "robosuite revision mismatch"
@@ -170,6 +185,7 @@ write_status RUNNING "checkpoint_load_gate_pending"
 
 "$COSMOS_PY" "$HELPER" verify-checkpoint \
     --root "$CHECKPOINT_ARTIFACT_ROOT" \
+    --model-spec "$EVAL_MODEL_SPEC" \
     --output "$CONTROL_DIR/checkpoint-verification.json" \
     >"$CONTROL_DIR/checkpoint-verification.log"
 printf 'B4_CHECKPOINT_VERIFICATION_PASSED receipt=%s\n' \
@@ -235,7 +251,7 @@ launch_server() {
             --qwen-tokenizer-path "$QWEN_TOKENIZER" \
             --host 127.0.0.1 --port "$port" \
             --sampler unipc --seed 42 --guidance 1.0 --num-steps 30 \
-            --expected-ema-key-count 986 --launch-nonce "$nonce"
+            --expected-ema-key-count "$EVAL_EXPECTED_EMA_KEY_COUNT" --launch-nonce "$nonce"
     ) >"$CONTROL_DIR/policy-$label.log" 2>&1 &
     pid=$!
     SERVER_PIDS[$index]="$pid"
@@ -389,6 +405,7 @@ shutdown_server 1
 "$COSMOS_PY" "$HELPER" summarize \
     --experiment-id "$EVAL_EXPERIMENT_ID" --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
     --source-commit "$SOURCE_COMMIT" --demian-commit "$DEMIAN_COMMIT" \
+    --model-spec "$EVAL_MODEL_SPEC" \
     --run-name "$EVAL_RUN_NAME" --results-dir "$RESULTS_DIR" \
     --checkpoint "$SERVING_CHECKPOINT_PATH" \
     --runtime-receipt "$CONTROL_DIR/runtime-server-a.json" \
