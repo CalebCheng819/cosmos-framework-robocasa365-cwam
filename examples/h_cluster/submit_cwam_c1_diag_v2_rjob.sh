@@ -72,6 +72,7 @@ set +e
 rjob submit \
     --name "$RJOB_NAME" \
     --charged-group "$RJOB_QUOTA_GROUP" \
+    --private-machine=group \
     --priority 9 \
     --task-type normal \
     --restart-policy never \
@@ -126,6 +127,7 @@ payload = {
     "git_revision": os.environ["RECEIPT_REVISION"],
     "expected_host": os.environ["RECEIPT_HOST"],
     "gpu_count": 8,
+    "private_machine": "group",
     "cpu": 128,
     "memory_mib": 1500000,
     "phase_order": ["fixed_r13_diagnostics", "cwam_v2_smoke", "cwam_v2_formal_training"],
@@ -145,4 +147,3 @@ temporary.replace(path)
 PY
 
 echo "CWAM_C1_DIAG_V2_SUBMISSION_ACCEPTED scheduler_rjob=$scheduler_name receipt=$receipt_path"
-
