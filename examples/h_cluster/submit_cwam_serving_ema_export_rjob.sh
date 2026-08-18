@@ -9,10 +9,7 @@ export PYTHONNOUSERSITE=1
 readonly PINNED_IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
 readonly PINNED_QUOTA_GROUP="eailabagent_gpu"
 readonly PERSONAL_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs"
-readonly PUBLIC_ROOT="/mnt/shared-storage-gpfs2/gpfs2-shared-public"
-readonly PUBLIC_HANDOFF_ROOT="$PUBLIC_ROOT/cwam-chengjuntao/handoffs"
 readonly PERSONAL_GPFS_MOUNT="gpfs://gpfs2/ailab-eailabagent-gpfs:$PERSONAL_ROOT"
-readonly PUBLIC_GPFS_MOUNT="gpfs://gpfs2/gpfs2-shared-public:$PUBLIC_ROOT"
 
 required=(
     EXPORT_ID RJOB_NAME CONTROL_ROOT COSMOS_SOURCE COSMOS_ENV SOURCE_REMOTE
@@ -37,10 +34,7 @@ export EXPORT_ID RJOB_NAME SOURCE_RUN_ID SOURCE_REVISION SOURCE_REMOTE TARGET_RE
 [[ "$CONTROL_ROOT" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid control root" >&2; exit 1; }
 [[ "$COSMOS_SOURCE" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid source root" >&2; exit 1; }
 [[ "$COSMOS_ENV" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid environment root" >&2; exit 1; }
-[[ "$HANDOFF_ROOT" == "$PERSONAL_ROOT/chengjuntao/"* || "$HANDOFF_ROOT" == "$PUBLIC_HANDOFF_ROOT/"* ]] || {
-    echo "ERROR: invalid handoff root" >&2
-    exit 1
-}
+[[ "$HANDOFF_ROOT" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid handoff root" >&2; exit 1; }
 [[ "$SUBMISSION_ROOT" == "$PERSONAL_ROOT/chengjuntao/"* ]] || { echo "ERROR: invalid submission root" >&2; exit 1; }
 [[ "$SOURCE_REMOTE" == eailab-hdd2:eailab/chengjuntao/* ]] || { echo "ERROR: invalid source remote" >&2; exit 1; }
 [[ "$SOURCE_CONFIG_REMOTE" == eailab-hdd2:eailab/chengjuntao/* ]] || { echo "ERROR: invalid config remote" >&2; exit 1; }
@@ -82,7 +76,7 @@ submit_args=(
     --gpu 1
     --memory 250000
     --store-host-nvme
-    --mount "$PERSONAL_GPFS_MOUNT" "$PUBLIC_GPFS_MOUNT"
+    --mount "$PERSONAL_GPFS_MOUNT"
 )
 if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then
     submit_args+=(--predict-only true)

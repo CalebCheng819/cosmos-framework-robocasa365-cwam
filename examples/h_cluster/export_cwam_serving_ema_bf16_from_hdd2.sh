@@ -31,7 +31,6 @@ readonly EVIDENCE_ROOT="$HANDOFF_ROOT/evidence"
 readonly STATUS_JSON="$EVIDENCE_ROOT/status.json"
 readonly INVENTORY="$EVIDENCE_ROOT/published-inventory.txt"
 readonly PERSONAL_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
-readonly PUBLIC_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/gpfs2-shared-public/cwam-chengjuntao/handoffs"
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -89,9 +88,7 @@ on_exit() {
 [[ -f "$COSMOS_SOURCE/GIT_REVISION" && -f "$COSMOS_SOURCE/RUN_ID" ]] || die "source identity receipts missing"
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/GIT_REVISION")" == "$SOURCE_REVISION" ]] || die "source revision mismatch"
 [[ "$(tr -d '[:space:]' <"$COSMOS_SOURCE/RUN_ID")" == "$SOURCE_RUN_ID" ]] || die "source run ID mismatch"
-[[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* || "$HANDOFF_ROOT" == "$PUBLIC_HANDOFF_ROOT/"* ]] || {
-    die "handoff root escapes approved GPFS roots"
-}
+[[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* ]] || die "handoff root escapes personal GPFS"
 [[ ! -e "$WORK_ROOT" ]] || die "worker NVMe root already exists"
 [[ ! -e "$HANDOFF_ROOT" ]] || die "handoff root already exists"
 
@@ -125,6 +122,8 @@ PY
 chmod 0444 "$REQUEST.tmp.$$"
 mv "$REQUEST.tmp.$$" "$REQUEST"
 write_status WAITING_FOR_CREDENTIAL "recipient request published"
+printf 'CWAM_RCLONE_HANDOFF_REQUEST export_id=%s certificate_b64=%s\n' \
+    "$EXPORT_ID" "$(base64 -w0 "$CERTIFICATE")"
 
 deadline=$((SECONDS + 3600))
 while [[ ! -s "$ENCRYPTED_CONFIG" && $SECONDS -lt $deadline ]]; do sleep 5; done

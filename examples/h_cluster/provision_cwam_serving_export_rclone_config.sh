@@ -8,18 +8,17 @@ umask 077
 readonly HANDOFF_ROOT="$1"
 readonly EXPORT_ID="$2"
 readonly REQUEST="$HANDOFF_ROOT/request.json"
-readonly CERTIFICATE="$HANDOFF_ROOT/recipient.pem"
+readonly CERTIFICATE="${RECIPIENT_CERTIFICATE_PATH:-$HANDOFF_ROOT/recipient.pem}"
 readonly RCLONE_CONFIG=/root/.config/rclone/rclone.conf
-readonly OUTPUT="$HANDOFF_ROOT/rclone-config.cms.der"
+readonly OUTPUT="${PROVISION_OUTPUT:-$HANDOFF_ROOT/rclone-config.cms.der}"
 readonly PERSONAL_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
-readonly PUBLIC_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/gpfs2-shared-public/cwam-chengjuntao/handoffs"
 
-[[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* || "$HANDOFF_ROOT" == "$PUBLIC_HANDOFF_ROOT/"* ]] || {
-    echo "ERROR: handoff root escapes approved GPFS roots" >&2
+[[ "$HANDOFF_ROOT" == "$PERSONAL_HANDOFF_ROOT/"* ]] || {
+    echo "ERROR: handoff root escapes personal GPFS" >&2
     exit 1
 }
-[[ -f "$REQUEST" && ! -L "$REQUEST" && -f "$CERTIFICATE" && ! -L "$CERTIFICATE" ]] || {
-    echo "ERROR: worker request is incomplete" >&2
+[[ -f "$CERTIFICATE" && ! -L "$CERTIFICATE" ]] || {
+    echo "ERROR: recipient certificate is missing" >&2
     exit 1
 }
 [[ -f "$RCLONE_CONFIG" && ! -L "$RCLONE_CONFIG" ]] || {
@@ -28,7 +27,9 @@ readonly PUBLIC_HANDOFF_ROOT="/mnt/shared-storage-gpfs2/gpfs2-shared-public/cwam
 }
 [[ ! -e "$OUTPUT" ]] || { echo "ERROR: refusing to replace encrypted handoff" >&2; exit 1; }
 
-python3 - "$REQUEST" "$CERTIFICATE" "$EXPORT_ID" <<'PY'
+if [[ -z "${RECIPIENT_CERTIFICATE_PATH:-}" ]]; then
+    [[ -f "$REQUEST" && ! -L "$REQUEST" ]] || { echo "ERROR: worker request is incomplete" >&2; exit 1; }
+    python3 - "$REQUEST" "$CERTIFICATE" "$EXPORT_ID" <<'PY'
 import json
 import pathlib
 import sys
@@ -48,7 +49,15 @@ if wrong:
 if not str(request.get("remote", "")).startswith("eailab-hdd2:eailab/chengjuntao/"):
     raise SystemExit("requested remote escapes personal prefix")
 PY
+else
+    [[ "$(openssl x509 -in "$CERTIFICATE" -noout -subject -nameopt RFC2253)" == "subject=CN=$EXPORT_ID" ]] || {
+        echo "ERROR: recipient certificate subject mismatch" >&2
+        exit 1
+    }
+    openssl x509 -in "$CERTIFICATE" -noout -checkend 0 >/dev/null
+fi
 
+mkdir -p "$(dirname "$OUTPUT")"
 temporary="$OUTPUT.tmp.$$"
 trap 'rm -f "$temporary"' EXIT INT TERM
 openssl cms -encrypt -binary -aes-256-cbc -outform DER \

@@ -17,5 +17,5 @@ def test_export_packages_control_and_uses_explicit_gpfs_mounts() -> None:
     assert '--folder "$CONTROL_ROOT"' in script
     assert 'worker_env+=("CONTROL_ROOT=.")' in script
     assert "gpfs://gpfs2/ailab-eailabagent-gpfs:" in script
-    assert "gpfs://gpfs2/gpfs2-shared-public:" in script
-    assert '--mount "$PERSONAL_GPFS_MOUNT" "$PUBLIC_GPFS_MOUNT"' in script
+    assert "gpfs://gpfs2/gpfs2-shared-public:" not in script
+    assert '--mount "$PERSONAL_GPFS_MOUNT"' in script
