@@ -1,0 +1,107 @@
+{
+  "parent": {
+    "type": "data_source_id",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4"
+  },
+  "properties": {
+    "Name": {
+      "type": "title",
+      "title": [{"type": "text", "text": {"content": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819 - fixed B5 visual object memory formal evaluation"}}]
+    },
+    "Experiment ID": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819"}}]
+    },
+    "Status": {"type": "status", "status": {"name": "Planned"}},
+    "Mode": {"type": "select", "select": {"name": "confirmatory"}},
+    "Project": {"type": "select", "select": {"name": "CWAM"}},
+    "Hypothesis / Objective": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Evaluate whether the fixed CWAM Cosmos3 B5 VOM R8 iteration-20000 EMA policy, with online recurrent visual-object memory active, completes the matched formal RoboCasa365 atomic protocol on one eight-GPU DLC worker."}}]
+    },
+    "Acceptance Criterion": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "The exact 12-file, 30,778,503,328-byte checkpoint inventory and 1086-key EMA contract must pass; both four-rank policy servers and both one-episode CUDA/EGL gates must pass; formal completion requires exactly 340 valid terminal rows across 17 tasks and a COMPLETE record in the unique OSS run root."}}]
+    },
+    "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-DLC-ROB365-B4-I20000-8GPU-S42-R7-20260818-worker-local-eval-output-and-terminal-OSS-publicati-3c021e7789cc81f7a022c7cd582e9ee1"},
+    "Estimated Runtime": {"type": "number", "number": 72},
+    "Initial ETA": {"type": "date", "date": {"start": "2026-08-27T18:00:00+08:00"}},
+    "Current ETA": {"type": "date", "date": {"start": "2026-08-27T18:00:00+08:00"}},
+    "Experiment Window": {"type": "date", "date": {"start": "2026-08-19T16:00:00+08:00", "end": "2026-08-27T18:00:00+08:00"}},
+    "Git Commit": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Training source 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; evaluation control commit will be fixed before DLC submission."}}]
+    },
+    "Config": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Fixed B5 VOM R8 iter_000020000 EMA BF16 DCP; online visual history length 3; eight visual memory tokens; object-memory delta main path and aligned-vs-zero/shuffle policy ranking active; RoboCasa365 atomic 17 tasks x 20 episodes; seed=42; max_steps=400; horizon=12; UniPC=30; guidance=1.0; two parallel four-rank FSDP policy servers."}}]
+    },
+    "Data Version": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "RoboCasa 29f7ce8814c1547f5af762a0997fbd4b64848dd7; robosuite 232ce7d4a6ed89c949a9aba024a05c8c32fdd08b; DeMiAn evaluator 2600ece5bf0eeacf010a95f084dcda2de6d30d59; RoboCasa365 atomic split."}}]
+    },
+    "Environment": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Alibaba PAI DLC PyTorch 2.7.1 CUDA 12.8 image; CPFS fixed source/control and OSS checkpoint/output mounts; B5 source revision 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; worker-local model, environment, assets, and active evaluator output with terminal OSS publication."}}]
+    },
+    "Command": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Exactly-once generic DLC submission after checkpoint transfer and immutable-control audit; priority 7; one worker; eight RTX 4090 GPUs."}}]
+    },
+    "Hardware": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Alibaba PAI DLC; 1 worker; 8 x RTX 4090 48 GB; 126 CPU; 960 GiB RAM/shared memory."}}]
+    },
+    "Seeds": {"type": "rich_text", "rich_text": [{"type": "text", "text": {"content": "42"}}]},
+    "Run IDs": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819"}}]
+    },
+    "Primary Metrics": {
+      "type": "rich_text",
+      "rich_text": [{"type": "text", "text": {"content": "Pending: exact OSS checkpoint audit, two-server model-load gate, two one-episode graphics gates, first formal result, overall success/340, per-task success rates, valid row count, and terminal publication."}}]
+    }
+  },
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_2",
+      "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Comparison boundary"}}]}
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "This is a checkpoint-fixed evaluation. The policy weights are not retrained or adapted on DLC. The evaluator protocol, task split, seed, rollout horizon, sampler, and eight-GPU server topology are matched to the B4, B2, and B3 formal evaluations."}}]}
+    },
+    {
+      "object": "block",
+      "type": "heading_2",
+      "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Online memory boundary"}}]}
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "B5 receives current observations plus a causal deque of prior visual observations with maximum length three. The history is cleared on every episode reset. The trained visual-memory conditioner and object-local memory-delta action path are active; no future frame, future action, success label, or privileged simulator state is provided."}}]}
+    },
+    {
+      "object": "block",
+      "type": "heading_2",
+      "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Checkpoint boundary"}}]}
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Evaluation target is B5-VOM-R8-I20000-EMA-BF16-v1, exported from CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817 at iter_000020000. The serving DCP contains 12 files totaling 30,778,503,328 bytes, including 30,778,475,739 bytes under model/, and 1086 EMA parameter keys. Full BF16 semantic readback and B5 visual-memory-delta sample verification passed before transfer."}}]}
+    },
+    {
+      "object": "block",
+      "type": "heading_2",
+      "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Scheduling boundary"}}]}
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "The 72-hour estimate is worker runtime. Current ETA additionally allows queueing behind existing eight-GPU evaluations on the same DLC quota. Submission, Queuing, Running, real episode progress, and terminal completion are reported separately."}}]}
+    }
+  ]
+}

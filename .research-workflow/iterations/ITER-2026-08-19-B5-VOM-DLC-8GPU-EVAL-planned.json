@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "ITER-2026-08-19-B5-VOM-DLC-8GPU-EVAL - planned"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "2026-08-19 Asia/Shanghai. Export and evaluate the fixed CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817 iteration-20000 EMA checkpoint on one priority-7 Alibaba PAI DLC worker with eight RTX 4090 GPUs. Use the matched RoboCasa365 atomic 17-task x 20-episode seed-42 protocol and the validated dual four-rank policy-service plus CUDA/EGL evaluator topology. Preserve B5 online causality: each policy server maintains only prior visual observations, clears visual history at episode reset, and activates the trained eight-token object-memory delta path without future or privileged rollout state. Acceptance requires the exact 12-file, 30,778,503,328-byte serving checkpoint inventory, source revision 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81, 1086 EMA parameter keys, both four-rank policy servers, both graphics gates, exactly 340 terminal rows, and a COMPLETE record under the unique OSS run root. Track Git revisions, paths, timestamps, DLC Job ID, file counts and byte sizes, and evaluator records; do not introduce checksum or hash-chain tracking."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "experiment_id": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "confirmatory",
+  "status": "planned",
+  "lifecycle_state": "prelaunch_ready",
+  "notion": {
+    "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
+    "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
+    "page_id": "3c121e77-89cc-8128-bea3-c7346f58962f",
+    "page_url": "https://app.notion.com/p/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-fixed-B5-visual-object-memory-formal-evaluat-3c121e7789cc8128bea3c7346f58962f"
+  },
+  "hypothesis": "The fixed CWAM Cosmos3 B5 VOM R8 iteration-20000 EMA policy, with online recurrent visual-object memory active, can complete the matched formal RoboCasa365 evaluation on one eight-GPU DLC worker.",
+  "acceptance_criterion": "Exact checkpoint inventory, two four-rank policy servers, and both one-episode CUDA/EGL gates must pass; full success requires exactly 340 terminal rows and a COMPLETE record.",
+  "estimated_runtime_seconds": 259200,
+  "initial_eta": "2026-08-27T18:00:00+08:00",
+  "current_eta": "2026-08-27T18:00:00+08:00",
+  "experiment_window": {
+    "start": "2026-08-19T16:00:00+08:00",
+    "end": "2026-08-27T18:00:00+08:00"
+  },
+  "git": {
+    "control_commit": "02111531237d2b6d93d59bcd60f03cbdc93440df",
+    "control_branch": "feat/b2-b3-pai-formal-eval",
+    "source_commit": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+    "source_branch": "exp/cosmos3-b5-visual-object-memory-r7-20260817",
+    "dirty": false,
+    "pushed": true
+  },
+  "change": {
+    "training_run": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+    "checkpoint_iteration": 20000,
+    "comparison": "Fixed B5 VOM R8 EMA under the same online evaluator, task protocol, seed, sampler, and eight-GPU topology as the B4 R7 control.",
+    "online_memory": "Each policy server uses only prior visual observations, appends the current observation after inference, and clears visual history on episode reset; no future or privileged rollout state is used."
+  },
+  "config": {
+    "path": ".research-workflow/experiments/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-submission.json",
+    "protocol": "RoboCasa365 atomic 17 tasks x 20 episodes; 8 logical shards; seed 42; max_steps 400; open_loop_horizon 12; UniPC 30 steps; guidance 1.0; action chunk 16",
+    "server": "Two parallel four-rank FSDP policy servers on GPUs 0-3 and 4-7; each group evaluates four serial logical shards.",
+    "causality": "Online evaluator observations, proprioception, task instruction, and causal visual history only; no future or privileged rollout state."
+  },
+  "data": {
+    "version": "RoboCasa365 atomic 17-task split",
+    "evaluator_commit": "2600ece5bf0eeacf010a95f084dcda2de6d30d59",
+    "robocasa_commit": "29f7ce8814c1547f5af762a0997fbd4b64848dd7",
+    "robosuite_commit": "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b",
+    "expected_episode_rows": 340
+  },
+  "checkpoint": {
+    "version": "B5-VOM-R8-I20000-EMA-BF16-v1",
+    "source_file_count": 12,
+    "source_bytes": 30778503328,
+    "evaluation_target": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/checkpoints/B5-VOM-R8-I20000-EMA-BF16-v1",
+    "source_semantic_readback": "passed",
+    "dsw_four_rank_semantic_load": "pending checkpoint transfer",
+    "dlc_eight_gpu_semantic_load": "pending"
+  },
+  "environment": {
+    "image": "dsw-registry-vpc.cn-beijing.cr.aliyuncs.com/pai/pytorch:2.7.1-gpu-py310-cu128-ubuntu22.04-3995b779-1764350887",
+    "workspace_id": "270969",
+    "resource_id": "quotaksvqq2oh2pg",
+    "cpfs_dataset_id": "d-a5mu77ymwjio71dkmw",
+    "oss_dataset_id": "d-n7rly4fll0q2z6v91h",
+    "worker_scratch": "/tmp with at least 150 GiB required by launcher"
+  },
+  "validation": {
+    "git_diff_check": "passed",
+    "tests": "9 structural submitter/controller tests passed in the DLC SDK Python; local JSON, syntax, and inventory checks passed",
+    "control_root": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1",
+    "control_file_count": 10,
+    "control_file_mode": "0444 after staging",
+    "oss_persistence_preflight": "passed on the live DSW mount",
+    "dlc_audit": "pending exact checkpoint arrival and immutable control staging",
+    "two_policy_servers_loaded": "pending formal DLC gate",
+    "two_one_gpu_cuda_egl_episode_gates": "pending formal DLC gate"
+  },
+  "hardware": "Alibaba PAI DLC; one worker; 8 x RTX 4090; 126 CPU; 960 GiB RAM/shared memory",
+  "submission": {
+    "result": "not_submitted",
+    "display_name": "cwam-b5-vom-r8-i20000-rob365-8g-s42-r1-20260819",
+    "priority": 7,
+    "max_running_minutes": 8640,
+    "persistent_output_root": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/runs/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819/CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819"
+  },
+  "seeds": [42],
+  "started_at": null,
+  "completed_at": null,
+  "job_id": null,
+  "run_ids": [],
+  "primary_metrics": {},
+  "conclusion": null,
+  "failure_reason": null,
+  "artifact_hashes": null
+}
