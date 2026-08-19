@@ -1,0 +1,20 @@
+{
+  "schema_version": "metadata_no_hash_validation_v1",
+  "experiment_id": "CWAM-DLC-ROB365-B2-R5-I20000-8GPU-S42-R1-20260818",
+  "phase": "running",
+  "status": "VALIDATED",
+  "validated_at": "2026-08-19T00:26:30+00:00",
+  "manifest": "/home/chengjuntao/CWAM-b4-pai-eval/.research-workflow/experiments/CWAM-DLC-ROB365-B2-R5-I20000-8GPU-S42-R1-20260818-running.json",
+  "previous": "/home/chengjuntao/CWAM-b4-pai-eval/.research-workflow/experiments/CWAM-DLC-ROB365-B2-R5-I20000-8GPU-S42-R1-20260818-queued.json",
+  "submission_receipt": "/home/chengjuntao/CWAM-b4-pai-eval/.research-workflow/experiments/CWAM-DLC-ROB365-B2-R5-I20000-8GPU-S42-R1-20260818-submission.json",
+  "checks": {
+    "immutable_prelaunch_fields": "passed",
+    "job_run_and_revision_identity": "passed",
+    "priority_and_eight_gpu_readback": "passed",
+    "pod_running_state": "passed",
+    "egl_smoke_and_checkpoint_verification": "passed",
+    "notion_running_state_readback": "passed",
+    "no_terminal_result_claimed": "passed",
+    "no_artifact_hashes": "passed"
+  }
+}

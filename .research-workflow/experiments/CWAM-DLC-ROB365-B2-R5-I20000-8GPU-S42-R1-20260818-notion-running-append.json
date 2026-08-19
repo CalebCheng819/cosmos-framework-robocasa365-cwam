@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "DLC worker running"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "DLC Job dlcevin0qtvtccar entered Running at 2026-08-19 08:18:54 Asia/Shanghai on pod dlcevin0qtvtccar-master-0, node i-2zegxp26vwmwd9a3db5b. The live control-plane contract is one worker with eight GPUs, 126 CPU, 960 GiB memory/shared memory, priority 7, and RestartPolicy Never. Pod logs verify EGL smoke and exact B2 R5 checkpoint verification; policy-server loading, both full rollout gates, and the 340-episode terminal result remain pending."}}]
+      }
+    }
+  ]
+}

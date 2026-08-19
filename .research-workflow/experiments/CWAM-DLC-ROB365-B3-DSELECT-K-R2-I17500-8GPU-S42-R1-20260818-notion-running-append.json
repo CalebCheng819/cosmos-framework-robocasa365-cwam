@@ -1,0 +1,18 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [{"type": "text", "text": {"content": "DLC worker running"}}]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{"type": "text", "text": {"content": "DLC Job dlcgjg7bep2tda24 entered Running at 2026-08-19 08:10:07 Asia/Shanghai on pod dlcgjg7bep2tda24-master-0, node i-2zeh6jnzu3hna4zq48ra. The live worker reports exactly eight NVIDIA GeForce RTX 4090 GPUs. Pod logs verify EGL smoke, exact iteration-17,500 checkpoint verification, and two loaded four-rank policy servers; both full rollout gates and the 340-episode terminal result remain pending."}}]
+      }
+    }
+  ]
+}

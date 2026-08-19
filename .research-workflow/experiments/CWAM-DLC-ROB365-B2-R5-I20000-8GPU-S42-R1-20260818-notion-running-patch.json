@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "Status": {"status": {"name": "Running"}},
+    "Started At": {"date": {"start": "2026-08-19T08:18:54+08:00"}},
+    "Current ETA": {"date": {"start": "2026-08-22T08:18:54+08:00"}},
+    "Job ID": {
+      "rich_text": [{"type": "text", "text": {"content": "dlcevin0qtvtccar"}}]
+    },
+    "Experiment Window": {
+      "date": {
+        "start": "2026-08-19T08:18:54+08:00",
+        "end": "2026-08-22T08:18:54+08:00"
+      }
+    }
+  }
+}
