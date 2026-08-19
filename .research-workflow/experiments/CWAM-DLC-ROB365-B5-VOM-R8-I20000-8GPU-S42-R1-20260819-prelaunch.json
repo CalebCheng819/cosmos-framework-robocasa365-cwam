@@ -48,12 +48,12 @@
     "expected_episode_rows": 340
   },
   "checkpoint": {
-    "version": "B5-VOM-R8-I20000-EMA-BF16-v1",
-    "source_file_count": 12,
-    "source_bytes": 30778503328,
-    "evaluation_target": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/checkpoints/B5-VOM-R8-I20000-EMA-BF16-v1",
+    "version": "B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1",
+    "source_file_count": 6,
+    "source_bytes": 30765172964,
+    "evaluation_target": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/checkpoints/B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1",
     "source_semantic_readback": "passed",
-    "dsw_four_rank_semantic_load": "pending checkpoint transfer",
+    "dsw_four_rank_semantic_load": "1086/1086 exact tensor readback passed during overlay publication",
     "dlc_eight_gpu_semantic_load": "pending"
   },
   "environment": {
@@ -71,7 +71,7 @@
     "control_file_count": 10,
     "control_file_mode": "0444 after staging",
     "oss_persistence_preflight": "passed on the live DSW mount",
-    "dlc_audit": "pending exact checkpoint arrival and immutable control staging",
+    "dlc_audit": "pending final exact-inventory submission audit",
     "two_policy_servers_loaded": "pending formal DLC gate",
     "two_one_gpu_cuda_egl_episode_gates": "pending formal DLC gate"
   },

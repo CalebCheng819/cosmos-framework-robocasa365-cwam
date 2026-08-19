@@ -5,7 +5,7 @@
         {
           "type": "text",
           "text": {
-            "content": "Training source 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; validated evaluator control 02111531237d2b6d93d59bcd60f03cbdc93440df; B5 experiment records d9d24e276259192302d5c864aa551c4ad1e57193."
+            "content": "Training source 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; validated evaluator control 02111531237d2b6d93d59bcd60f03cbdc93440df; checkpoint overlay publisher a2dd3bfc6b129f7c4d27a1de0bbd4a468b88214f."
           }
         }
       ]

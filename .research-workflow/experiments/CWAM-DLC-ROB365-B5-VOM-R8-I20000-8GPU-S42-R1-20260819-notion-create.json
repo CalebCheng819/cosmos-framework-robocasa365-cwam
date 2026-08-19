@@ -21,7 +21,7 @@
     },
     "Acceptance Criterion": {
       "type": "rich_text",
-      "rich_text": [{"type": "text", "text": {"content": "The exact 12-file, 30,778,503,328-byte checkpoint inventory and 1086-key EMA contract must pass; both four-rank policy servers and both one-episode CUDA/EGL gates must pass; formal completion requires exactly 340 valid terminal rows across 17 tasks and a COMPLETE record in the unique OSS run root."}}]
+      "rich_text": [{"type": "text", "text": {"content": "The exact 6-file, 30,765,172,964-byte checkpoint inventory and 1086-key EMA contract must pass; both four-rank policy servers and both one-episode CUDA/EGL gates must pass; formal completion requires exactly 340 valid terminal rows across 17 tasks and a COMPLETE record in the unique OSS run root."}}]
     },
     "Baseline": {"type": "url", "url": "https://app.notion.com/p/CWAM-DLC-ROB365-B4-I20000-8GPU-S42-R7-20260818-worker-local-eval-output-and-terminal-OSS-publicati-3c021e7789cc81f7a022c7cd582e9ee1"},
     "Estimated Runtime": {"type": "number", "number": 72},
@@ -91,7 +91,7 @@
     {
       "object": "block",
       "type": "paragraph",
-      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Evaluation target is B5-VOM-R8-I20000-EMA-BF16-v1, exported from CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817 at iter_000020000. The serving DCP contains 12 files totaling 30,778,503,328 bytes, including 30,778,475,739 bytes under model/, and 1086 EMA parameter keys. Full BF16 semantic readback and B5 visual-memory-delta sample verification passed before transfer."}}]}
+      "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Evaluation target is B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1, published from the fixed B4 serving base plus the B5 iter_000020000 strong-action delta from CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817. The serving DCP contains 6 files totaling 30,765,172,964 bytes, including 30,765,145,838 bytes under model/, one semantically complete shard, and 1086 EMA parameter keys. Exact 1086/1086 BF16 tensor readback passed after OSS publication."}}]}
     },
     {
       "object": "block",
