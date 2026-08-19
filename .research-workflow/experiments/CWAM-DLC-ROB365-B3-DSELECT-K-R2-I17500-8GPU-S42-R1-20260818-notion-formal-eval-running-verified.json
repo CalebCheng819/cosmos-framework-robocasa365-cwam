@@ -1,0 +1,23 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "verified_at": "2026-08-19T09:30:00+08:00",
+  "page_id": "3c021e77-89cc-813b-a95a-cf3048bccda0",
+  "status": "Running",
+  "job_id": "dlcgjg7bep2tda24",
+  "initial_eta": "2026-08-27T19:00:00.000+08:00",
+  "current_eta": "2026-08-22T08:10:00.000+08:00",
+  "experiment_window": {
+    "start": "2026-08-19T08:10:00.000+08:00",
+    "end": "2026-08-22T08:10:00.000+08:00"
+  },
+  "primary_metrics_exact": "Formal-eval startup confirmed at 2026-08-19 09:26 Asia/Shanghai: exact latest-complete B3 DSelect-K R2 iteration-17500 EMA checkpoint verification passed; two four-rank policy servers loaded; both full 400-step one-episode CUDA/EGL rollout gates passed; one independent worker still owns 8 RTX 4090 GPUs. Full 340-episode terminal rows: 0; final success rate pending.",
+  "conclusion_exact": "Formal RoboCasa365 evaluation is running from the latest complete iteration-17500 checkpoint. Two physical evaluator groups process logical shards 0/2/4/6 and 1/3/5/7 serially for exactly 17 tasks x 20 episodes. Gate outcomes are startup evidence, not the final model metric; terminal COMPLETE plus exactly 340 rows remains required.",
+  "checks": {
+    "page_id_exact": "passed",
+    "status_running": "passed",
+    "job_id_exact": "passed",
+    "initial_eta_preserved": "passed",
+    "current_eta_window_consistent": "passed",
+    "property_text_exact": "passed"
+  }
+}

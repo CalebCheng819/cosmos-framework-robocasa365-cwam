@@ -1,0 +1,22 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "validated_at": "2026-08-19T09:30:00+08:00",
+  "experiment_id": "CWAM-DLC-ROB365-B3-DSELECT-K-R2-I17500-8GPU-S42-R1-20260818",
+  "job_id": "dlcgjg7bep2tda24",
+  "result": "passed",
+  "checks": {
+    "dlc_job_running": true,
+    "dlc_pod_running": true,
+    "independent_worker_count": 1,
+    "requested_physical_gpu_count": 8,
+    "restart_records": 0,
+    "checkpoint_verification_marker": true,
+    "two_policy_server_marker": true,
+    "two_graphics_gate_marker": true,
+    "formal_protocol_expected_rows": 340,
+    "formal_terminal_rows_available": 0,
+    "notion_readback": "passed"
+  },
+  "terminal_success": false,
+  "note": "This validates entry into formal evaluation, not terminal experiment success."
+}

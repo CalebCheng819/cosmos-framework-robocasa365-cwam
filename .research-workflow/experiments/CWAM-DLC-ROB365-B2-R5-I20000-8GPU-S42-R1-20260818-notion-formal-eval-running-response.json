@@ -1,0 +1,11 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "operation": "notion_page_property_patch",
+  "page_id": "3c021e77-89cc-8193-9d69-f7300a4e2c9a",
+  "last_edited_time": "2026-08-19T01:29:00.000Z",
+  "updated_properties": [
+    "Primary Metrics",
+    "Conclusion / Failure Reason"
+  ],
+  "result": "accepted"
+}

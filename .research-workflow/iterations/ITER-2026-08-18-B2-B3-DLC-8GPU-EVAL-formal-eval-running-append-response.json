@@ -1,0 +1,12 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "operation": "append_chronicle_blocks",
+  "chronicle_page_id": "39e21e77-89cc-8032-9342-fde858da46f1",
+  "result_count": 2,
+  "block_ids": [
+    "3c121e77-89cc-8117-a2e2-d5dd3ab9acac",
+    "3c121e77-89cc-8182-98bd-d1f192adbe11"
+  ],
+  "has_more": false,
+  "result": "accepted"
+}

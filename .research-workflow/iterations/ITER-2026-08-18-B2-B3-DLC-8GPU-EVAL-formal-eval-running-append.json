@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "Both formal 340-episode evaluations started"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "At 2026-08-19 09:26 Asia/Shanghai, B2 Job dlcevin0qtvtccar and B3 Job dlcgjg7bep2tda24 were both Running without restart records. Each independent eight-GPU worker had passed exact checkpoint verification, loaded two four-rank policy servers, and emitted B4_TWO_GRAPHICS_GATES_PASSED after two complete 400-step CUDA/EGL rollout gates. Both jobs therefore entered the matched RoboCasa365 17-task x 20-episode formal stage. Terminal 340-row artifacts and final success rates remain pending."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

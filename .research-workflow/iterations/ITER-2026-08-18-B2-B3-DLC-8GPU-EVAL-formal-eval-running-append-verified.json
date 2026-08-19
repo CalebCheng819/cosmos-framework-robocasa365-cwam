@@ -1,0 +1,21 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "verified_at": "2026-08-19T09:31:00+08:00",
+  "chronicle_page_id": "39e21e77-89cc-8032-9342-fde858da46f1",
+  "blocks": [
+    {
+      "id": "3c121e77-89cc-8117-a2e2-d5dd3ab9acac",
+      "type": "heading_3",
+      "text": "Both formal 340-episode evaluations started"
+    },
+    {
+      "id": "3c121e77-89cc-8182-98bd-d1f192adbe11",
+      "type": "paragraph",
+      "text": "At 2026-08-19 09:26 Asia/Shanghai, B2 Job dlcevin0qtvtccar and B3 Job dlcgjg7bep2tda24 were both Running without restart records. Each independent eight-GPU worker had passed exact checkpoint verification, loaded two four-rank policy servers, and emitted B4_TWO_GRAPHICS_GATES_PASSED after two complete 400-step CUDA/EGL rollout gates. Both jobs therefore entered the matched RoboCasa365 17-task x 20-episode formal stage. Terminal 340-row artifacts and final success rates remain pending."
+    }
+  ],
+  "checks": {
+    "heading_exact": "passed",
+    "paragraph_exact": "passed"
+  }
+}
