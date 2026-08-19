@@ -1,0 +1,306 @@
+{
+  "checkpoint_root": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/inputs/checkpoints/B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1",
+  "control_commit": "02111531237d2b6d93d59bcd60f03cbdc93440df",
+  "create_response": {
+    "JobId": "dlc1tu7ci280lgae",
+    "RequestId": "01A0194E-CA7B-5E72-BB93-E40867B9DA9C"
+  },
+  "display_name": "cwam-b5-vom-r8-i20000-rob365-8g-s42-r1-20260819",
+  "experiment_id": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+  "get_job_readback": {
+    "Accessibility": "PRIVATE",
+    "ClusterId": "",
+    "CodeSource": {
+      "CodeSourceId": "",
+      "MountPath": ""
+    },
+    "CredentialConfig": {
+      "AliyunEnvRoleKey": "",
+      "CredentialConfigItems": [],
+      "EnableCredentialInject": false
+    },
+    "CustomEnvs": [
+      {
+        "Key": "EVAL_NOTION_PAGE_ID",
+        "Value": "3c121e77-89cc-8128-bea3-c7346f58962f",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_SOURCE_COMMIT",
+        "Value": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_CONTROL_ROOT",
+        "Value": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_SOURCE_RUN_ID",
+        "Value": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_CONTROL_COMMIT",
+        "Value": "02111531237d2b6d93d59bcd60f03cbdc93440df",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_EXPECTED_EMA_KEY_COUNT",
+        "Value": "1086",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_EXPERIMENT_ID",
+        "Value": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_CHECKPOINT_NAME",
+        "Value": "B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_RUN_NAME",
+        "Value": "b5-vom-r8-i20000-robocasa365-seed42",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_SOURCE_ROOT",
+        "Value": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B5-88f3c95c-20260819",
+        "Visible": "public"
+      },
+      {
+        "Key": "EVAL_LOGICAL_RUN_ID",
+        "Value": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+        "Visible": "public"
+      },
+      {
+        "Key": "NVIDIA_DRIVER_CAPABILITIES",
+        "Value": "compute,utility,graphics,display",
+        "Visible": "public"
+      }
+    ],
+    "DataSources": [
+      {
+        "DataSourceId": "d-a5mu77ymwjio71dkmw",
+        "MountPath": "/mnt/workspace",
+        "Uri": ""
+      },
+      {
+        "DataSourceId": "d-n7rly4fll0q2z6v91h",
+        "MountPath": "/oss-chengjuntao",
+        "Uri": ""
+      }
+    ],
+    "Description": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819 fixed-checkpoint formal RoboCasa365 evaluation",
+    "DisplayName": "cwam-b5-vom-r8-i20000-rob365-8g-s42-r1-20260819",
+    "Duration": 0.646924739,
+    "ElasticSpec": {
+      "AIMasterDockerImage": "",
+      "AIMasterType": "",
+      "ElasticStrategy": "",
+      "EnableAIMaster": false,
+      "EnableElasticTraining": false,
+      "EnablePsJobElasticPS": false,
+      "EnablePsJobElasticWorker": false,
+      "EnablePsResourceEstimate": false,
+      "MaxParallelism": 0,
+      "MinParallelism": 0,
+      "PSMaxParallelism": 0,
+      "PSMinParallelism": 0
+    },
+    "EnabledDebugger": false,
+    "Envs": {
+      "EVAL_CHECKPOINT_NAME": "B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1",
+      "EVAL_CONTROL_COMMIT": "02111531237d2b6d93d59bcd60f03cbdc93440df",
+      "EVAL_CONTROL_ROOT": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1",
+      "EVAL_EXPECTED_EMA_KEY_COUNT": "1086",
+      "EVAL_EXPERIMENT_ID": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+      "EVAL_LOGICAL_RUN_ID": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+      "EVAL_NOTION_PAGE_ID": "3c121e77-89cc-8128-bea3-c7346f58962f",
+      "EVAL_RUN_NAME": "b5-vom-r8-i20000-robocasa365-seed42",
+      "EVAL_SOURCE_COMMIT": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+      "EVAL_SOURCE_ROOT": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B5-88f3c95c-20260819",
+      "EVAL_SOURCE_RUN_ID": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+      "NVIDIA_DRIVER_CAPABILITIES": "compute,utility,graphics,display"
+    },
+    "GmtCreateTime": "2026-08-19T09:16:30Z",
+    "JobId": "dlc1tu7ci280lgae",
+    "JobReplicaStatuses": [],
+    "JobSpecs": [
+      {
+        "AssignNodeSpec": {
+          "AntiAffinityHyperNodes": [],
+          "AntiAffinityNodeNames": "",
+          "EnableAssignNode": false,
+          "HyperNodes": [],
+          "NodeNames": ""
+        },
+        "EcsSpec": "",
+        "ElasticSpotSpecs": [],
+        "Image": "dsw-registry-vpc.cn-beijing.cr.aliyuncs.com/pai/pytorch:2.7.1-gpu-py310-cu128-ubuntu22.04-3995b779-1764350887",
+        "ImageConfig": {
+          "Auth": "",
+          "DockerRegistry": "",
+          "Password": "",
+          "Username": ""
+        },
+        "LocalMountSpecs": [],
+        "PodCount": 1,
+        "ResourceConfig": {
+          "CPU": "126",
+          "GPU": "8",
+          "GPUType": "",
+          "Memory": "960Gi",
+          "SharedMemory": "960Gi"
+        },
+        "RestartPolicy": "Never",
+        "StartupDependencies": [],
+        "Type": "Worker"
+      }
+    ],
+    "JobType": "PyTorchJob",
+    "Pods": [],
+    "Priority": 7,
+    "ReasonCode": "",
+    "ReasonMessage": "",
+    "RequestId": "01A0194E-CFE0-551B-A575-7ED937FFAB7A",
+    "ResourceId": "quotaksvqq2oh2pg",
+    "ResourceType": "ECS",
+    "RestartRecord": [],
+    "RestartTimes": "",
+    "SchedulingStrategy": "Auto",
+    "Settings": {
+      "AllocateAllRDMADevices": false,
+      "AllowUnschedulableNodes": false,
+      "BusinessUserId": "",
+      "Caller": "",
+      "DisableEcsStockCheck": false,
+      "Driver": "",
+      "EnableCPUAffinity": true,
+      "EnableDSWDev": false,
+      "EnableErrorMonitoringInAIMaster": false,
+      "EnableOssAppend": false,
+      "EnableRDMA": true,
+      "EnableSanityCheck": false,
+      "EnableTideResource": false,
+      "ErrorMonitoringArgs": "",
+      "JobReservedMinutes": 0,
+      "JobReservedPolicy": "",
+      "OversoldType": "",
+      "PipelineId": "",
+      "SanityCheckArgs": "",
+      "Tags": {
+        "ExperimentID": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+        "Model": "CWAM-COSMOS3-B5-VOM-R8",
+        "Project": "CWAM",
+        "RunID": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819"
+      }
+    },
+    "Status": "Creating",
+    "StatusHistory": [
+      {
+        "EndTime": "0001-01-01T00:00:00Z",
+        "ReasonCode": "JobCreating",
+        "ReasonMessage": "Job is creating",
+        "StartTime": "2026-08-19T09:16:30Z",
+        "Status": "Creating"
+      }
+    ],
+    "SubStatus": "",
+    "TenantId": "1844268484432251",
+    "ThirdpartyLibDir": "",
+    "UserCommand": "/bin/bash -lc \"set -Eeuo pipefail; export EVAL_CONTROL_COMMIT=02111531237d2b6d93d59bcd60f03cbdc93440df; export EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819; export EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819; export EVAL_CONTROL_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1; export EVAL_SOURCE_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B5-88f3c95c-20260819; export EVAL_SOURCE_COMMIT=88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; export EVAL_SOURCE_RUN_ID=CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817; export EVAL_CHECKPOINT_NAME=B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1; export EVAL_RUN_NAME=b5-vom-r8-i20000-robocasa365-seed42; export EVAL_EXPECTED_EMA_KEY_COUNT=1086; export EVAL_NOTION_PAGE_ID=3c121e77-89cc-8128-bea3-c7346f58962f; export NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display; exec bash /mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1/launch_cwam_b4_robocasa365_eval_dlc.sh\"",
+    "UserId": "206842983077010715",
+    "UserVpc": {
+      "DefaultRoute": "eth1",
+      "SecurityGroupId": "sg-2ze0lfnfmc34b3knkqet",
+      "SwitchId": "vsw-2zek6cpni6tjimpyt1c9m",
+      "VpcId": "vpc-2zef1skt5zeyxqsntfobm"
+    },
+    "WorkspaceId": "270969",
+    "WorkspaceName": "smartbot"
+  },
+  "job_id": "dlc1tu7ci280lgae",
+  "logical_run_id": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+  "notion_page_id": "3c121e77-89cc-8128-bea3-c7346f58962f",
+  "output_root": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/runs/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819/CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+  "request": {
+    "Accessibility": "PRIVATE",
+    "CustomEnvs": [],
+    "DataSources": [
+      {
+        "DataSourceId": "d-a5mu77ymwjio71dkmw",
+        "MountAccess": "RW",
+        "MountPath": "/mnt/workspace"
+      },
+      {
+        "DataSourceId": "d-n7rly4fll0q2z6v91h",
+        "MountAccess": "RW",
+        "MountPath": "/oss-chengjuntao"
+      }
+    ],
+    "Description": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819 fixed-checkpoint formal RoboCasa365 evaluation",
+    "DisplayName": "cwam-b5-vom-r8-i20000-rob365-8g-s42-r1-20260819",
+    "Envs": {
+      "EVAL_CHECKPOINT_NAME": "B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1",
+      "EVAL_CONTROL_COMMIT": "02111531237d2b6d93d59bcd60f03cbdc93440df",
+      "EVAL_CONTROL_ROOT": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1",
+      "EVAL_EXPECTED_EMA_KEY_COUNT": "1086",
+      "EVAL_EXPERIMENT_ID": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+      "EVAL_LOGICAL_RUN_ID": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+      "EVAL_NOTION_PAGE_ID": "3c121e77-89cc-8128-bea3-c7346f58962f",
+      "EVAL_RUN_NAME": "b5-vom-r8-i20000-robocasa365-seed42",
+      "EVAL_SOURCE_COMMIT": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+      "EVAL_SOURCE_ROOT": "/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B5-88f3c95c-20260819",
+      "EVAL_SOURCE_RUN_ID": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+      "NVIDIA_DRIVER_CAPABILITIES": "compute,utility,graphics,display"
+    },
+    "JobMaxRunningTimeMinutes": 8640,
+    "JobSpecs": [
+      {
+        "ElasticSpotSpecs": [],
+        "Image": "dsw-registry-vpc.cn-beijing.cr.aliyuncs.com/pai/pytorch:2.7.1-gpu-py310-cu128-ubuntu22.04-3995b779-1764350887",
+        "LocalMountSpecs": [],
+        "PodCount": 1,
+        "ResourceConfig": {
+          "CPU": "126",
+          "GPU": "8",
+          "Memory": "960Gi",
+          "SharedMemory": "960Gi"
+        },
+        "RestartPolicy": "Never",
+        "StartupDependencies": [],
+        "Type": "Worker"
+      }
+    ],
+    "JobType": "PyTorchJob",
+    "Priority": 7,
+    "ResourceId": "quotaksvqq2oh2pg",
+    "Settings": {
+      "AllocateAllRDMADevices": false,
+      "EnableCPUAffinity": true,
+      "EnableErrorMonitoringInAIMaster": false,
+      "EnableOssAppend": false,
+      "EnableRDMA": false,
+      "EnableSanityCheck": false,
+      "Tags": {
+        "ExperimentID": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+        "Model": "CWAM-COSMOS3-B5-VOM-R8",
+        "Project": "CWAM",
+        "RunID": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819"
+      }
+    },
+    "SuccessPolicy": "AllWorkers",
+    "UserCommand": "/bin/bash -lc \"set -Eeuo pipefail; export EVAL_CONTROL_COMMIT=02111531237d2b6d93d59bcd60f03cbdc93440df; export EVAL_EXPERIMENT_ID=CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819; export EVAL_LOGICAL_RUN_ID=CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819; export EVAL_CONTROL_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1; export EVAL_SOURCE_ROOT=/mnt/workspace/cwam_cosmos3_robocasa365_eval/inputs/source/CWAM-B5-88f3c95c-20260819; export EVAL_SOURCE_COMMIT=88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; export EVAL_SOURCE_RUN_ID=CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817; export EVAL_CHECKPOINT_NAME=B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1; export EVAL_RUN_NAME=b5-vom-r8-i20000-robocasa365-seed42; export EVAL_EXPECTED_EMA_KEY_COUNT=1086; export EVAL_NOTION_PAGE_ID=3c121e77-89cc-8128-bea3-c7346f58962f; export NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display; exec bash /mnt/workspace/cwam_cosmos3_robocasa365_eval/control/scripts/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-control-v1/launch_cwam_b4_robocasa365_eval_dlc.sh\"",
+    "WorkspaceId": "270969"
+  },
+  "resource_id": "quotaksvqq2oh2pg",
+  "schema_version": "metadata_no_hash_v1",
+  "source_commit": "88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81",
+  "source_run_id": "CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817",
+  "status": "SUBMITTED",
+  "submitted_at_utc": "2026-08-19T09:16:30.399012+00:00",
+  "workspace_id": "270969"
+}

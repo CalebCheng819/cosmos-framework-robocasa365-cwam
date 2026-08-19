@@ -1,0 +1,32 @@
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "heading_3",
+      "heading_3": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "ITER-2026-08-19-B5-VOM-DLC-8GPU-EVAL - submitted"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": {
+              "content": "The fixed CWAM-COSMOS3-B5-VOM-FORMAL-R8-HIGH-UTIL-B128-20K-20260817 iteration-20000 EMA serving checkpoint was published to OSS as B5-VOM-R8-I20000-EMA-BF16-OVERLAY-v1 with exactly 6 files and 30,765,172,964 bytes. Its single DCP shard passed 1086/1086 exact tensor readback. The formal RoboCasa365 evaluation was submitted exactly once at 2026-08-19T09:16:30.399012+00:00 as DLC Job dlc1tu7ci280lgae and logical Run ID CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819. The request is one worker with eight RTX 4090 GPUs, 126 CPU, 960 GiB memory/shared memory, priority 7, and RestartPolicy Never. Verified GetJob state is Queuing / JobEnqueued since 2026-08-19T09:16:35Z with zero Pods. This is submission and queue evidence only: Running requires an allocated Pod and runtime evidence; formal success requires both four-rank policy servers, both CUDA/EGL episode gates, 17 tasks, exactly 340 terminal episode rows, and a COMPLETE record under the unique OSS run root. Source revision 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; evaluator control revision 02111531237d2b6d93d59bcd60f03cbdc93440df."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

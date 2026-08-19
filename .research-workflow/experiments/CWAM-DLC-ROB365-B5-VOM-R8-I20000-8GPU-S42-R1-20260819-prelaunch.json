@@ -3,8 +3,8 @@
   "experiment_id": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
   "project_id": "CWAM-COSMOS3",
   "mode": "confirmatory",
-  "status": "planned",
-  "lifecycle_state": "prelaunch_ready",
+  "status": "queued",
+  "lifecycle_state": "submitted_queued",
   "notion": {
     "database_id": "14754915-73de-47c8-b180-ee1ec97dff22",
     "data_source_id": "74256a26-ec9d-4ddb-b674-ee84cac23be4",
@@ -71,13 +71,17 @@
     "control_file_count": 10,
     "control_file_mode": "0444 after staging",
     "oss_persistence_preflight": "passed on the live DSW mount",
-    "dlc_audit": "pending final exact-inventory submission audit",
+    "dlc_audit": "passed at 2026-08-19T09:13:46.299550+00:00",
     "two_policy_servers_loaded": "pending formal DLC gate",
     "two_one_gpu_cuda_egl_episode_gates": "pending formal DLC gate"
   },
   "hardware": "Alibaba PAI DLC; one worker; 8 x RTX 4090; 126 CPU; 960 GiB RAM/shared memory",
   "submission": {
-    "result": "not_submitted",
+    "result": "submitted",
+    "submitted_at": "2026-08-19T09:16:30.399012+00:00",
+    "scheduler_state": "Queuing",
+    "scheduler_reason_code": "JobEnqueued",
+    "scheduler_state_since": "2026-08-19T09:16:35Z",
     "display_name": "cwam-b5-vom-r8-i20000-rob365-8g-s42-r1-20260819",
     "priority": 7,
     "max_running_minutes": 8640,
@@ -86,9 +90,17 @@
   "seeds": [42],
   "started_at": null,
   "completed_at": null,
-  "job_id": null,
-  "run_ids": [],
-  "primary_metrics": {},
+  "job_id": "dlc1tu7ci280lgae",
+  "run_ids": [
+    "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819"
+  ],
+  "primary_metrics": {
+    "checkpoint_inventory_audit": "passed",
+    "scheduler_state": "Queuing",
+    "allocated_pods": 0,
+    "terminal_episode_rows": 0,
+    "expected_terminal_episode_rows": 340
+  },
   "conclusion": null,
   "failure_reason": null,
   "artifact_hashes": null

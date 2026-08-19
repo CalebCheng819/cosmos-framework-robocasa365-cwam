@@ -1,0 +1,29 @@
+{
+  "properties": {
+    "Status": {
+      "status": {
+        "name": "Queued"
+      }
+    },
+    "Job ID": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "dlc1tu7ci280lgae"
+          }
+        }
+      ]
+    },
+    "Primary Metrics": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "Checkpoint audit passed: 6 files, 30,765,172,964 bytes, 1086/1086 EMA tensor readback. DLC state Queuing / JobEnqueued since 2026-08-19T09:16:35Z; zero Pods. Model load, graphics gates, formal episodes, success rates, 340-row completion, and terminal OSS publication remain pending."
+          }
+        }
+      ]
+    }
+  }
+}

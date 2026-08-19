@@ -1,5 +1,15 @@
 {
   "properties": {
+    "Acceptance Criterion": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "The exact 6-file, 30,765,172,964-byte checkpoint inventory and 1086-key EMA contract must pass; both four-rank policy servers and both one-episode CUDA/EGL gates must pass; formal completion requires exactly 340 valid terminal rows across 17 tasks and a COMPLETE record in the unique OSS run root."
+          }
+        }
+      ]
+    },
     "Git Commit": {
       "rich_text": [
         {
