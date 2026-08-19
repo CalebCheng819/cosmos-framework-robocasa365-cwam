@@ -1,0 +1,24 @@
+{
+  "properties": {
+    "Git Commit": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "Training source 88f3c95c18a3f3195b66e35b2cd8f6ecfe595b81; validated evaluator control 02111531237d2b6d93d59bcd60f03cbdc93440df; B5 experiment records d9d24e276259192302d5c864aa551c4ad1e57193."
+          }
+        }
+      ]
+    },
+    "Command": {
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "EVAL_CONTROL_COMMIT=02111531237d2b6d93d59bcd60f03cbdc93440df python submit_cwam_robocasa365_eval_once.py --config CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-submission.json; priority 7; 1 worker; 8 GPUs."
+          }
+        }
+      ]
+    }
+  }
+}

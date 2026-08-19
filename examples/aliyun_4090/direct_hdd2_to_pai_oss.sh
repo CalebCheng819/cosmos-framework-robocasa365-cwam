@@ -98,6 +98,9 @@ config["pai-cwam"] = {
     "endpoint": endpoint,
     "location_constraint": "cn-beijing",
     "acl": "private",
+    # PAI's temporary credential can access the mounted prefix without bucket
+    # creation or listing permissions. Avoid rclone's eager CreateBucket check.
+    "no_check_bucket": "true",
 }
 with open(output_config_path, "w", encoding="utf-8") as handle:
     config.write(handle)
