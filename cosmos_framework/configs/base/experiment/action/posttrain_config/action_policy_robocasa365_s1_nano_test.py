@@ -181,3 +181,21 @@ def test_cwam_v2_enables_factorized_observation_only_objectives() -> None:
     assert list(v2.optimizer.keys_to_select) == list(
         action_policy_robocasa365_causal_state_nano.optimizer.keys_to_select
     )
+    assert list(v2.checkpoint.keys_to_skip_loading) == [
+        "causal_action_state.slot_type_embed",
+        "causal_action_state.memory_slot_norm",
+        "causal_action_state.memory_slot_in",
+        "causal_action_state.vision_lora_norm",
+        "causal_action_state.vision_lora_down",
+        "causal_action_state.vision_lora_up",
+        "causal_action_state.spatial_query_mlp",
+        "causal_action_state.spatial_decoder_layers",
+        "causal_action_state.spatial_out_norm",
+        "causal_action_state.history_replay_head",
+    ]
+    assert "causal_action_state" not in v2.checkpoint.keys_to_skip_loading
+    assert "action2llm" not in v2.checkpoint.keys_to_skip_loading
+    assert "llm2action" not in v2.checkpoint.keys_to_skip_loading
+    assert v2.checkpoint.load_ema_to_reg is True
+    assert v2.checkpoint.load_training_state is False
+    assert v2.checkpoint.strict_resume is False

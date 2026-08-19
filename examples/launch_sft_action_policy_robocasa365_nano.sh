@@ -28,6 +28,7 @@
 
 : "${TOML_FILE:=examples/toml/sft_config/action_policy_robocasa365_nano.toml}"
 : "${BASE_CHECKPOINT_PATH:=examples/checkpoints/Cosmos3-Nano}"
+: "${BASE_CHECKPOINT_EXPECTED_SHARDS:=6}"
 : "${NPROC_PER_NODE:=8}"
 EXPERIMENT_SLUG="$(basename "$TOML_FILE" .toml)"
 : "${RUN_NAME:=${EXPERIMENT_SLUG}_$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -61,6 +62,8 @@ export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
 
 [[ "$NPROC_PER_NODE" =~ ^[1-9][0-9]*$ ]] ||
     { echo "ERROR: NPROC_PER_NODE must be a positive integer (got: $NPROC_PER_NODE)" >&2; exit 1; }
+[[ "$BASE_CHECKPOINT_EXPECTED_SHARDS" =~ ^[1-9][0-9]*$ ]] ||
+    { echo "ERROR: BASE_CHECKPOINT_EXPECTED_SHARDS must be a positive integer" >&2; exit 1; }
 [[ "$RUN_NAME" =~ ^[A-Za-z0-9._-]+$ ]] ||
     { echo "ERROR: RUN_NAME may contain only letters, digits, dot, underscore, and hyphen" >&2; exit 1; }
 [[ "$RESUME_EXISTING_RUN" =~ ^[01]$ ]] ||
@@ -120,8 +123,8 @@ EXTRA_DATASET_CHECK='
     { echo "ERROR: BASE_CHECKPOINT_PATH is not a Cosmos DCP (missing model/.metadata)" >&2; exit 1; }
 [[ -f "$BASE_CHECKPOINT_PATH/checkpoint.json" ]] ||
     { echo "ERROR: BASE_CHECKPOINT_PATH is missing checkpoint.json" >&2; exit 1; }
-[[ "$(find "$BASE_CHECKPOINT_PATH/model" -maxdepth 1 -type f -name "*.distcp" | wc -l)" -eq 6 ]] ||
-    { echo "ERROR: BASE_CHECKPOINT_PATH must contain the audited six Nano DCP shards" >&2; exit 1; }
+[[ "$(find -L "$BASE_CHECKPOINT_PATH/model" -maxdepth 1 -type f -name "*.distcp" | wc -l)" -eq "$BASE_CHECKPOINT_EXPECTED_SHARDS" ]] ||
+    { echo "ERROR: BASE_CHECKPOINT_PATH must contain $BASE_CHECKPOINT_EXPECTED_SHARDS audited DCP shards" >&2; exit 1; }
 [[ -d "$QWEN3_VL_TOKENIZER_PATH" ]] ||
     { echo "ERROR: QWEN3_VL_TOKENIZER_PATH must be a local directory" >&2; exit 1; }
 [[ -f "$QWEN3_VL_TOKENIZER_PATH/tokenizer_config.json" ]] ||

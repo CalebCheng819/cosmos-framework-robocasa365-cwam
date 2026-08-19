@@ -621,6 +621,25 @@ action_policy_robocasa365_cwam_v2_nano.job.name = "action_policy_robocasa365_cwa
 action_policy_robocasa365_cwam_v2_nano.model.config = (
     _action_policy_robocasa365_cwam_v2_nano_model_config()
 )
+# V2 warm-starts from the C1 R13 serving export, which contains EMA weights for
+# the trained action heads and causal-state encoder. Only modules introduced by
+# V2 are initialized from scratch; skipping the whole causal_action_state tree
+# would silently discard the C1 representation we intend to continue from.
+action_policy_robocasa365_cwam_v2_nano.checkpoint.keys_to_skip_loading = [
+    "causal_action_state.slot_type_embed",
+    "causal_action_state.memory_slot_norm",
+    "causal_action_state.memory_slot_in",
+    "causal_action_state.vision_lora_norm",
+    "causal_action_state.vision_lora_down",
+    "causal_action_state.vision_lora_up",
+    "causal_action_state.spatial_query_mlp",
+    "causal_action_state.spatial_decoder_layers",
+    "causal_action_state.spatial_out_norm",
+    "causal_action_state.history_replay_head",
+]
+action_policy_robocasa365_cwam_v2_nano.checkpoint.load_ema_to_reg = True
+action_policy_robocasa365_cwam_v2_nano.checkpoint.load_training_state = False
+action_policy_robocasa365_cwam_v2_nano.checkpoint.strict_resume = False
 
 cs.store(
     group="experiment",
