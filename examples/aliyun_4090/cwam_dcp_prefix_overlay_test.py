@@ -77,6 +77,7 @@ def test_extract_then_overlay_replaces_only_selected_prefix(tmp_path: Path) -> N
                 "expected_delta_key_count": 2,
                 "expected_output_key_count": 3,
                 "expected_logical_bytes": 10,
+                "serving_source_logical_bytes": 10,
                 "source_config": config,
                 "source_revision": "test-revision",
                 "source_run_id": "test-run",
@@ -93,6 +94,9 @@ def test_extract_then_overlay_replaces_only_selected_prefix(tmp_path: Path) -> N
     assert receipt["status"] == "succeeded"
     assert receipt["kept_base_key_count"] == 1
     assert receipt["delta_key_count"] == 2
+    serving = json.loads((output_artifact / "ema-bf16-metadata-receipt.json").read_text())
+    assert serving["selection"]["key_count"] == 3
+    assert serving["validation"]["full_semantic_readback"] is True
 
 
 @pytest.mark.CPU
@@ -115,6 +119,7 @@ def test_overlay_rejects_delta_key_outside_prefix(tmp_path: Path) -> None:
             "expected_delta_key_count": None,
             "expected_output_key_count": None,
             "expected_logical_bytes": None,
+            "serving_source_logical_bytes": 2,
             "source_config": None,
             "source_revision": "test-revision",
             "source_run_id": "test-run",

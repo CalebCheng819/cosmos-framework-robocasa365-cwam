@@ -122,6 +122,21 @@ def _inventory(root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _model_identity(model: Path) -> dict[str, tuple[int, int, int, int]]:
+    result = {}
+    for path in sorted(model.iterdir(), key=lambda item: item.name):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OverlayError(f"checkpoint model contains a non-regular entry: {path}")
+        result[path.name] = (
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_dev,
+            metadata.st_ino,
+        )
+    return result
+
+
 def _write_json(path: Path, value: object) -> None:
     payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     path.write_text(payload, encoding="utf-8")
@@ -139,6 +154,8 @@ def _save_and_verify(
     receipt: dict[str, Any],
     source_config: Path | None,
     seal: bool,
+    serving_source_logical_bytes: int | None = None,
+    source_file_identities_stable: bool | None = None,
 ) -> dict[str, Any]:
     stage = target.with_name(f".{target.name}.incomplete-{uuid.uuid4().hex}")
     stage.mkdir(mode=0o755)
@@ -156,12 +173,60 @@ def _save_and_verify(
         if source_config is not None:
             source_config = source_config.expanduser().resolve(strict=True)
             shutil.copy2(source_config, stage / "config.yaml")
+        model_files = _inventory(model)
+        model_bytes = sum(item["size_bytes"] for item in model_files)
+        shard_count = sum(item["relative_path"].endswith(".distcp") for item in model_files)
+        output_logical_bytes = sum(tensor.numel() * tensor.element_size() for tensor in state.values())
+        output_chunk_count = sum(len(value.chunks) for value in output_specs.values())
+        if serving_source_logical_bytes is not None:
+            if source_file_identities_stable is not True:
+                raise OverlayError("serving publication requires stable source file identities")
+            _write_json(
+                stage / "serving-checkpoint-size-manifest.json",
+                {
+                    "kind": "cwam_serving_checkpoint_size_manifest",
+                    "file_count": len(model_files),
+                    "total_physical_bytes": model_bytes,
+                    "files": model_files,
+                },
+            )
+            _write_json(
+                stage / "ema-bf16-metadata-receipt.json",
+                {
+                    "kind": "cwam_serving_ema_bf16_metadata_receipt",
+                    "status": "succeeded",
+                    "completed_at": _utc_now(),
+                    "selection": {
+                        "key_count": len(state),
+                        "chunk_count": output_chunk_count,
+                        "source_logical_bytes": serving_source_logical_bytes,
+                        "target_dtype": "torch.bfloat16",
+                        "target_logical_bytes": output_logical_bytes,
+                    },
+                    "source": {
+                        "git_commit": receipt["source_revision"],
+                        "run_id": receipt["source_run_id"],
+                        "base_model": receipt.get("base_model"),
+                        "delta_model": receipt.get("delta_model"),
+                    },
+                    "target": {
+                        "file_count": len(model_files),
+                        "shard_count": shard_count,
+                        "total_physical_bytes": model_bytes,
+                    },
+                    "validation": {
+                        "full_semantic_readback": True,
+                        "source_file_identities_stable": True,
+                    },
+                },
+            )
         receipt.update(
             {
                 "status": "succeeded",
                 "completed_at": _utc_now(),
                 "output_key_count": len(state),
-                "output_logical_bytes": sum(tensor.numel() * tensor.element_size() for tensor in state.values()),
+                "output_logical_bytes": output_logical_bytes,
+                "output_chunk_count": output_chunk_count,
                 "exact_readback_key_count": len(readback),
                 "files": _inventory(stage),
             }
@@ -222,10 +287,18 @@ def overlay(args: argparse.Namespace) -> dict[str, Any]:
     _validate_bf16(output_specs, "output checkpoint")
     _validate_contract(output_specs, args.contract_model)
 
+    base_identity = _model_identity(base_model)
+    delta_identity = _model_identity(delta_model)
     state = _allocate(kept_specs)
     dcp.load(state, checkpoint_id=base_model)
     delta_state = _allocate(delta_specs)
     dcp.load(delta_state, checkpoint_id=delta_model)
+    source_file_identities_stable = (
+        base_identity == _model_identity(base_model)
+        and delta_identity == _model_identity(delta_model)
+    )
+    if not source_file_identities_stable:
+        raise OverlayError("base or delta model files changed while loading")
     state.update(delta_state)
     return _save_and_verify(
         state,
@@ -245,6 +318,8 @@ def overlay(args: argparse.Namespace) -> dict[str, Any]:
         },
         args.source_config,
         args.seal,
+        args.serving_source_logical_bytes,
+        source_file_identities_stable,
     )
 
 
@@ -271,6 +346,7 @@ def _parser() -> argparse.ArgumentParser:
     overlay_parser.add_argument("--expected-kept-key-count", type=int)
     overlay_parser.add_argument("--expected-delta-key-count", type=int)
     overlay_parser.add_argument("--expected-output-key-count", type=int)
+    overlay_parser.add_argument("--serving-source-logical-bytes", type=int, required=True)
     return parser
 
 
