@@ -13,9 +13,12 @@ import argparse
 import datetime as dt
 import json
 import os
+import pathlib
 import pickle
 import shutil
 import stat
+import sys
+import types
 import uuid
 from pathlib import Path
 from typing import Any
@@ -52,6 +55,18 @@ def _new_path(path: Path, label: str) -> Path:
 
 def _load_metadata(model: Path, label: str) -> Metadata:
     path = model / ".metadata"
+    if sys.version_info < (3, 13) and "pathlib._local" not in sys.modules:
+        compatibility = types.ModuleType("pathlib._local")
+        for name in (
+            "Path",
+            "PosixPath",
+            "PurePath",
+            "PurePosixPath",
+            "PureWindowsPath",
+            "WindowsPath",
+        ):
+            setattr(compatibility, name, getattr(pathlib, name))
+        sys.modules["pathlib._local"] = compatibility
     try:
         with path.open("rb") as stream:
             value = pickle.load(stream)  # noqa: S301 - trusted research checkpoint.
