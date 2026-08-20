@@ -44,7 +44,7 @@ rjob submit \
     --image="$IMAGE" \
     --image-pull-policy=IfNotPresent \
     --enable-sshd \
-    --restart-policy=Never \
+    --restart-policy=never \
     --termination-grace-period-seconds=300 \
     --mount="$PERSONAL_GPFS" \
     --mount="$PUBLIC_GPFS" \

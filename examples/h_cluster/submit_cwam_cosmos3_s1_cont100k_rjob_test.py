@@ -10,6 +10,7 @@ def test_submitter_pins_private_0252_and_eight_gpus() -> None:
     assert "--gpu=8" in text
     assert "gpu-l-lg-cmc-h-h200-0252" in text
     assert "--store-host-nvme=true" in text
+    assert "--restart-policy=never" in text
     assert 'KUBEBRAIN_RJOB_NAME="$RJOB_NAME"' in text
 
 
