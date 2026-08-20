@@ -1,0 +1,12 @@
+{
+  "id": "3c121e77-89cc-8128-bea3-c7346f58962f",
+  "url": "https://app.notion.com/p/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819-fixed-B5-visual-object-memory-formal-evaluat-3c121e7789cc8128bea3c7346f58962f",
+  "last_edited_time": "2026-08-20T03:39:00.000Z",
+  "status": "Running",
+  "started_at": "2026-08-20T11:30:00.000+08:00",
+  "experiment_window": {
+    "start": "2026-08-20T11:30:00.000+08:00",
+    "end": "2026-08-27T18:00:00.000+08:00"
+  },
+  "primary_metrics": "DLC Job dlc1tu7ci280lgae and its single eight-RTX4090 Pod entered Running at 2026-08-20 11:30:06+08:00. Environment and RoboCasa asset staging, one-GPU EGL smoke, checkpoint verification, eight-GPU visibility, and both independent four-rank B5 policy-server runtime gates passed. The two full 400-step CUDA/EGL rollout gates are next; formal episode rows, success rates, 340-row completion, and terminal OSS publication remain pending."
+}

@@ -1,0 +1,54 @@
+{
+  "schema_version": "metadata_no_hash_v1",
+  "experiment_id": "CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819",
+  "project_id": "CWAM-COSMOS3",
+  "mode": "confirmatory",
+  "status": "running",
+  "lifecycle_state": "policy_servers_loaded_graphics_gates_running",
+  "captured_at": "2026-08-20T11:38:50+08:00",
+  "notion_page_id": "3c121e77-89cc-8128-bea3-c7346f58962f",
+  "job_id": "dlc1tu7ci280lgae",
+  "run_id": "CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+  "scheduler": {
+    "status": "Running",
+    "reason_code": "JobRunning",
+    "running_since": "2026-08-20T11:30:06+08:00",
+    "queued_since": "2026-08-19T17:16:35+08:00",
+    "pod_id": "dlc1tu7ci280lgae-master-0",
+    "pod_uid": "7ecfcf58-0b0d-4298-94b6-4714543b9b31",
+    "pod_status": "Running",
+    "node_name": "i-2zedpiyd8tiyh576vvjd",
+    "restart_records": 0
+  },
+  "resource_readback": {
+    "worker_pods": 1,
+    "physical_gpus": 8,
+    "gpu_type": "NVIDIA GeForce RTX 4090",
+    "compute_capability": "8.9",
+    "cpu": 126,
+    "memory": "960Gi"
+  },
+  "startup_gates": {
+    "environment_archive": "passed; 14,736,947,200-byte archive and 84,055 members verified",
+    "robocasa_assets": "passed; 11,101,859,840-byte source package and overlay extracted",
+    "one_gpu_egl_smoke": "passed",
+    "checkpoint_verification": "passed",
+    "eight_gpu_visibility": "passed",
+    "four_rank_policy_servers_loaded": 2,
+    "policy_server_runtime_verification": "passed for server-a on GPUs 0-3 and server-b on GPUs 4-7",
+    "full_400_step_cuda_egl_rollout_gates": "running; two terminal gate receipts are pending",
+    "formal_evaluation": "not yet reached"
+  },
+  "formal_evaluation": {
+    "task_count": 17,
+    "episodes_per_task": 20,
+    "expected_terminal_rows": 340,
+    "terminal_rows_confirmed": 0,
+    "formal_success_rate": null,
+    "terminal_complete_record": "pending"
+  },
+  "persistent_output_root": "/oss-chengjuntao/cpfs-user-chengjuntao/cwam_cosmos3_robocasa365_eval/runs/CWAM-DLC-ROB365-B5-VOM-R8-I20000-8GPU-S42-R1-20260819/CWAM-DLC-ROB365-COSMOS3-B5-VOM-R8-I20000-EMA-340EP-S42-R1-20260819",
+  "persistent_output_state": "absent as expected while active output remains worker-local; launcher publishes to OSS on exit",
+  "conclusion": "The DLC worker and validated startup chain are running normally. Checkpoint verification passed and two independent four-rank B5 policy servers completed runtime verification. The two full graphics rollout gates and real formal episode progress are not yet confirmed, so this is startup-running evidence rather than completed-evaluation evidence.",
+  "provenance_policy": "Git revisions, paths, timestamps, byte sizes, counts, Notion page, Experiment ID, Run ID and DLC Job ID; no newly computed artifact hashes."
+}
