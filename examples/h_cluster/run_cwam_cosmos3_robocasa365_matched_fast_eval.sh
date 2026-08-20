@@ -42,6 +42,7 @@ declare -a SERVER_PIDS=("" "") SERVER_PGIDS=("" "") SERVER_NONCES=("" "")
 declare -a EVAL_PIDS=("" "") EVAL_PGIDS=("" "")
 GPU_MONITOR_PID=
 PROGRESS_PID=
+GIT_SAFE_CONFIG=
 TERMINAL_WRITTEN=0
 
 die() {
@@ -80,6 +81,7 @@ cleanup() {
     trap - EXIT INT TERM
     [[ -z "$PROGRESS_PID" ]] || kill "$PROGRESS_PID" 2>/dev/null || true
     [[ -z "$GPU_MONITOR_PID" ]] || kill "$GPU_MONITOR_PID" 2>/dev/null || true
+    [[ -z "$GIT_SAFE_CONFIG" ]] || rm -f "$GIT_SAFE_CONFIG"
     stop_group "${EVAL_PIDS[0]}" "${EVAL_PGIDS[0]}"
     stop_group "${EVAL_PIDS[1]}" "${EVAL_PGIDS[1]}"
     stop_group "${SERVER_PIDS[0]}" "${SERVER_PGIDS[0]}"
@@ -102,8 +104,12 @@ for file in "$HELPER" "$EVALUATOR" "$TRAINING_CONFIG" "$ACTION_STATS" "$WAN2PT2_
     [[ -f "$file" ]] || die "missing file: $file"
 done
 [[ -x "$COSMOS_PY" && -x "$TORCHRUN" && -x "$ROBOCASA_PY" ]] || die "runtime executables are unavailable"
-[[ "$(git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" rev-parse HEAD)" == "$MODEL_SOURCE_REVISION" ]] || die "model source revision mismatch"
-[[ "$(git -c safe.directory="$EVAL_CONTROL_SOURCE" -C "$EVAL_CONTROL_SOURCE" rev-parse HEAD)" == "$CONTROL_SOURCE_REVISION" ]] || die "control source revision mismatch"
+GIT_SAFE_CONFIG="$(mktemp /tmp/cwam-git-safe.XXXXXX)"
+export GIT_CONFIG_GLOBAL="$GIT_SAFE_CONFIG"
+git config --global --add safe.directory "$COSMOS_SOURCE"
+git config --global --add safe.directory "$EVAL_CONTROL_SOURCE"
+[[ "$(git -C "$COSMOS_SOURCE" rev-parse HEAD)" == "$MODEL_SOURCE_REVISION" ]] || die "model source revision mismatch"
+[[ "$(git -C "$EVAL_CONTROL_SOURCE" rev-parse HEAD)" == "$CONTROL_SOURCE_REVISION" ]] || die "control source revision mismatch"
 [[ "$EVAL_OUTPUT_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-fast-eval/runs/* ]] || die "unexpected output root"
 [[ ! -e "$EVAL_OUTPUT_ROOT" ]] || die "refusing to reuse output root"
 [[ ! -e "$SCRATCH_ROOT" ]] || die "refusing to reuse scratch root"
