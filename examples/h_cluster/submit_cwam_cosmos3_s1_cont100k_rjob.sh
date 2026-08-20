@@ -28,12 +28,17 @@ printf -v COMMAND '%q ' env \
     COSMOS_SOURCE="$COSMOS_SOURCE" EXPERIMENT_ID="$EXPERIMENT_ID" RUN_NAME="$RUN_NAME" \
     SOURCE_COMMIT="$SOURCE_COMMIT" KUBEBRAIN_RJOB_NAME="$RJOB_NAME" OSS_RUN_ROOT="$OSS_RUN_ROOT" \
     SOURCE_CHECKPOINT_URI="$SOURCE_CHECKPOINT_URI" "$RUNNER"
+WORKER_COMMAND="set -Eeuo pipefail
+printf 'WORKER_BOOTSTRAP_START %s\\n' \"\$(date -Is)\"
+exec $COMMAND"
 
 rjob submit \
     --name="$RJOB_NAME" \
     --priority=9 \
+    --group=eailabagent_gpu \
     --charged-group=eailabagent_gpu \
     --private-machine=group \
+    --task-type=normal \
     -P 1 \
     --gpu=8 \
     --cpu=128 \
@@ -43,9 +48,10 @@ rjob submit \
     --positive-tags="$NODE_TAG" \
     --image="$IMAGE" \
     --image-pull-policy=IfNotPresent \
-    --enable-sshd \
     --restart-policy=never \
     --termination-grace-period-seconds=300 \
-    --mount="$PERSONAL_GPFS" \
-    --mount="$PUBLIC_GPFS" \
-    -- bash -lc "$COMMAND"
+    --backoff_limit=1 \
+    --mount \
+    "$PERSONAL_GPFS" \
+    "$PUBLIC_GPFS" \
+    -- /usr/bin/env -u BASH_ENV -u ENV /bin/bash --noprofile --norc -c "$WORKER_COMMAND"

@@ -11,6 +11,13 @@ def test_submitter_pins_private_0252_and_eight_gpus() -> None:
     assert "gpu-l-lg-cmc-h-h200-0252" in text
     assert "--store-host-nvme=true" in text
     assert "--restart-policy=never" in text
+    assert "--group=eailabagent_gpu" in text
+    assert "--task-type=normal" in text
+    assert "--backoff_limit=1" in text
+    assert text.count("--mount") == 1
+    assert "--enable-sshd" not in text
+    assert "WORKER_BOOTSTRAP_START" in text
+    assert "/bin/bash --noprofile --norc" in text
     assert 'KUBEBRAIN_RJOB_NAME="$RJOB_NAME"' in text
 
 
