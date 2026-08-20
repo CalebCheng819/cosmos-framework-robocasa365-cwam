@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit one directed-node, eight-H200 matched fast evaluation.
+# Submit one directed-node, matched fast evaluation on six or eight H200 GPUs.
 
 set -Eeuo pipefail
 umask 077
@@ -10,7 +10,7 @@ required=(
     ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER EVAL_OUTPUT_ROOT
     EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID EVAL_RUN_NAME MODEL_LABEL
     MODEL_SOURCE_REVISION CONTROL_SOURCE_REVISION EXPECTED_EMA_KEY_COUNT
-    EVAL_EGL_VENDOR_JSON EXPECTED_NODE_TAG RJOB_NAME
+    EVAL_EGL_VENDOR_JSON EXPECTED_NODE_TAG EVAL_GPU_COUNT RJOB_NAME
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -19,6 +19,18 @@ done
     echo "ERROR: target must be H200-0252 or H200-0253" >&2
     exit 2
 }
+case "$EXPECTED_NODE_TAG:$EVAL_GPU_COUNT" in
+    node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn:6)
+        readonly RJOB_CPU_COUNT=96
+        ;;
+    node/gpu-l-lg-cmc-h-h200-0253.host.h.pjlab.org.cn:8)
+        readonly RJOB_CPU_COUNT=126
+        ;;
+    *)
+        echo "ERROR: expected 6 GPUs on H200-0252 or 8 GPUs on H200-0253" >&2
+        exit 2
+        ;;
+esac
 [[ "$RJOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#RJOB_NAME}" -le 50 ]] || {
     echo "ERROR: invalid RJOB_NAME" >&2
     exit 2
@@ -55,7 +67,7 @@ submit_args=(
     --private-machine group --priority 9 --task-type normal --replicas 1
     --restart-policy never --termination-grace-period-seconds 60 --backoff_limit 1
     --enable-sshd --image registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7
-    --cpu 126 --gpu 8 --memory 900000 --positive-tags "$EXPECTED_NODE_TAG"
+    --cpu "$RJOB_CPU_COUNT" --gpu "$EVAL_GPU_COUNT" --memory 900000 --positive-tags "$EXPECTED_NODE_TAG"
     --store-host-nvme --mount
     gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs
     gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public
@@ -64,8 +76,8 @@ if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then
     submit_args+=(--predict-only true)
 fi
 
-printf '%s rjob=%s node=%s model=%s output=%s\n' \
+printf '%s rjob=%s node=%s gpu_count=%s model=%s output=%s\n' \
     "$([[ "$RJOB_PREDICT_ONLY" == 1 ]] && echo PREDICTING || echo SUBMITTING)" \
-    "$RJOB_NAME" "$EXPECTED_NODE_TAG" "$MODEL_LABEL" "$EVAL_OUTPUT_ROOT"
+    "$RJOB_NAME" "$EXPECTED_NODE_TAG" "$EVAL_GPU_COUNT" "$MODEL_LABEL" "$EVAL_OUTPUT_ROOT"
 /usr/local/bin/rjob "${submit_args[@]}" -- \
     /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -c "$worker_script"

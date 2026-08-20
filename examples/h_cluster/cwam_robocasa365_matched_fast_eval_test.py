@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).with_name("cwam_robocasa365_matched_fast_eval.py")
+RUNNER_PATH = Path(__file__).with_name("run_cwam_cosmos3_robocasa365_matched_fast_eval.sh")
 SPEC = importlib.util.spec_from_file_location("matched_fast_eval", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -16,6 +17,27 @@ SPEC.loader.exec_module(MODULE)
 
 
 class MatchedFastEvalTest(unittest.TestCase):
+    def test_evaluators_use_the_dynamic_server_ports(self) -> None:
+        runner = RUNNER_PATH.read_text()
+        self.assertIn(
+            '"${SERVER_PORTS[${EVAL_SERVER_INDEX[0]}]}" "${EVAL_GPU_DEVICES[0]}" 42',
+            runner,
+        )
+        self.assertIn(
+            '"${SERVER_PORTS[${EVAL_SERVER_INDEX[1]}]}" "${EVAL_GPU_DEVICES[1]}" 10042',
+            runner,
+        )
+        self.assertNotIn('"$RUN_A" 16000', runner)
+        self.assertNotIn('"$RUN_B" 16001', runner)
+
+    def test_runner_supports_six_and_eight_gpu_layouts(self) -> None:
+        runner = RUNNER_PATH.read_text()
+        self.assertIn("SERVER_DEVICES=(0,1,2,3)", runner)
+        self.assertIn("EVAL_SERVER_INDEX=(0 0)", runner)
+        self.assertIn("EVAL_GPU_DEVICES=(4 5)", runner)
+        self.assertIn("SERVER_DEVICES=(0,1,2,3 4,5,6,7)", runner)
+        self.assertIn("EVAL_SERVER_INDEX=(0 1)", runner)
+
     def test_sanitized_keeps_parallelism_and_removes_digest_fields(self) -> None:
         value = MODULE.sanitized({
             "dp_shard_size": 4,

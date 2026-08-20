@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run two matched RoboCasa365 tasks with two four-rank policy servers on one H200 node.
+# Run two matched RoboCasa365 tasks with one or two four-rank policy servers.
 
 set -Eeuo pipefail
 umask 077
@@ -12,7 +12,7 @@ required=(
     ACTION_STATS WAN2PT2_VAE QWEN_TOKENIZER EVAL_OUTPUT_ROOT
     EVAL_EXPERIMENT_ID EVAL_LOGICAL_RUN_ID EVAL_RUN_NAME MODEL_LABEL
     MODEL_SOURCE_REVISION CONTROL_SOURCE_REVISION EXPECTED_EMA_KEY_COUNT
-    EVAL_EGL_VENDOR_JSON EXPECTED_NODE_TAG RJOB_NAME
+    EVAL_EGL_VENDOR_JSON EXPECTED_NODE_TAG EVAL_GPU_COUNT RJOB_NAME
 )
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
@@ -35,10 +35,28 @@ readonly RUN_A="$EVAL_RUN_NAME-close-blender-lid"
 readonly RUN_B="$EVAL_RUN_NAME-pick-place-counter-to-stove"
 readonly RESULT_A="$RESULTS_ROOT/$RUN_A/results_shard0.json"
 readonly RESULT_B="$RESULTS_ROOT/$RUN_B/results_shard0.json"
-readonly -a SERVER_LABELS=(server-a server-b)
-readonly -a SERVER_DEVICES=(0,1,2,3 4,5,6,7)
+declare -a SERVER_LABELS SERVER_DEVICES EVAL_SERVER_INDEX EVAL_GPU_DEVICES
+case "$EVAL_GPU_COUNT" in
+    6)
+        SERVER_LABELS=(server-shared)
+        SERVER_DEVICES=(0,1,2,3)
+        EVAL_SERVER_INDEX=(0 0)
+        EVAL_GPU_DEVICES=(4 5)
+        ;;
+    8)
+        SERVER_LABELS=(server-a server-b)
+        SERVER_DEVICES=(0,1,2,3 4,5,6,7)
+        EVAL_SERVER_INDEX=(0 1)
+        EVAL_GPU_DEVICES=(0 4)
+        ;;
+    *)
+        printf 'ERROR: EVAL_GPU_COUNT must be 6 or 8\n' >&2
+        exit 2
+        ;;
+esac
+readonly -a SERVER_LABELS SERVER_DEVICES EVAL_SERVER_INDEX EVAL_GPU_DEVICES
 declare -a SERVER_PORTS=()
-declare -a SERVER_PIDS=("" "") SERVER_PGIDS=("" "") SERVER_NONCES=("" "")
+declare -a SERVER_PIDS=() SERVER_PGIDS=() SERVER_NONCES=()
 declare -a EVAL_PIDS=("" "") EVAL_PGIDS=("" "")
 GPU_MONITOR_PID=
 PROGRESS_PID=
@@ -82,10 +100,12 @@ cleanup() {
     [[ -z "$PROGRESS_PID" ]] || kill "$PROGRESS_PID" 2>/dev/null || true
     [[ -z "$GPU_MONITOR_PID" ]] || kill "$GPU_MONITOR_PID" 2>/dev/null || true
     [[ -z "$GIT_SAFE_CONFIG" ]] || rm -f "$GIT_SAFE_CONFIG"
-    stop_group "${EVAL_PIDS[0]}" "${EVAL_PGIDS[0]}"
-    stop_group "${EVAL_PIDS[1]}" "${EVAL_PGIDS[1]}"
-    stop_group "${SERVER_PIDS[0]}" "${SERVER_PGIDS[0]}"
-    stop_group "${SERVER_PIDS[1]}" "${SERVER_PGIDS[1]}"
+    for index in "${!EVAL_PIDS[@]}"; do
+        stop_group "${EVAL_PIDS[$index]}" "${EVAL_PGIDS[$index]}"
+    done
+    for index in "${!SERVER_PIDS[@]}"; do
+        stop_group "${SERVER_PIDS[$index]}" "${SERVER_PGIDS[$index]}"
+    done
     if ((code != 0 || TERMINAL_WRITTEN == 0)); then
         [[ -d "$CONTROL_DIR" ]] && write_status FAILED "runner_exit_code=$code" || true
         ((code == 0)) && code=1
@@ -113,24 +133,27 @@ git config --global --add safe.directory "$EVAL_CONTROL_SOURCE"
 [[ "$EVAL_OUTPUT_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-fast-eval/runs/* ]] || die "unexpected output root"
 [[ ! -e "$EVAL_OUTPUT_ROOT" ]] || die "refusing to reuse output root"
 [[ ! -e "$SCRATCH_ROOT" ]] || die "refusing to reuse scratch root"
-mkdir -p "$CONTROL_DIR" "$RESULTS_ROOT" "$SCRATCH_ROOT/server-a" "$SCRATCH_ROOT/server-b" \
-    "$SCRATCH_ROOT/torchinductor-a" "$SCRATCH_ROOT/torchinductor-b"
-write_status STARTING "validating_eight_h200_worker"
+mkdir -p "$CONTROL_DIR" "$RESULTS_ROOT"
+for label in "${SERVER_LABELS[@]}"; do
+    mkdir -p "$SCRATCH_ROOT/$label" "$SCRATCH_ROOT/torchinductor-${label#server-}"
+done
+write_status STARTING "validating_${EVAL_GPU_COUNT}_h200_worker"
 
 mapfile -t gpu_names < <(nvidia-smi --query-gpu=name --format=csv,noheader)
-[[ "${#gpu_names[@]}" -eq 8 ]] || die "expected 8 GPUs, got ${#gpu_names[@]}"
+[[ "${#gpu_names[@]}" -eq "$EVAL_GPU_COUNT" ]] || die "expected $EVAL_GPU_COUNT GPUs, got ${#gpu_names[@]}"
 for name in "${gpu_names[@]}"; do [[ "$name" == *H200* ]] || die "non-H200 GPU visible: $name"; done
 printf '%s\n' "${gpu_names[@]}" >"$CONTROL_DIR/gpu-inventory.txt"
 nvidia-smi --query-gpu=timestamp,index,name,utilization.gpu,memory.used,memory.total,power.draw \
     --format=csv -l 30 >"$CONTROL_DIR/gpu-monitor.csv" 2>"$CONTROL_DIR/gpu-monitor.err" &
 GPU_MONITOR_PID=$!
 
-mapfile -t SERVER_PORTS < <("$COSMOS_PY" - <<'PY'
+mapfile -t SERVER_PORTS < <(SERVER_COUNT="${#SERVER_LABELS[@]}" "$COSMOS_PY" - <<'PY'
+import os
 import socket
 
 sockets = []
 try:
-    for _ in range(2):
+    for _ in range(int(os.environ["SERVER_COUNT"])):
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         sockets.append(sock)
@@ -141,7 +164,13 @@ finally:
         sock.close()
 PY
 )
-[[ "${#SERVER_PORTS[@]}" -eq 2 ]] || die "failed to reserve two server ports"
+[[ "${#SERVER_PORTS[@]}" -eq "${#SERVER_LABELS[@]}" ]] || die "failed to reserve policy server ports"
+
+for _ in "${SERVER_LABELS[@]}"; do
+    SERVER_PIDS+=("")
+    SERVER_PGIDS+=("")
+    SERVER_NONCES+=("")
+done
 
 launch_server() {
     local index="$1" label="${SERVER_LABELS[$1]}" devices="${SERVER_DEVICES[$1]}" port="${SERVER_PORTS[$1]}"
@@ -181,14 +210,13 @@ capture_server() {
         --visible-devices "${SERVER_DEVICES[$index]}" --launch-nonce "${SERVER_NONCES[$index]}" \
         --checkpoint "$SERVING_CHECKPOINT_PATH" --config "$TRAINING_CONFIG" \
         --action-stats "$ACTION_STATS" --vae "$WAN2PT2_VAE" --tokenizer "$QWEN_TOKENIZER" \
-        --source-revision "$MODEL_SOURCE_REVISION" >"$CONTROL_DIR/runtime-$label.log"
+        --source-revision "$MODEL_SOURCE_REVISION" --expected-gpu-count "$EVAL_GPU_COUNT" \
+        >"$CONTROL_DIR/runtime-$label.log"
 }
 
-launch_server 0
-launch_server 1
-capture_server 0
-capture_server 1
-write_status RUNNING "two_four_rank_policy_servers_ready ports=${SERVER_PORTS[*]}"
+for index in "${!SERVER_LABELS[@]}"; do launch_server "$index"; done
+for index in "${!SERVER_LABELS[@]}"; do capture_server "$index"; done
+write_status RUNNING "${#SERVER_LABELS[@]}_four_rank_policy_servers_ready ports=${SERVER_PORTS[*]}"
 
 eval_env=(
     env -u LD_PRELOAD -u LD_AUDIT -u __EGL_VENDOR_LIBRARY_DIRS
@@ -221,8 +249,8 @@ launch_eval() {
     EVAL_PGIDS[$index]="$pgid"
 }
 
-launch_eval 0 "$TASK_A" "$RUN_A" 16000 0 42
-launch_eval 1 "$TASK_B" "$RUN_B" 16001 4 10042
+launch_eval 0 "$TASK_A" "$RUN_A" "${SERVER_PORTS[${EVAL_SERVER_INDEX[0]}]}" "${EVAL_GPU_DEVICES[0]}" 42
+launch_eval 1 "$TASK_B" "$RUN_B" "${SERVER_PORTS[${EVAL_SERVER_INDEX[1]}]}" "${EVAL_GPU_DEVICES[1]}" 10042
 "$COSMOS_PY" "$HELPER" watch-progress \
     --experiment-id "$EVAL_EXPERIMENT_ID" --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
     --model-label "$MODEL_LABEL" --task-spec "$TASK_A=$RESULT_A" --task-spec "$TASK_B=$RESULT_B" \
@@ -258,15 +286,18 @@ shutdown_server() {
     SERVER_PGIDS[$index]=
 }
 
-shutdown_server 0
-shutdown_server 1
+for index in "${!SERVER_LABELS[@]}"; do shutdown_server "$index"; done
+summary_receipts=()
+for label in "${SERVER_LABELS[@]}"; do
+    summary_receipts+=(--runtime-receipt "$CONTROL_DIR/runtime-$label.json")
+    summary_receipts+=(--shutdown-receipt "$CONTROL_DIR/shutdown-$label.json")
+done
 "$COSMOS_PY" "$HELPER" summarize \
     --experiment-id "$EVAL_EXPERIMENT_ID" --logical-run-id "$EVAL_LOGICAL_RUN_ID" \
     --model-label "$MODEL_LABEL" --source-revision "$MODEL_SOURCE_REVISION" \
     --checkpoint "$SERVING_CHECKPOINT_PATH" --node "$EXPECTED_NODE_TAG" --rjob-name "$RJOB_NAME" \
     --task-spec "$TASK_A=$RESULT_A" --task-spec "$TASK_B=$RESULT_B" --expected-episodes 20 \
-    --runtime-receipt "$CONTROL_DIR/runtime-server-a.json" --runtime-receipt "$CONTROL_DIR/runtime-server-b.json" \
-    --shutdown-receipt "$CONTROL_DIR/shutdown-server-a.json" --shutdown-receipt "$CONTROL_DIR/shutdown-server-b.json" \
+    "${summary_receipts[@]}" \
     --progress-log "$CONTROL_DIR/progress.ndjson" --output "$EVAL_OUTPUT_ROOT/final-summary.json" \
     --csv-output "$EVAL_OUTPUT_ROOT/task-success-rates.csv" >"$CONTROL_DIR/summarize.log"
 write_status COMPLETE "40_rollouts_and_controlled_shutdown_complete"

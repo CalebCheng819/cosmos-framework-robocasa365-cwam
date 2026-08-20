@@ -167,8 +167,8 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
     if visible != args.visible_devices:
         raise ContractError("CUDA_VISIBLE_DEVICES differs from the declared rank group")
     gpus = gpu_inventory()
-    if len(gpus) != 8 or any("H200" not in gpu["name"] for gpu in gpus):
-        raise ContractError(f"expected eight visible H200 GPUs, got {gpus}")
+    if len(gpus) != args.expected_gpu_count or any("H200" not in gpu["name"] for gpu in gpus):
+        raise ContractError(f"expected {args.expected_gpu_count} visible H200 GPUs, got {gpus}")
     value = {
         "schema_version": "metadata_no_hash_v1",
         "kind": "cwam_h_matched_fast_runtime",
@@ -384,6 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--vae", type=Path, required=True)
     runtime.add_argument("--tokenizer", type=Path, required=True)
     runtime.add_argument("--source-revision", required=True)
+    runtime.add_argument("--expected-gpu-count", type=int, choices=(6, 8), required=True)
     shutdown = commands.add_parser("shutdown-server")
     shutdown.add_argument("--uri", required=True)
     shutdown.add_argument("--output", type=Path, required=True)
