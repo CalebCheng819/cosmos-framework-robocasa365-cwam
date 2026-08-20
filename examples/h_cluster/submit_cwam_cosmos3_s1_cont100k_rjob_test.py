@@ -27,3 +27,15 @@ def test_runner_restores_optimizer_but_restarts_scheduler() -> None:
     assert "checkpoint.keys_not_to_resume=[scheduler,dataloader]" in text
     assert "checkpoint.save_iter" not in text
     assert "--query-gpu=" in text
+
+
+def test_runner_bootstraps_rclone_without_persisting_credentials() -> None:
+    text = (ROOT / "examples/h_cluster/run_cwam_cosmos3_s1_cont100k.sh").read_text()
+    assert "chengjuntao/tools/rclone" in text
+    assert "/.auth/accesskey_id" in text
+    assert "/.auth/accesskey_secret" in text
+    assert 'chmod 600 "$RCLONE_CONFIG_PATH"' in text
+    assert 'rm -f "$RCLONE_CONFIG_PATH"' in text
+    assert '"$RCLONE_BIN" lsf "$SOURCE_CHECKPOINT_URI"' in text
+    assert "access_key_id = %s" in text
+    assert "secret_access_key = %s" in text
