@@ -228,6 +228,18 @@ class OmniMoTModel(ImaginaireModel):
         adaptive_entropy_weight = optional_model_config_value(
             self.config, "action_relevance_dselect_adaptive_entropy_weight", 0.01
         )
+        routing_mode = optional_model_config_value(self.config, "action_relevance_routing_mode", "soft_attention")
+        dselect_num_selectors = optional_model_config_value(
+            self.config, "action_relevance_dselect_num_selectors", 32
+        )
+        dselect_capacity = optional_model_config_value(self.config, "action_relevance_dselect_capacity", 8192)
+        dselect_gamma = optional_model_config_value(self.config, "action_relevance_dselect_gamma", 1.0)
+        dselect_overlap_weight = optional_model_config_value(
+            self.config, "action_relevance_dselect_overlap_weight", 0.1
+        )
+        dselect_invalid_weight = optional_model_config_value(
+            self.config, "action_relevance_dselect_invalid_weight", 1.0
+        )
         with torch.device("meta"):
             assert self.vlm_config.model_instance is not None, "Model instance should be specified"
 
@@ -261,12 +273,12 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_num_heads=self.config.action_relevance_num_heads,
                 action_relevance_topk=self.config.action_relevance_topk,
                 action_relevance_initial_gate=self.config.action_relevance_initial_gate,
-                action_relevance_routing_mode=self.config.action_relevance_routing_mode,
-                action_relevance_dselect_num_selectors=self.config.action_relevance_dselect_num_selectors,
-                action_relevance_dselect_capacity=self.config.action_relevance_dselect_capacity,
-                action_relevance_dselect_gamma=self.config.action_relevance_dselect_gamma,
-                action_relevance_dselect_overlap_weight=self.config.action_relevance_dselect_overlap_weight,
-                action_relevance_dselect_invalid_weight=self.config.action_relevance_dselect_invalid_weight,
+                action_relevance_routing_mode=routing_mode,
+                action_relevance_dselect_num_selectors=dselect_num_selectors,
+                action_relevance_dselect_capacity=dselect_capacity,
+                action_relevance_dselect_gamma=dselect_gamma,
+                action_relevance_dselect_overlap_weight=dselect_overlap_weight,
+                action_relevance_dselect_invalid_weight=dselect_invalid_weight,
                 action_relevance_dselect_adaptive_counts=adaptive_counts,
                 action_relevance_dselect_adaptive_temperature=adaptive_temperature,
                 action_relevance_dselect_adaptive_target_selectors=adaptive_target_selectors,

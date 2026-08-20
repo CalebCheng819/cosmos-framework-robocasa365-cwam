@@ -33,6 +33,25 @@ def test_optional_model_config_value_supports_published_configs_without_b4_field
 
 @pytest.mark.L0
 @pytest.mark.CPU
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [
+        ("action_relevance_routing_mode", "soft_attention"),
+        ("action_relevance_dselect_num_selectors", 32),
+        ("action_relevance_dselect_capacity", 8192),
+        ("action_relevance_dselect_gamma", 1.0),
+        ("action_relevance_dselect_overlap_weight", 0.1),
+        ("action_relevance_dselect_invalid_weight", 1.0),
+    ],
+)
+def test_optional_model_config_value_supplies_legacy_routing_defaults(name: str, default: object) -> None:
+    config = OmegaConf.create({"action_relevance_routing_dim": 512})
+
+    assert optional_model_config_value(config, name, default) == default
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
 def test_training_step_enables_training_stats_and_preserves_iteration() -> None:
     model = _FlowMatchingHarness()
     data_batch = {"sample": torch.tensor([1])}
