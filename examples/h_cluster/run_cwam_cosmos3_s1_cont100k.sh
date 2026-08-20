@@ -13,8 +13,10 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${OSS_RUN_ROOT:?Set OSS_RUN_ROOT below an authorized chengjuntao prefix.}"
 : "${SOURCE_CHECKPOINT_URI:?Set SOURCE_CHECKPOINT_URI to iter_000010000 on OSS.}"
 : "${KUBEBRAIN_RJOB_NAME:=unknown}"
+: "${PERSONAL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao}"
 : "${COSMOS_ENV:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/envs/cosmos-framework-09f23119-cu128-train}"
-: "${RCLONE_BIN:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/tools/rclone}"
+: "${RCLONE_BIN:=$PERSONAL_ROOT/tools/rclone}"
+: "${RCLONE_HANDOFF_BASE:=$PERSONAL_ROOT/runtime-handoffs/cwam-s1-cont100k}"
 : "${ROBOCASA365_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data/robocasa365-demian/processed/cwam-cosmos3-v1-3b70fe1-d5eac857}"
 : "${ROBOCASA365_SOURCE_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data/robocasa365-demian/raw/robocasa365-pretrain-atomic-d5eac857ee9b07ff089e89c594c64493b8df6e41}"
 : "${GPFS_LATENT_CACHE_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/share_data/robocasa365-demian/processed/robocasa365-wan22-ti2v5b-postcrop-bf16-cwam-v1}"
@@ -31,7 +33,13 @@ readonly OUTPUT_ROOT="$RUN_ROOT/output"
 readonly RESUME_ROOT="$RUN_ROOT/resume/iter_000010000"
 readonly CACHE_ROOT="$RUN_ROOT/latent-cache"
 readonly EVIDENCE_ROOT="$RUN_ROOT/evidence"
-readonly RCLONE_CONFIG_PATH="$RUN_ROOT/rclone.conf"
+readonly RCLONE_HANDOFF_ROOT="$RCLONE_HANDOFF_BASE/$KUBEBRAIN_RJOB_NAME"
+readonly RCLONE_SECRET_ROOT="/dev/shm/cwam-s1-cont100k-rclone"
+readonly RCLONE_CONFIG_PATH="$RCLONE_SECRET_ROOT/rclone.conf"
+readonly RCLONE_PRIVATE_KEY="$RCLONE_SECRET_ROOT/recipient.key"
+readonly RCLONE_CERTIFICATE="$RCLONE_HANDOFF_ROOT/recipient.pem"
+readonly RCLONE_REQUEST="$RCLONE_HANDOFF_ROOT/request.json"
+readonly RCLONE_ENCRYPTED_CONFIG="$RCLONE_HANDOFF_ROOT/rclone-config.cms.der"
 readonly CHECKPOINTS_DIR="$OUTPUT_ROOT/cosmos3_action_robocasa365/action_sft/$RUN_NAME/checkpoints"
 MONITOR_PID=""
 ARCHIVER_PID=""
@@ -43,27 +51,13 @@ for path in "$CONFIG" "$LAUNCHER" "$ARCHIVER" "$COSMOS_ENV/bin/python" "$BASE_CH
 done
 [[ "$(nvidia-smi -L | wc -l)" -eq 8 ]] || { echo "ERROR: expected exactly eight GPUs" >&2; exit 1; }
 [[ -x "$RCLONE_BIN" ]] || { echo "ERROR: rclone binary missing: $RCLONE_BIN" >&2; exit 1; }
-[[ -r /.auth/accesskey_id && -r /.auth/accesskey_secret ]] || {
-    echo "ERROR: platform OSS credentials are unavailable" >&2
-    exit 1
-}
+[[ -x /usr/bin/openssl ]] || { echo "ERROR: openssl is unavailable" >&2; exit 1; }
 command -v rsync >/dev/null
 
-mkdir -p "$RESUME_ROOT" "$CACHE_ROOT" "$EVIDENCE_ROOT"
+mkdir -p "$RESUME_ROOT" "$CACHE_ROOT" "$EVIDENCE_ROOT" "$RCLONE_SECRET_ROOT" "$RCLONE_HANDOFF_ROOT"
+chmod 700 "$RCLONE_SECRET_ROOT" "$RCLONE_HANDOFF_ROOT"
 export PATH="$(dirname "$RCLONE_BIN"):$COSMOS_ENV/bin:$PATH"
 export RCLONE_CONFIG="$RCLONE_CONFIG_PATH"
-{
-    printf '[eailab-hdd2]\n'
-    printf 'type = s3\n'
-    printf 'provider = Ceph\n'
-    printf 'access_key_id = %s\n' "$(< /.auth/accesskey_id)"
-    printf 'secret_access_key = %s\n' "$(< /.auth/accesskey_secret)"
-    printf 'endpoint = http://hdd2.h.pjlab.org.cn:8060\n'
-    printf 'acl = private\n'
-    printf 'bucket_acl = private\n'
-    printf 'force_path_style = true\n'
-} >"$RCLONE_CONFIG_PATH"
-chmod 600 "$RCLONE_CONFIG_PATH"
 
 cleanup() {
     local status=$?
@@ -73,17 +67,66 @@ cleanup() {
         kill "$ARCHIVER_PID" 2>/dev/null || true
     fi
     [[ -z "$MONITOR_PID" ]] || wait "$MONITOR_PID" 2>/dev/null || true
-    "$RCLONE_BIN" copy "$EVIDENCE_ROOT" "$OSS_RUN_ROOT/evidence" --transfers=8 --checkers=16 || true
-    local launch_log="$OUTPUT_ROOT/logs/$LOG_FILENAME"
-    [[ ! -f "$launch_log" ]] || "$RCLONE_BIN" copyto "$launch_log" "$OSS_RUN_ROOT/logs/$LOG_FILENAME" || true
-    rm -f "$RCLONE_CONFIG_PATH"
+    if [[ -s "$RCLONE_CONFIG_PATH" ]]; then
+        "$RCLONE_BIN" copy "$EVIDENCE_ROOT" "$OSS_RUN_ROOT/evidence" --transfers=8 --checkers=16 || true
+        local launch_log="$OUTPUT_ROOT/logs/$LOG_FILENAME"
+        [[ ! -f "$launch_log" ]] || "$RCLONE_BIN" copyto "$launch_log" "$OSS_RUN_ROOT/logs/$LOG_FILENAME" || true
+    fi
+    rm -f "$RCLONE_CONFIG_PATH" "$RCLONE_PRIVATE_KEY"
+    rm -f "$RCLONE_CERTIFICATE" "$RCLONE_REQUEST" "$RCLONE_ENCRYPTED_CONFIG"
+    rm -f "$RCLONE_CERTIFICATE.tmp" "$RCLONE_REQUEST.tmp"
+    rmdir "$RCLONE_SECRET_ROOT" "$RCLONE_HANDOFF_ROOT" 2>/dev/null || true
     exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
+for path in "$RCLONE_CERTIFICATE" "$RCLONE_REQUEST" "$RCLONE_ENCRYPTED_CONFIG"; do
+    [[ ! -e "$path" ]] || { echo "ERROR: refusing to reuse rclone handoff artifact: $path" >&2; exit 1; }
+done
+/usr/bin/openssl req -x509 -newkey rsa:3072 -nodes -days 1 \
+    -subj "/CN=$KUBEBRAIN_RJOB_NAME" \
+    -keyout "$RCLONE_PRIVATE_KEY" \
+    -out "$RCLONE_CERTIFICATE.tmp" >/dev/null 2>&1
+chmod 400 "$RCLONE_PRIVATE_KEY"
+chmod 444 "$RCLONE_CERTIFICATE.tmp"
+mv "$RCLONE_CERTIFICATE.tmp" "$RCLONE_CERTIFICATE"
+export EXPERIMENT_ID KUBEBRAIN_RJOB_NAME OSS_RUN_ROOT SOURCE_CHECKPOINT_URI
+"$COSMOS_ENV/bin/python" - "$RCLONE_REQUEST.tmp" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+payload = {
+    "schema_version": 1,
+    "experiment_id": os.environ["EXPERIMENT_ID"],
+    "job_id": os.environ["KUBEBRAIN_RJOB_NAME"],
+    "oss_run_root": os.environ["OSS_RUN_ROOT"],
+    "source_checkpoint_uri": os.environ["SOURCE_CHECKPOINT_URI"],
+}
+Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+chmod 444 "$RCLONE_REQUEST.tmp"
+mv "$RCLONE_REQUEST.tmp" "$RCLONE_REQUEST"
+echo "RCLONE_HANDOFF_WAITING root=$RCLONE_HANDOFF_ROOT"
+for _ in $(seq 1 240); do
+    [[ -s "$RCLONE_ENCRYPTED_CONFIG" ]] && break
+    sleep 5
+done
+[[ -s "$RCLONE_ENCRYPTED_CONFIG" ]] || { echo "ERROR: timed out waiting for rclone handoff" >&2; exit 1; }
+/usr/bin/openssl cms -decrypt -binary -inform DER \
+    -in "$RCLONE_ENCRYPTED_CONFIG" \
+    -recip "$RCLONE_CERTIFICATE" \
+    -inkey "$RCLONE_PRIVATE_KEY" \
+    -out "$RCLONE_CONFIG_PATH"
+chmod 400 "$RCLONE_CONFIG_PATH"
+rm -f "$RCLONE_PRIVATE_KEY" "$RCLONE_CERTIFICATE" "$RCLONE_REQUEST" "$RCLONE_ENCRYPTED_CONFIG"
+rmdir "$RCLONE_HANDOFF_ROOT" 2>/dev/null || true
+"$RCLONE_BIN" listremotes | grep -Fx 'eailab-hdd2:' >/dev/null
 "$RCLONE_BIN" lsf "$SOURCE_CHECKPOINT_URI" --max-depth 1 >/dev/null
+echo "RCLONE_HANDOFF_READY remote=eailab-hdd2"
 echo "STAGE_START source_checkpoint=$SOURCE_CHECKPOINT_URI"
 "$RCLONE_BIN" copy "$SOURCE_CHECKPOINT_URI" "$RESUME_ROOT" --transfers=16 --checkers=32 --multi-thread-streams=8
 for component in model optim scheduler trainer; do

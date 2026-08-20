@@ -31,11 +31,16 @@ def test_runner_restores_optimizer_but_restarts_scheduler() -> None:
 
 def test_runner_bootstraps_rclone_without_persisting_credentials() -> None:
     text = (ROOT / "examples/h_cluster/run_cwam_cosmos3_s1_cont100k.sh").read_text()
-    assert "chengjuntao/tools/rclone" in text
-    assert "/.auth/accesskey_id" in text
-    assert "/.auth/accesskey_secret" in text
-    assert 'chmod 600 "$RCLONE_CONFIG_PATH"' in text
-    assert 'rm -f "$RCLONE_CONFIG_PATH"' in text
+    provision = (ROOT / "examples/h_cluster/provision_cwam_s1_cont100k_rclone_config.sh").read_text()
+    assert '$PERSONAL_ROOT/tools/rclone' in text
+    assert "/dev/shm/cwam-s1-cont100k-rclone" in text
+    assert "openssl cms -decrypt" in text
+    assert "RCLONE_HANDOFF_WAITING" in text
+    assert 'chmod 400 "$RCLONE_CONFIG_PATH"' in text
+    assert 'rm -f "$RCLONE_CONFIG_PATH" "$RCLONE_PRIVATE_KEY"' in text
     assert '"$RCLONE_BIN" lsf "$SOURCE_CHECKPOINT_URI"' in text
-    assert "access_key_id = %s" in text
-    assert "secret_access_key = %s" in text
+    assert "/.auth/" not in text
+    assert "openssl cms -encrypt" in provision
+    assert "eailab-hdd2:eailab/chengjuntao/" in provision
+    assert "access_key_id =" not in provision
+    assert "secret_access_key =" not in provision
