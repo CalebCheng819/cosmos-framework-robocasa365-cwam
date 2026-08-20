@@ -37,7 +37,7 @@ readonly RESULT_A="$RESULTS_ROOT/$RUN_A/results_shard0.json"
 readonly RESULT_B="$RESULTS_ROOT/$RUN_B/results_shard0.json"
 readonly -a SERVER_LABELS=(server-a server-b)
 readonly -a SERVER_DEVICES=(0,1,2,3 4,5,6,7)
-readonly -a SERVER_PORTS=(16000 16001)
+declare -a SERVER_PORTS=()
 declare -a SERVER_PIDS=("" "") SERVER_PGIDS=("" "") SERVER_NONCES=("" "")
 declare -a EVAL_PIDS=("" "") EVAL_PGIDS=("" "")
 GPU_MONITOR_PID=
@@ -125,18 +125,23 @@ nvidia-smi --query-gpu=timestamp,index,name,utilization.gpu,memory.used,memory.t
     --format=csv -l 30 >"$CONTROL_DIR/gpu-monitor.csv" 2>"$CONTROL_DIR/gpu-monitor.err" &
 GPU_MONITOR_PID=$!
 
-"$COSMOS_PY" - 16000 16001 <<'PY'
-import socket, sys
+mapfile -t SERVER_PORTS < <("$COSMOS_PY" - <<'PY'
+import socket
+
 sockets = []
 try:
-    for raw in sys.argv[1:]:
+    for _ in range(2):
         sock = socket.socket()
-        sock.bind(("127.0.0.1", int(raw)))
+        sock.bind(("127.0.0.1", 0))
         sockets.append(sock)
+    for sock in sockets:
+        print(sock.getsockname()[1])
 finally:
     for sock in sockets:
         sock.close()
 PY
+)
+[[ "${#SERVER_PORTS[@]}" -eq 2 ]] || die "failed to reserve two server ports"
 
 launch_server() {
     local index="$1" label="${SERVER_LABELS[$1]}" devices="${SERVER_DEVICES[$1]}" port="${SERVER_PORTS[$1]}"
@@ -183,7 +188,7 @@ launch_server 0
 launch_server 1
 capture_server 0
 capture_server 1
-write_status RUNNING "two_four_rank_policy_servers_ready"
+write_status RUNNING "two_four_rank_policy_servers_ready ports=${SERVER_PORTS[*]}"
 
 eval_env=(
     env -u LD_PRELOAD -u LD_AUDIT -u __EGL_VENDOR_LIBRARY_DIRS
