@@ -10,6 +10,8 @@ from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("cwam_robocasa365_matched_fast_eval.py")
 RUNNER_PATH = Path(__file__).with_name("run_cwam_cosmos3_robocasa365_matched_fast_eval.sh")
+FULL_RUNNER_PATH = Path(__file__).with_name("run_cwam_cosmos3_robocasa365_full_fast_eval.sh")
+FULL_SUBMITTER_PATH = Path(__file__).with_name("submit_cwam_cosmos3_robocasa365_full_fast_eval_rjob.sh")
 SPEC = importlib.util.spec_from_file_location("matched_fast_eval", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -92,6 +94,42 @@ class MatchedFastEvalTest(unittest.TestCase):
             self.assertEqual(value["aggregate"], {"episodes": 6, "successes": 3, "success_rate": 0.5})
             self.assertTrue(args.output.is_file())
             self.assertTrue(args.csv_output.is_file())
+
+    def test_check_task_requires_exact_complete_episode_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            path.write_text(json.dumps({"Task": {"complete": True, "episode_results": [{"success": True}] * 100}}))
+            state = MODULE.check_task(argparse.Namespace(task="Task", result=path, expected_episodes=100))
+            self.assertEqual(state["completed"], 100)
+            with self.assertRaises(MODULE.ContractError):
+                MODULE.check_task(argparse.Namespace(task="Task", result=path, expected_episodes=99))
+
+    def test_full_runner_has_canonical_tasks_and_durable_progress(self) -> None:
+        runner = FULL_RUNNER_PATH.read_text()
+        expected_tasks = (
+            "CloseBlenderLid", "CloseFridge", "CloseToasterOvenDoor", "CoffeeSetupMug",
+            "OpenCabinet", "OpenDrawer", "OpenStandMixerHead", "PickPlaceCounterToCabinet",
+            "PickPlaceCounterToStove", "PickPlaceDrawerToCounter", "PickPlaceSinkToCounter",
+            "PickPlaceToasterToCounter", "SlideDishwasherRack", "TurnOffStove",
+            "TurnOnElectricKettle", "TurnOnMicrowave", "TurnOnSinkFaucet",
+        )
+        for task in expected_tasks:
+            self.assertIn(task, runner)
+        self.assertIn("readonly EPISODES_PER_TASK=100", runner)
+        self.assertIn("readonly -a SERVER_DEVICES=(0,1,2,3 4,5,6,7)", runner)
+        self.assertIn("NEXT_TASK[$slot]=$((next + 2))", runner)
+        self.assertIn('--pid "${SERVER_PIDS[0]}" --pid "${SERVER_PIDS[1]}"', runner)
+        self.assertIn('--seed 42 --split atomic', runner)
+        self.assertIn('>"$CONTROL_DIR/check-$task.json"', runner)
+        self.assertIn("cwam-robocasa365-full-fast-eval/runs", runner)
+
+    def test_full_submitter_is_pinned_to_0252_eight_gpu_priority_nine(self) -> None:
+        submitter = FULL_SUBMITTER_PATH.read_text()
+        self.assertIn("gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn", submitter)
+        self.assertIn("--private-machine group --priority 9", submitter)
+        self.assertIn("--cpu 126 --gpu 8 --memory 900000", submitter)
+        self.assertIn("--positive-tags \"$EXPECTED_NODE_TAG\"", submitter)
+        self.assertIn("--predict-only true", submitter)
 
 
 if __name__ == "__main__":

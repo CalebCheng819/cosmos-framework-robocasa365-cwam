@@ -277,6 +277,15 @@ def parse_task_specs(values: list[str]) -> list[tuple[str, Path]]:
     return result
 
 
+def check_task(args: argparse.Namespace) -> dict[str, Any]:
+    state = task_state(args.task, args.result)
+    if state["completed"] != args.expected_episodes or not state["complete"]:
+        raise ContractError(
+            f"incomplete task result: expected={args.expected_episodes}, actual={state}"
+        )
+    return state
+
+
 def watch_progress(args: argparse.Namespace) -> dict[str, Any]:
     specs = parse_task_specs(args.task_spec)
     previous = None
@@ -408,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
     progress.add_argument("--pid", type=int, action="append", required=True)
     progress.add_argument("--interval-seconds", type=float, default=15)
     progress.add_argument("--output", type=Path, required=True)
+    check = commands.add_parser("check-task")
+    check.add_argument("--task", required=True)
+    check.add_argument("--result", type=Path, required=True)
+    check.add_argument("--expected-episodes", type=int, required=True)
     summary = commands.add_parser("summarize")
     summary.add_argument("--experiment-id", required=True)
     summary.add_argument("--logical-run-id", required=True)
@@ -442,6 +455,8 @@ def main() -> int:
             result = shutdown_server(args)
         elif args.command == "watch-progress":
             result = watch_progress(args)
+        elif args.command == "check-task":
+            result = check_task(args)
         elif args.command == "summarize":
             result = summarize(args)
         else:
