@@ -28,7 +28,7 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 readonly CONFIG="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_s1_cont100k_nano.toml"
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_robocasa365_nano.sh"
 readonly ARCHIVER="$COSMOS_SOURCE/examples/h_cluster/archive_cwam_s1_cont100k.py"
-readonly RUN_ROOT="$NVME_ROOT/$EXPERIMENT_ID"
+readonly RUN_ROOT="$NVME_ROOT/$EXPERIMENT_ID/$KUBEBRAIN_RJOB_NAME"
 readonly OUTPUT_ROOT="$RUN_ROOT/output"
 readonly RESUME_ROOT="$RUN_ROOT/resume/iter_000010000"
 readonly CACHE_ROOT="$RUN_ROOT/latent-cache"
@@ -152,18 +152,26 @@ export RESUME_EXISTING_RUN=0 ALLOW_DATA_STREAM_REPLAY=0
 export LOG_FILENAME
 export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=[scheduler,dataloader] checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8"
 
-mkdir -p "$OUTPUT_ROOT" "$CHECKPOINTS_DIR"
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,power.draw,power.limit \
     --format=csv -l 30 >"$EVIDENCE_ROOT/nvidia-smi.csv" 2>&1 &
 MONITOR_PID=$!
-"$COSMOS_ENV/bin/python" "$ARCHIVER" \
-    --checkpoints-dir "$CHECKPOINTS_DIR" \
-    --remote-root "$OSS_RUN_ROOT" \
-    --receipts-dir "$EVIDENCE_ROOT/checkpoint-receipts" \
-    --experiment-id "$EXPERIMENT_ID" \
-    --job-id "$KUBEBRAIN_RJOB_NAME" \
-    --source-commit "$SOURCE_COMMIT" \
-    >"$EVIDENCE_ROOT/archive.log" 2>&1 &
+(
+    for _ in $(seq 1 600); do
+        [[ -d "$CHECKPOINTS_DIR" ]] && break
+        sleep 1
+    done
+    [[ -d "$CHECKPOINTS_DIR" ]] || {
+        echo "ERROR: timed out waiting for launcher to create checkpoint directory: $CHECKPOINTS_DIR" >&2
+        exit 1
+    }
+    exec "$COSMOS_ENV/bin/python" "$ARCHIVER" \
+        --checkpoints-dir "$CHECKPOINTS_DIR" \
+        --remote-root "$OSS_RUN_ROOT" \
+        --receipts-dir "$EVIDENCE_ROOT/checkpoint-receipts" \
+        --experiment-id "$EXPERIMENT_ID" \
+        --job-id "$KUBEBRAIN_RJOB_NAME" \
+        --source-commit "$SOURCE_COMMIT"
+) >"$EVIDENCE_ROOT/archive.log" 2>&1 &
 ARCHIVER_PID=$!
 
 echo "TRAIN_START experiment=$EXPERIMENT_ID resume_step=10000 target_step=100000"

@@ -44,3 +44,11 @@ def test_runner_bootstraps_rclone_without_persisting_credentials() -> None:
     assert "eailab-hdd2:eailab/chengjuntao/" in provision
     assert "access_key_id =" not in provision
     assert "secret_access_key =" not in provision
+
+
+def test_runner_does_not_precreate_the_launcher_run_directory() -> None:
+    text = (ROOT / "examples/h_cluster/run_cwam_cosmos3_s1_cont100k.sh").read_text()
+    assert 'readonly RUN_ROOT="$NVME_ROOT/$EXPERIMENT_ID/$KUBEBRAIN_RJOB_NAME"' in text
+    assert 'mkdir -p "$OUTPUT_ROOT" "$CHECKPOINTS_DIR"' not in text
+    assert '[[ -d "$CHECKPOINTS_DIR" ]] && break' in text
+    assert 'exec "$COSMOS_ENV/bin/python" "$ARCHIVER"' in text
