@@ -17,6 +17,14 @@ SPEC.loader.exec_module(MODULE)
 
 
 class MatchedFastEvalTest(unittest.TestCase):
+    def test_serving_checkpoint_root_resolves_to_model_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "serving"
+            model = root / "model"
+            model.mkdir(parents=True)
+            self.assertEqual(MODULE.resolved_server_checkpoint(root), model.resolve())
+            self.assertEqual(MODULE.resolved_server_checkpoint(model), model.resolve())
+
     def test_evaluators_use_the_dynamic_server_ports(self) -> None:
         runner = RUNNER_PATH.read_text()
         self.assertIn(

@@ -128,6 +128,12 @@ def sanitized(value: Any) -> Any:
     return value
 
 
+def resolved_server_checkpoint(path: Path) -> Path:
+    """Mirror Cosmos inference argument normalization for local checkpoints."""
+    resolved = path.resolve()
+    return resolved if resolved.name == "model" else (resolved / "model").resolve()
+
+
 def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
     deadline = time.monotonic() + args.timeout_seconds
     metadata = None
@@ -144,11 +150,12 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
             time.sleep(2)
     if metadata is None:
         raise ContractError(f"policy readiness timeout: {last_error}")
+    checkpoint = resolved_server_checkpoint(args.checkpoint)
     expected = {
         "launch_nonce": args.launch_nonce,
         "distributed_world_size": 4,
         "parallelism": EXPECTED_PARALLELISM,
-        "checkpoint": str(args.checkpoint.resolve()),
+        "checkpoint": str(checkpoint),
         "config_file": str(args.config.resolve()),
         "action_stats_path": str(args.action_stats.resolve()),
         "wan2pt2_vae_path": str(args.vae.resolve()),
@@ -156,7 +163,9 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
     }
     for key, value in expected.items():
         if metadata.get(key) != value:
-            raise ContractError(f"server metadata mismatch for {key}: {metadata.get(key)!r}")
+            raise ContractError(
+                f"server metadata mismatch for {key}: expected={value!r}, actual={metadata.get(key)!r}"
+            )
     if not isinstance(metadata.get("checkpoint_weight_receipt"), dict):
         raise ContractError("server omitted checkpoint weight receipt")
     server_pid = metadata.get("server_pid")
@@ -182,7 +191,7 @@ def capture_runtime(args: argparse.Namespace) -> dict[str, Any]:
         "server_label": args.server_label,
         "visible_devices": args.visible_devices,
         "launch_nonce": args.launch_nonce,
-        "checkpoint": str(args.checkpoint.resolve()),
+        "checkpoint": str(checkpoint),
         "config": {"path": str(args.config.resolve()), "size_bytes": args.config.stat().st_size},
         "action_stats": {"path": str(args.action_stats.resolve()), "size_bytes": args.action_stats.stat().st_size},
         "vae": {"path": str(args.vae.resolve()), "size_bytes": args.vae.stat().st_size},
