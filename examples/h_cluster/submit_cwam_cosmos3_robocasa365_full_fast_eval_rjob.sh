@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the full RoboCasa365 evaluation to the exact H200-0252 eight-GPU worker.
+# Submit the full RoboCasa365 evaluation to the exact H200-0253 eight-GPU worker.
 
 set -Eeuo pipefail
 umask 077
@@ -15,9 +15,9 @@ required=(
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
 done
-readonly REQUIRED_NODE_TAG=node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn
+readonly REQUIRED_NODE_TAG=node/gpu-l-lg-cmc-h-h200-0253.host.h.pjlab.org.cn
 [[ "$EXPECTED_NODE_TAG" == "$REQUIRED_NODE_TAG" ]] || {
-    echo "ERROR: full fast eval must target H200-0252" >&2
+    echo "ERROR: full fast eval must target H200-0253" >&2
     exit 2
 }
 [[ "$EVAL_GPU_COUNT" == 8 ]] || { echo "ERROR: full fast eval requires 8 GPUs" >&2; exit 2; }

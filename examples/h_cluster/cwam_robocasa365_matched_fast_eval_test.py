@@ -123,9 +123,9 @@ class MatchedFastEvalTest(unittest.TestCase):
         self.assertIn('>"$CONTROL_DIR/check-$task.json"', runner)
         self.assertIn("cwam-robocasa365-full-fast-eval/runs", runner)
 
-    def test_full_submitter_is_pinned_to_0252_eight_gpu_priority_nine(self) -> None:
+    def test_full_submitter_is_pinned_to_0253_eight_gpu_priority_nine(self) -> None:
         submitter = FULL_SUBMITTER_PATH.read_text()
-        self.assertIn("gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn", submitter)
+        self.assertIn("gpu-l-lg-cmc-h-h200-0253.host.h.pjlab.org.cn", submitter)
         self.assertIn("--private-machine group --priority 9", submitter)
         self.assertIn("--cpu 126 --gpu 8 --memory 900000", submitter)
         self.assertIn("--positive-tags \"$EXPECTED_NODE_TAG\"", submitter)
