@@ -236,6 +236,12 @@ def _is_diffusers_checkpoint(checkpoint_path: Path) -> bool:
     return any(_is_diffusers_model_weight_path(path) for path in _read_safetensors_index(index_path).values())
 
 
+def _dcp_load_no_dist() -> bool:
+    """Use local DCP loading unless more than one process participates."""
+    dist = torch.distributed
+    return not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
+
+
 _LM_VISUAL_KEY_MARKER = "language_model.visual."
 
 
@@ -546,17 +552,11 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
             case CheckpointType.HF:
                 if _is_diffusers_checkpoint(checkpoint_path):
                     state_dict = get_model_state_dict(model.model.net)
-                    # Single-rank load must skip DCP's collective path: it gathers
-                    # (pickles) the load plan across ranks, and _DiffusersLoadPlanner
-                    # carries code objects that cannot be pickled ("cannot pickle
-                    # code objects"). no_dist loads locally without collectives.
-                    _dist = torch.distributed
-                    no_dist = not (_dist.is_available() and _dist.is_initialized() and _dist.get_world_size() > 1)
                     dcp.load(
                         state_dict=state_dict,
                         storage_reader=_DiffusersHuggingFaceStorageReader(checkpoint_path),
                         planner=_DiffusersLoadPlanner(checkpoint_path),
-                        no_dist=no_dist,
+                        no_dist=_dcp_load_no_dist(),
                     )
                     return model
                 state_dict = get_model_state_dict(model)
@@ -564,7 +564,7 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
                 storage_reader = HuggingFaceStorageReader(str(checkpoint_path))
             case _:
                 assert_never(checkpoint_type)
-        dcp.load(state_dict=state_dict, storage_reader=storage_reader)
+        dcp.load(state_dict=state_dict, storage_reader=storage_reader, no_dist=_dcp_load_no_dist())
         return model
 
     @classmethod

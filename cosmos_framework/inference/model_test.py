@@ -6,6 +6,7 @@ from pathlib import Path
 
 import attrs
 import hydra
+import pytest
 import safetensors.torch
 import torch
 import torch.distributed.checkpoint as dcp
@@ -17,6 +18,7 @@ from cosmos_framework.inference.common.args import CheckpointType
 from cosmos_framework.inference.common.config import structure_config
 from cosmos_framework.inference.model import (
     Cosmos3OmniConfig,
+    _dcp_load_no_dist,
     _diffusers_to_net_key,
     _diffusers_weight_map,
     _DiffusersHuggingFaceStorageReader,
@@ -24,6 +26,25 @@ from cosmos_framework.inference.model import (
     _is_diffusers_checkpoint,
     _normalize_diffusers_target_key,
 )
+
+
+@pytest.mark.parametrize(
+    ("available", "initialized", "world_size", "expected"),
+    [
+        (False, False, 1, True),
+        (True, False, 1, True),
+        (True, True, 1, True),
+        (True, True, 2, False),
+    ],
+)
+def test_dcp_load_no_dist(
+    monkeypatch, available: bool, initialized: bool, world_size: int, expected: bool
+):
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: available)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: initialized)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: world_size)
+
+    assert _dcp_load_no_dist() is expected
 
 
 def test_config():
