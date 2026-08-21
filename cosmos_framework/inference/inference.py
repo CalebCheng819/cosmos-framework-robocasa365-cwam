@@ -1283,6 +1283,9 @@ class OmniInference(Inference):
                 parallelism_config=parallelism_config,
                 compile_config=compile_config,
                 quantization_config=quantization_config,
+                load_ema_to_reg=(
+                    setup_args.use_ema_weights if setup_args.checkpoint_type == CheckpointType.DCP else False
+                ),
             ).model
             if model.config.rectified_flow_inference_config.scheduler_type != sampler_override:
                 model.config.rectified_flow_inference_config.scheduler_type = sampler_override

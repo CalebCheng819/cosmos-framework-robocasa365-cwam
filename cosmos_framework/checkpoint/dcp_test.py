@@ -5,8 +5,9 @@
 
 import pytest
 import torch
+import torch.distributed.checkpoint as dcp
 
-from cosmos_framework.checkpoint.dcp import _copy_reg_weights_to_ema, _state_dict_has_ema_tree
+from cosmos_framework.checkpoint.dcp import CustomLoadPlanner, _copy_reg_weights_to_ema, _state_dict_has_ema_tree
 
 
 @pytest.mark.L0
@@ -44,3 +45,27 @@ def test_state_dict_has_ema_tree_distinguishes_ema_disabled_model() -> None:
         }
     )
     assert not _state_dict_has_ema_tree({"net.layer.weight": torch.tensor([1.0])})
+
+
+@pytest.mark.L0
+@pytest.mark.CPU
+def test_custom_load_planner_loads_ema_tree_into_regular_target(tmp_path) -> None:
+    regular = torch.tensor([1.0, 2.0], dtype=torch.bfloat16)
+    ema = torch.tensor([3.125, 4.25], dtype=torch.float32)
+    dcp.save(
+        {
+            "net.layer.weight": regular,
+            "net_ema.layer.weight": ema,
+        },
+        checkpoint_id=tmp_path,
+    )
+
+    target = {"net.layer.weight": torch.empty_like(regular)}
+    dcp.load(
+        target,
+        checkpoint_id=tmp_path,
+        planner=CustomLoadPlanner(load_ema_to_reg=True),
+    )
+
+    torch.testing.assert_close(target["net.layer.weight"], ema.to(dtype=torch.bfloat16))
+    assert not torch.equal(target["net.layer.weight"], regular)

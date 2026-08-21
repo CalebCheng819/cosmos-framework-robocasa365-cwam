@@ -32,6 +32,7 @@ from torch.distributed.checkpoint.planner import MetadataIndex
 from torch.distributed.checkpoint.state_dict import get_model_state_dict
 from typing_extensions import TYPE_CHECKING, assert_never
 
+from cosmos_framework.checkpoint.dcp import CustomLoadPlanner
 from cosmos_framework.configs.base.defaults.compile import CompileConfig
 from cosmos_framework.configs.base.defaults.parallelism import ParallelismConfig
 from cosmos_framework.configs.base.defaults.quantization import QuantizationConfig
@@ -524,7 +525,15 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
         parallelism_config: ParallelismConfig | None = None,
         compile_config: CompileConfig | None = None,
         quantization_config: QuantizationConfig | None = None,
+        load_ema_to_reg: bool = False,
     ):
+        """Load a Cosmos3 checkpoint, optionally mapping EMA weights to ``net``.
+
+        Inference disables the runtime ``net_ema`` module. Training DCP
+        checkpoints and serving exports can nevertheless store the selected
+        weights under ``net_ema.*``; ``CustomLoadPlanner`` maps those tensors
+        onto the instantiated ``net.*`` target when requested.
+        """
         if config is None:
             config = Cosmos3OmniConfig.from_pretrained(checkpoint_path)
         if parallelism_config is None:
@@ -549,7 +558,13 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
             case CheckpointType.DCP:
                 state_dict = get_model_state_dict(model.model)
                 storage_reader = FileSystemReader(str(checkpoint_path))
+                load_planner = CustomLoadPlanner(load_ema_to_reg=load_ema_to_reg)
             case CheckpointType.HF:
+                if load_ema_to_reg:
+                    raise ValueError(
+                        "load_ema_to_reg=True is not supported for Hugging Face checkpoints, "
+                        "which contain a single weight tree."
+                    )
                 if _is_diffusers_checkpoint(checkpoint_path):
                     state_dict = get_model_state_dict(model.model.net)
                     dcp.load(
@@ -562,9 +577,15 @@ class Cosmos3OmniModel(transformers.PreTrainedModel):
                 state_dict = get_model_state_dict(model)
                 _raise_on_missing_vision_keys(checkpoint_path, state_dict)
                 storage_reader = HuggingFaceStorageReader(str(checkpoint_path))
+                load_planner = dcp.DefaultLoadPlanner()
             case _:
                 assert_never(checkpoint_type)
-        dcp.load(state_dict=state_dict, storage_reader=storage_reader, no_dist=_dcp_load_no_dist())
+        dcp.load(
+            state_dict=state_dict,
+            storage_reader=storage_reader,
+            planner=load_planner,
+            no_dist=_dcp_load_no_dist(),
+        )
         return model
 
     @classmethod
