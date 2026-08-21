@@ -518,7 +518,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--vae", type=Path, required=True)
     runtime.add_argument("--tokenizer", type=Path, required=True)
     runtime.add_argument("--source-revision", required=True)
-    runtime.add_argument("--expected-gpu-count", type=int, choices=(2, 6, 8), required=True)
+    runtime.add_argument("--expected-gpu-count", type=int, choices=(2, 4, 6, 8), required=True)
     runtime.add_argument("--expected-policy-world-size", type=int, choices=(1, 4), required=True)
     shutdown = commands.add_parser("shutdown-server")
     shutdown.add_argument("--uri", required=True)
