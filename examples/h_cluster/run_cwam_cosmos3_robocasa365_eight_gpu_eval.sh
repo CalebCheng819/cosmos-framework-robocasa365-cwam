@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the full RoboCasa365 suite with two serial queues and two single-GPU policy servers.
+# Run the full RoboCasa365 suite with two serial queues and two four-GPU policy servers.
 
 set -Eeuo pipefail
 umask 077
@@ -75,11 +75,12 @@ readonly EXPECTED_TOTAL_EPISODES="$((TASK_COUNT * EPISODES_PER_TASK))"
     echo "ERROR: canonical task inventory mismatch" >&2
     exit 2
 }
-[[ "$EVAL_GPU_COUNT" == 2 ]] || { echo "ERROR: two-GPU eval requires two GPUs" >&2; exit 2; }
+[[ "$EVAL_GPU_COUNT" == 8 ]] || { echo "ERROR: eight-GPU eval requires eight GPUs" >&2; exit 2; }
 
 readonly -a SERVER_LABELS=(server-a server-b)
-readonly -a SERVER_DEVICES=(0 1)
-readonly -a EVAL_GPU_DEVICES=(0 1)
+readonly -a SERVER_DEVICES=(0,1,2,3 4,5,6,7)
+readonly -a EVAL_GPU_DEVICES=(0 4)
+readonly POLICY_WORLD_SIZE=4
 declare -a RUN_NAMES=() RESULT_PATHS=() TASK_SPECS=()
 for index in "${!TASKS[@]}"; do
     run_name="$EVAL_RUN_NAME-${TASK_SLUGS[$index]}"
@@ -165,17 +166,17 @@ git config --global --add safe.directory "$COSMOS_SOURCE"
 git config --global --add safe.directory "$EVAL_CONTROL_SOURCE"
 [[ "$(git -C "$COSMOS_SOURCE" rev-parse HEAD)" == "$MODEL_SOURCE_REVISION" ]] || die "model source revision mismatch"
 [[ "$(git -C "$EVAL_CONTROL_SOURCE" rev-parse HEAD)" == "$CONTROL_SOURCE_REVISION" ]] || die "control source revision mismatch"
-[[ "$EVAL_OUTPUT_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-two-gpu-eval/runs/* ]] || die "unexpected output root"
+[[ "$EVAL_OUTPUT_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-eight-gpu-eval/runs/* ]] || die "unexpected output root"
 [[ ! -e "$EVAL_OUTPUT_ROOT" ]] || die "refusing to reuse output root"
 [[ ! -e "$SCRATCH_ROOT" ]] || die "refusing to reuse scratch root"
 mkdir -p "$CONTROL_DIR" "$RESULTS_ROOT"
 for label in "${SERVER_LABELS[@]}"; do
     mkdir -p "$SCRATCH_ROOT/$label" "$SCRATCH_ROOT/torchinductor-${label#server-}"
 done
-write_status STARTING "validating_two_h200_worker"
+write_status STARTING "validating_eight_h200_worker"
 
 mapfile -t gpu_names < <(nvidia-smi --query-gpu=name --format=csv,noheader)
-[[ "${#gpu_names[@]}" -eq 2 ]] || die "expected 2 GPUs, got ${#gpu_names[@]}"
+[[ "${#gpu_names[@]}" -eq 8 ]] || die "expected 8 GPUs, got ${#gpu_names[@]}"
 for name in "${gpu_names[@]}"; do [[ "$name" == *H200* ]] || die "non-H200 GPU visible: $name"; done
 printf '%s\n' "${gpu_names[@]}" >"$CONTROL_DIR/gpu-inventory.txt"
 nvidia-smi --query-gpu=timestamp,index,name,utilization.gpu,memory.used,memory.total,power.draw \
@@ -209,6 +210,10 @@ done
 launch_server() {
     local index="$1" label="${SERVER_LABELS[$1]}" devices="${SERVER_DEVICES[$1]}" port="${SERVER_PORTS[$1]}"
     local pid pgid=
+    local -a launcher=(
+        "$COSMOS_PY" -m torch.distributed.run --standalone
+        --nproc-per-node="$POLICY_WORLD_SIZE" --module "$SERVER_MODULE"
+    )
     SERVER_NONCES[$index]="$("$COSMOS_PY" -c 'import secrets; print(secrets.token_hex(32))')"
     (
         cd "$COSMOS_SOURCE"
@@ -217,7 +222,7 @@ launch_server() {
             CUDA_VISIBLE_DEVICES="$devices" PYTHONPATH="$POLICY_PYTHONPATH" \
             HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
             TORCHINDUCTOR_CACHE_DIR="$SCRATCH_ROOT/torchinductor-${label#server-}" \
-            "$COSMOS_PY" -m "$SERVER_MODULE" --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
+            "${launcher[@]}" --checkpoint-path "$SERVING_CHECKPOINT_PATH" \
             --config-file "$TRAINING_CONFIG" --output-dir "$SCRATCH_ROOT/$label" \
             --action-stats-path "$ACTION_STATS" --wan2pt2-vae-path "$WAN2PT2_VAE" \
             --qwen-tokenizer-path "$QWEN_TOKENIZER" --host 127.0.0.1 --port "$port" \
@@ -244,14 +249,14 @@ capture_server() {
         --visible-devices "${SERVER_DEVICES[$index]}" --launch-nonce "${SERVER_NONCES[$index]}" \
         --checkpoint "$SERVING_CHECKPOINT_PATH" --config "$TRAINING_CONFIG" \
         --action-stats "$ACTION_STATS" --vae "$WAN2PT2_VAE" --tokenizer "$QWEN_TOKENIZER" \
-        --source-revision "$MODEL_SOURCE_REVISION" --expected-gpu-count 2 \
-        --expected-policy-world-size 1 \
+        --source-revision "$MODEL_SOURCE_REVISION" --expected-gpu-count 8 \
+        --expected-policy-world-size "$POLICY_WORLD_SIZE" \
         >"$CONTROL_DIR/runtime-$label.log"
 }
 
 for index in "${!SERVER_LABELS[@]}"; do launch_server "$index"; done
 for index in "${!SERVER_LABELS[@]}"; do capture_server "$index"; done
-write_status RUNNING "two_single_gpu_policy_servers_ready ports=${SERVER_PORTS[*]}"
+write_status RUNNING "two_four_rank_policy_servers_ready ports=${SERVER_PORTS[*]}"
 
 eval_env=(
     env -u LD_PRELOAD -u LD_AUDIT -u __EGL_VENDOR_LIBRARY_DIRS

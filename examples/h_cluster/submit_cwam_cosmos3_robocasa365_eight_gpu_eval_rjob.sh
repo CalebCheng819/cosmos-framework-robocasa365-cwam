@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the full RoboCasa365 evaluation to the exact H200-0298 two-GPU worker.
+# Submit the full RoboCasa365 evaluation to the exact H200-0253 eight-GPU worker.
 
 set -Eeuo pipefail
 umask 077
@@ -15,17 +15,17 @@ required=(
 for name in "${required[@]}"; do
     [[ -n "${!name:-}" ]] || { printf 'ERROR: missing %s\n' "$name" >&2; exit 2; }
 done
-readonly REQUIRED_NODE_TAG=node/gpu-l-lg-cmc-h-h200-0298.host.h.pjlab.org.cn
+readonly REQUIRED_NODE_TAG=node/gpu-l-lg-cmc-h-h200-0253.host.h.pjlab.org.cn
 [[ "$EXPECTED_NODE_TAG" == "$REQUIRED_NODE_TAG" ]] || {
-    echo "ERROR: two-GPU eval must target H200-0298" >&2
+    echo "ERROR: eight-GPU eval must target H200-0253" >&2
     exit 2
 }
-[[ "$EVAL_GPU_COUNT" == 2 ]] || { echo "ERROR: two-GPU eval requires 2 GPUs" >&2; exit 2; }
+[[ "$EVAL_GPU_COUNT" == 8 ]] || { echo "ERROR: eight-GPU eval requires 8 GPUs" >&2; exit 2; }
 [[ "$RJOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#RJOB_NAME}" -le 50 ]] || {
     echo "ERROR: invalid RJOB_NAME" >&2
     exit 2
 }
-readonly RUNNER="$EVAL_CONTROL_SOURCE/examples/h_cluster/run_cwam_cosmos3_robocasa365_two_gpu_eval.sh"
+readonly RUNNER="$EVAL_CONTROL_SOURCE/examples/h_cluster/run_cwam_cosmos3_robocasa365_eight_gpu_eval.sh"
 [[ -f "$RUNNER" ]] || { echo "ERROR: runner missing" >&2; exit 2; }
 [[ "$(git -c safe.directory="$EVAL_CONTROL_SOURCE" -C "$EVAL_CONTROL_SOURCE" rev-parse HEAD)" == "$CONTROL_SOURCE_REVISION" ]] || {
     echo "ERROR: control source revision mismatch" >&2
@@ -57,7 +57,7 @@ submit_args=(
     --priority 9 --task-type normal --replicas 1
     --restart-policy never --termination-grace-period-seconds 60 --backoff_limit 1
     --enable-sshd --image registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7
-    --cpu 32 --gpu 2 --memory 375000 --positive-tags "$EXPECTED_NODE_TAG"
+    --cpu 64 --gpu 8 --memory 750000 --positive-tags "$EXPECTED_NODE_TAG"
     --store-host-nvme --mount
     gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs
     gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public
@@ -66,7 +66,7 @@ if [[ "$RJOB_PREDICT_ONLY" == 1 ]]; then
     submit_args+=(--predict-only true)
 fi
 
-printf '%s rjob=%s node=%s gpu_count=2 model=%s output=%s\n' \
+printf '%s rjob=%s node=%s gpu_count=8 model=%s output=%s\n' \
     "$([[ "$RJOB_PREDICT_ONLY" == 1 ]] && echo PREDICTING || echo SUBMITTING)" \
     "$RJOB_NAME" "$EXPECTED_NODE_TAG" "$MODEL_LABEL" "$EVAL_OUTPUT_ROOT"
 /usr/local/bin/rjob "${submit_args[@]}" -- \
