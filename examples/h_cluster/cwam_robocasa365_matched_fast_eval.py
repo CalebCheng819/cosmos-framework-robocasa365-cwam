@@ -30,6 +30,20 @@ class ContractError(RuntimeError):
     pass
 
 
+def unpack_msgpack_object(wire: Any, label: str) -> dict[str, Any]:
+    if isinstance(wire, str):
+        detail = wire.rstrip() or "empty text frame"
+        raise ContractError(f"{label} returned a server-side text error: {detail}")
+    if not isinstance(wire, bytes):
+        raise ContractError(f"{label} is not binary msgpack: {type(wire).__name__}")
+    import msgpack
+
+    value = msgpack.unpackb(wire, raw=False)
+    if not isinstance(value, dict):
+        raise ContractError(f"{label} is not an object")
+    return value
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -82,7 +96,6 @@ def process_is_descendant(pid: int, ancestor: int) -> bool:
 
 
 def receive_metadata(uri: str, timeout_seconds: float) -> dict[str, Any]:
-    import msgpack
     import websockets.sync.client
 
     with websockets.sync.client.connect(
@@ -95,12 +108,7 @@ def receive_metadata(uri: str, timeout_seconds: float) -> dict[str, Any]:
         ping_timeout=30,
     ) as connection:
         wire = connection.recv(timeout=min(timeout_seconds, 60.0))
-    if not isinstance(wire, bytes):
-        raise ContractError("policy metadata is not binary msgpack")
-    value = msgpack.unpackb(wire, raw=False)
-    if not isinstance(value, dict):
-        raise ContractError("policy metadata is not an object")
-    return value
+    return unpack_msgpack_object(wire, "policy metadata")
 
 
 def gpu_inventory() -> list[dict[str, str]]:
@@ -221,12 +229,15 @@ def shutdown_server(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("shutdown inputs differ from runtime receipt")
     with websockets.sync.client.connect(args.uri, compression=None, max_size=None, open_timeout=10, close_timeout=10) as connection:
         wire = connection.recv(timeout=args.timeout_seconds)
-        metadata = msgpack.unpackb(wire, raw=False)
+        metadata = unpack_msgpack_object(wire, "shutdown metadata")
         if metadata.get("launch_nonce") != args.launch_nonce:
             raise ContractError("live server nonce changed")
         request = {"__cwam_control__": "shutdown", "launch_nonce": args.launch_nonce}
         connection.send(msgpack.packb(request, use_bin_type=True))
-        ack = msgpack.unpackb(connection.recv(timeout=args.timeout_seconds), raw=False)
+        ack = unpack_msgpack_object(
+            connection.recv(timeout=args.timeout_seconds),
+            "shutdown acknowledgement",
+        )
     if ack.get("cwam_control") != "shutdown_ack" or ack.get("launch_nonce") != args.launch_nonce:
         raise ContractError(f"invalid shutdown acknowledgement: {ack!r}")
     value = {
@@ -458,6 +469,22 @@ def load_baseline(path: Path, tasks: list[str]) -> dict[str, Any]:
         "successes": successes,
         "success_rate": float(success_rate),
         "tasks": by_task,
+    }
+
+
+def check_baseline(args: argparse.Namespace) -> dict[str, Any]:
+    tasks = list(args.task)
+    if len(set(tasks)) != len(tasks):
+        raise ContractError("duplicate baseline task")
+    baseline = load_baseline(args.baseline_record, tasks)
+    return {
+        "status": "passed",
+        "record_path": baseline["record_path"],
+        "record_kind": baseline["record_kind"],
+        "episodes": baseline["episodes"],
+        "successes": baseline["successes"],
+        "success_rate": baseline["success_rate"],
+        "task_count": len(baseline["tasks"]),
     }
 
 
@@ -807,6 +834,9 @@ def build_parser() -> argparse.ArgumentParser:
     shutdown.add_argument("--timeout-seconds", type=float, default=60)
     shutdown.add_argument("--launch-nonce", required=True)
     shutdown.add_argument("--runtime-receipt", type=Path, required=True)
+    baseline = commands.add_parser("check-baseline")
+    baseline.add_argument("--baseline-record", type=Path, required=True)
+    baseline.add_argument("--task", action="append", required=True)
     progress = commands.add_parser("watch-progress")
     progress.add_argument("--experiment-id", required=True)
     progress.add_argument("--logical-run-id", required=True)
@@ -879,6 +909,8 @@ def main() -> int:
             result = capture_runtime(args)
         elif args.command == "shutdown-server":
             result = shutdown_server(args)
+        elif args.command == "check-baseline":
+            result = check_baseline(args)
         elif args.command == "watch-progress":
             result = watch_progress(args)
         elif args.command == "watch-resume-progress":

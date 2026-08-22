@@ -166,6 +166,10 @@ for directory in "$COSMOS_SOURCE" "$EVAL_CONTROL_SOURCE" "$DEMIAN_REPO"; do git 
 
 mkdir -p "$CONTROL_DIR" "$RESULTS_ROOT" "$PATCHED_DEMIAN_ROOT/demian_wam/eval_utils"
 for label in "${SERVER_LABELS[@]}"; do mkdir -p "$SCRATCH_ROOT/$label" "$SCRATCH_ROOT/torchinductor-${label#server-}"; done
+baseline_args=()
+for task in "${TASKS[@]}"; do baseline_args+=(--task "$task"); done
+"$COSMOS_PY" "$HELPER" check-baseline --baseline-record "$BASELINE_RECORD" \
+    "${baseline_args[@]}" >"$CONTROL_DIR/check-baseline.json"
 cp -- "$ORIGINAL_EVALUATOR" "$PATCHED_EVALUATOR"
 (cd "$PATCHED_DEMIAN_ROOT" && git apply "$EVALUATOR_PATCH")
 "$ROBOCASA_PY" -m py_compile "$PATCHED_EVALUATOR"

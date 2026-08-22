@@ -9,12 +9,30 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).with_name("cwam_robocasa365_matched_fast_eval.py")
 SPEC = importlib.util.spec_from_file_location("matched_fast_eval", MODULE_PATH)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+class WireContractTest(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("msgpack"), "msgpack is unavailable")
+    def test_unpack_msgpack_object_accepts_binary_object(self) -> None:
+        import msgpack
+
+        wire = msgpack.packb({"status": "ok"}, use_bin_type=True)
+        self.assertEqual(MODULE.unpack_msgpack_object(wire, "reply"), {"status": "ok"})
+
+    def test_unpack_msgpack_object_reports_server_text_error(self) -> None:
+        with self.assertRaisesRegex(
+            MODULE.ContractError,
+            "shutdown acknowledgement returned a server-side text error:.*rank 0",
+        ):
+            MODULE.unpack_msgpack_object(
+                "Traceback: Controlled shutdown is valid only on rank 0\n",
+                "shutdown acknowledgement",
+            )
 
 
 def write_result(

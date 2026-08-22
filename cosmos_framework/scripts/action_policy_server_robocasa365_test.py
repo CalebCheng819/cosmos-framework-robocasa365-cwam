@@ -695,6 +695,44 @@ def test_rank0_nonce_bound_shutdown_control_acks_and_stops_workers(
     assert service._shutdown_requested is True
 
 
+def test_single_rank_nonce_bound_shutdown_control_acks_without_broadcast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _distributed_test_service(rank=0)
+    service.distributed_world_size = 1
+    shutdown_worker_calls: list[bool] = []
+    scheduled_targets: list[object] = []
+
+    service._shutdown_distributed_workers_locked = lambda: shutdown_worker_calls.append(True)
+
+    class FakeThread:
+        def __init__(self, *, target: object, name: str, daemon: bool) -> None:
+            assert name == "cwam-rank0-clean-shutdown"
+            assert daemon is True
+            scheduled_targets.append(target)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(server.threading, "Thread", FakeThread)
+
+    response = service.infer(
+        {
+            "__cwam_control__": "shutdown",
+            "launch_nonce": "a" * 64,
+        }
+    )
+
+    assert response == {
+        "actions": [],
+        "cwam_control": "shutdown_ack",
+        "launch_nonce": "a" * 64,
+    }
+    assert shutdown_worker_calls == []
+    assert scheduled_targets == [service._exit_rank0_after_shutdown_ack]
+    assert service._shutdown_requested is True
+
+
 def test_distributed_worker_model_exception_fails_closed() -> None:
     service = _distributed_test_service(rank=3)
     canonical = {
@@ -832,4 +870,3 @@ def test_serve_rank0_exception_does_not_attempt_unsafe_collective_shutdown(
         server.serve(SimpleNamespace(host="127.0.0.1", port=16000))
 
     assert shutdown_calls == []
-

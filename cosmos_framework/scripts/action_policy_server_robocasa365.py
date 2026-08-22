@@ -807,9 +807,9 @@ class RoboCasa365PolicyService(ActionModelService):
             return self._execute_canonical_request(request)
 
     def _handle_shutdown_control(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Acknowledge a nonce-bound local shutdown and let torchrun exit cleanly."""
-        if self.distributed_world_size <= 1 or self.distributed_rank != 0:
-            raise RuntimeError("Controlled shutdown is valid only on distributed rank 0")
+        """Acknowledge a nonce-bound rank-0 shutdown and exit cleanly."""
+        if self.distributed_rank != 0:
+            raise RuntimeError("Controlled shutdown is valid only on rank 0")
         if set(request) != _CONTROL_REQUEST_KEYS:
             raise ValueError(
                 f"Shutdown control keys drifted: expected={sorted(_CONTROL_REQUEST_KEYS)}, got={sorted(request)}"
@@ -822,7 +822,8 @@ class RoboCasa365PolicyService(ActionModelService):
             if self._shutdown_requested:
                 raise RuntimeError("Distributed shutdown was already requested")
             self._shutdown_requested = True
-            self._shutdown_distributed_workers_locked()
+            if self.distributed_world_size > 1:
+                self._shutdown_distributed_workers_locked()
             threading.Thread(
                 target=self._exit_rank0_after_shutdown_ack,
                 name="cwam-rank0-clean-shutdown",
@@ -997,4 +998,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
