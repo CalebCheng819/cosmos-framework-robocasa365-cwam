@@ -40,6 +40,7 @@ worker_script+="exec /usr/bin/bash $(printf '%q' "$RUNNER")"$'\n'
 
 submit_args=(
     submit --name "$RJOB_NAME" --charged-group eailabagent_gpu
+    --private-machine=group
     --priority 9 --task-type normal --replicas 1 --restart-policy never
     --termination-grace-period-seconds 60 --backoff_limit 1 --enable-sshd
     --image registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7
