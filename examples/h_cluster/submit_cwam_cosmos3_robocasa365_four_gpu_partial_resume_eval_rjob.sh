@@ -25,6 +25,8 @@ readonly RJOB_PREDICT_ONLY="${RJOB_PREDICT_ONLY:-0}"
 [[ "$RJOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#RJOB_NAME}" -le 50 ]] || { echo 'ERROR: invalid RJOB_NAME' >&2; exit 2; }
 [[ "$RJOB_PREDICT_ONLY" == 0 || "$RJOB_PREDICT_ONLY" == 1 ]] || { echo 'ERROR: invalid RJOB_PREDICT_ONLY' >&2; exit 2; }
 [[ -f "$RUNNER" ]] || { echo 'ERROR: runner missing' >&2; exit 2; }
+[[ -f "$ACTION_STATS" && ! -L "$ACTION_STATS" && "$(readlink -f -- "$ACTION_STATS")" == "$ACTION_STATS" ]] || \
+    { echo "ERROR: ACTION_STATS must be a canonical non-symlink path: $ACTION_STATS" >&2; exit 2; }
 [[ "$(git -c safe.directory="$EVAL_CONTROL_SOURCE" -C "$EVAL_CONTROL_SOURCE" rev-parse HEAD)" == "$CONTROL_SOURCE_REVISION" ]] || { echo 'ERROR: control revision mismatch' >&2; exit 2; }
 [[ "$(git -c safe.directory="$COSMOS_SOURCE" -C "$COSMOS_SOURCE" rev-parse HEAD)" == "$MODEL_SOURCE_REVISION" ]] || { echo 'ERROR: model revision mismatch' >&2; exit 2; }
 [[ ! -e "$EVAL_OUTPUT_ROOT" ]] || { echo 'ERROR: output root exists' >&2; exit 2; }

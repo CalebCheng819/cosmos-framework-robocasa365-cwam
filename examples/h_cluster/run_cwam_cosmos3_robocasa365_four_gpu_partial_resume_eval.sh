@@ -148,6 +148,8 @@ for file in "$HELPER" "$EVALUATOR_PATCH" "$ORIGINAL_EVALUATOR" "$TRAINING_CONFIG
     "$ACTION_STATS" "$WAN2PT2_VAE" "$EVAL_EGL_VENDOR_JSON" "$BASELINE_RECORD"; do
     [[ -f "$file" ]] || die "missing file: $file"
 done
+[[ ! -L "$ACTION_STATS" && "$(readlink -f -- "$ACTION_STATS")" == "$ACTION_STATS" ]] || \
+    die "ACTION_STATS must be a canonical non-symlink path: $ACTION_STATS"
 [[ -x "$COSMOS_PY" && -x "$ROBOCASA_PY" ]] || die 'runtime executables unavailable'
 [[ "$EVAL_OUTPUT_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-four-gpu-eval/runs/* ]] || die 'unexpected output root'
 [[ "$EVAL_R4_SOURCE_ROOT" == /mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/outputs/cwam-robocasa365-two-gpu-eval/runs/* ]] || die 'unexpected R4 source root'
