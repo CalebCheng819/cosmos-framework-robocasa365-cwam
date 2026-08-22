@@ -279,6 +279,126 @@ def parse_task_specs(values: list[str]) -> list[tuple[str, Path]]:
     return result
 
 
+def parse_resume_fragment_specs(values: list[str]) -> list[tuple[str, int, int, Path]]:
+    result = []
+    for value in values:
+        descriptor, separator, raw_path = value.partition("=")
+        parts = descriptor.split(":")
+        if not separator or len(parts) != 3 or not raw_path:
+            raise ContractError(f"invalid resume fragment spec: {value}")
+        task, raw_start, raw_stop = parts
+        try:
+            start = int(raw_start)
+            stop = int(raw_stop)
+        except ValueError as error:
+            raise ContractError(f"invalid resume fragment range: {value}") from error
+        if not task or start < 0 or stop <= start:
+            raise ContractError(f"invalid resume fragment range: {value}")
+        result.append((task, start, stop, Path(raw_path)))
+    keys = [(task, start, stop) for task, start, stop, _ in result]
+    if len(set(keys)) != len(keys):
+        raise ContractError("duplicate resume fragment spec")
+    return result
+
+
+def fragment_episode_rows(
+    task: str,
+    path: Path,
+    start: int,
+    stop: int,
+    expected_episodes: int,
+    *,
+    require_complete: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not path.exists():
+        if require_complete:
+            raise ContractError(f"missing fragment result: {path}")
+        return [], False
+    root = load_object(path)
+    value = root.get(task)
+    if not isinstance(value, dict):
+        raise ContractError(f"missing fragment task {task} in {path}")
+    expected_metadata = {
+        "episode_range_start": start,
+        "episode_range_stop": stop,
+        "target_episodes": expected_episodes,
+        "episodes": stop - start,
+    }
+    for key, expected in expected_metadata.items():
+        if value.get(key) != expected:
+            raise ContractError(
+                f"fragment metadata mismatch for {task} {key}: expected={expected}, actual={value.get(key)!r}"
+            )
+    episodes = value.get("episode_results")
+    if not isinstance(episodes, list) or len(episodes) > stop - start:
+        raise ContractError(f"invalid fragment episode_results for {task}: {path}")
+    for offset, episode in enumerate(episodes):
+        expected_index = start + offset
+        if (
+            not isinstance(episode, dict)
+            or type(episode.get("success")) is not bool
+            or type(episode.get("episode_index")) is not int
+            or episode["episode_index"] != expected_index
+        ):
+            raise ContractError(f"invalid {task} fragment episode at absolute index {expected_index}")
+    complete = value.get("complete") is True
+    if complete and len(episodes) != stop - start:
+        raise ContractError(f"fragment marked complete before its range ended: {path}")
+    if require_complete and not complete:
+        raise ContractError(f"fragment is incomplete: {path}")
+    return episodes, complete
+
+
+def resume_task_state(
+    task: str,
+    source: Path,
+    fragments: list[tuple[int, int, Path]],
+    expected_episodes: int,
+) -> dict[str, Any]:
+    root = load_object(source)
+    value = root.get(task)
+    if not isinstance(value, dict):
+        raise ContractError(f"missing resume task {task} in {source}")
+    source_episodes = value.get("episode_results")
+    if not isinstance(source_episodes, list) or len(source_episodes) > expected_episodes:
+        raise ContractError(f"invalid resume source episode_results for {task}")
+    indexed: dict[int, dict[str, Any]] = {}
+    for index, episode in enumerate(source_episodes):
+        if not isinstance(episode, dict) or type(episode.get("success")) is not bool:
+            raise ContractError(f"invalid resume source episode {task}:{index}")
+        indexed[index] = episode
+    fragment_complete = []
+    fragment_paths = []
+    for start, stop, path in fragments:
+        if stop > expected_episodes:
+            raise ContractError(f"fragment range exceeds target episodes: {task}:{start}:{stop}")
+        episodes, complete = fragment_episode_rows(
+            task, path, start, stop, expected_episodes, require_complete=False
+        )
+        fragment_complete.append(complete)
+        fragment_paths.append(str(path))
+        for episode in episodes:
+            index = episode["episode_index"]
+            if index in indexed:
+                raise ContractError(f"duplicate absolute episode index for {task}: {index}")
+            indexed[index] = episode
+    successes = sum(int(episode["success"]) for episode in indexed.values())
+    complete = (
+        sorted(indexed) == list(range(expected_episodes))
+        and bool(fragment_complete)
+        and all(fragment_complete)
+    )
+    return {
+        "task": task,
+        "completed": len(indexed),
+        "successes": successes,
+        "success_rate": successes / len(indexed) if indexed else 0.0,
+        "complete": complete,
+        "result_path": str(source.resolve()),
+        "fragment_paths": fragment_paths,
+    }
+
+
 def load_baseline(path: Path, tasks: list[str]) -> dict[str, Any]:
     if path.suffix == ".ndjson":
         records = [
@@ -396,6 +516,21 @@ def check_task(args: argparse.Namespace) -> dict[str, Any]:
     return state
 
 
+def check_partial_task(args: argparse.Namespace) -> dict[str, Any]:
+    state = task_state(args.task, args.result)
+    if (
+        state["completed"] != args.expected_episodes
+        or state["successes"] != args.expected_successes
+        or state["complete"]
+    ):
+        raise ContractError(
+            "resume source differs from the predeclared partial result: "
+            f"expected_episodes={args.expected_episodes}, "
+            f"expected_successes={args.expected_successes}, actual={state}"
+        )
+    return state
+
+
 def watch_progress(args: argparse.Namespace) -> dict[str, Any]:
     specs = parse_task_specs(args.task_spec)
     baseline = load_baseline(args.baseline_record, [task for task, _ in specs])
@@ -437,6 +572,152 @@ def watch_progress(args: argparse.Namespace) -> dict[str, Any]:
             break
         time.sleep(args.interval_seconds)
     return {"status": "finished", "output": str(args.output), "last_signature": previous}
+
+
+def watch_resume_progress(args: argparse.Namespace) -> dict[str, Any]:
+    complete_specs = parse_task_specs(args.task_spec)
+    resume_specs = parse_task_specs(args.resume_task_spec)
+    fragment_specs = parse_resume_fragment_specs(args.fragment_spec)
+    complete_tasks = {task for task, _ in complete_specs}
+    resume_tasks = {task for task, _ in resume_specs}
+    if complete_tasks & resume_tasks:
+        raise ContractError("task appears in both complete and resume task specs")
+    fragments_by_task: dict[str, list[tuple[int, int, Path]]] = {
+        task: [] for task in resume_tasks
+    }
+    for task, start, stop, path in fragment_specs:
+        if task not in fragments_by_task:
+            raise ContractError(f"fragment has no matching resume task: {task}")
+        fragments_by_task[task].append((start, stop, path))
+    if any(not fragments for fragments in fragments_by_task.values()):
+        raise ContractError("every resume task needs at least one fragment")
+    tasks = [task for task, _ in complete_specs + resume_specs]
+    baseline = load_baseline(args.baseline_record, tasks)
+    previous = None
+    while True:
+        states = None
+        try:
+            states = [task_state(task, path) for task, path in complete_specs]
+            states.extend(
+                resume_task_state(
+                    task,
+                    path,
+                    fragments_by_task[task],
+                    args.expected_episodes,
+                )
+                for task, path in resume_specs
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
+        if states is not None:
+            signature = [(state["completed"], state["successes"], state["complete"]) for state in states]
+            if signature != previous:
+                event = {
+                    "schema_version": "metadata_no_hash_v1",
+                    "kind": "cwam_h_matched_fast_progress",
+                    "recorded_at_utc": utc_now(),
+                    "experiment_id": args.experiment_id,
+                    "logical_run_id": args.logical_run_id,
+                    "model_label": args.model_label,
+                    "tasks": states,
+                    "aggregate": {
+                        "completed": sum(state["completed"] for state in states),
+                        "successes": sum(state["successes"] for state in states),
+                    },
+                    "baseline_comparison": compare_with_baseline(states, baseline),
+                }
+                append_ndjson(args.output, event)
+                write_json(args.comparison_output, event["baseline_comparison"], replace=True)
+                previous = signature
+        alive = False
+        for pid in args.pid:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except ProcessLookupError:
+                pass
+        if not alive:
+            break
+        time.sleep(args.interval_seconds)
+    return {"status": "finished", "output": str(args.output), "last_signature": previous}
+
+
+def merge_resume_fragments(args: argparse.Namespace) -> dict[str, Any]:
+    fragment_specs = parse_resume_fragment_specs(
+        [f"{args.task}:{value}" for value in args.fragment]
+    )
+    if any(task != args.task for task, _, _, _ in fragment_specs):
+        raise ContractError("fragment task mismatch")
+    if args.output.exists() or args.receipt.exists():
+        raise ContractError("refusing to overwrite merged result or merge receipt")
+    root = load_object(args.source)
+    source_value = root.get(args.task)
+    if not isinstance(source_value, dict):
+        raise ContractError(f"missing source task {args.task} in {args.source}")
+    source_episodes = source_value.get("episode_results")
+    if not isinstance(source_episodes, list) or len(source_episodes) > args.expected_episodes:
+        raise ContractError("invalid source episode_results")
+    indexed: dict[int, dict[str, Any]] = {}
+    for index, episode in enumerate(source_episodes):
+        if not isinstance(episode, dict) or type(episode.get("success")) is not bool:
+            raise ContractError(f"invalid source episode {args.task}:{index}")
+        indexed[index] = dict(episode)
+    fragment_receipts = []
+    for _, start, stop, path in fragment_specs:
+        episodes, _ = fragment_episode_rows(
+            args.task,
+            path,
+            start,
+            stop,
+            args.expected_episodes,
+            require_complete=True,
+        )
+        for episode in episodes:
+            index = episode["episode_index"]
+            if index in indexed:
+                raise ContractError(f"duplicate absolute episode index for {args.task}: {index}")
+            indexed[index] = {key: value for key, value in episode.items() if key != "episode_index"}
+        fragment_receipts.append(
+            {"start": start, "stop": stop, "episodes": len(episodes), "path": str(path.resolve())}
+        )
+    expected_indices = list(range(args.expected_episodes))
+    if sorted(indexed) != expected_indices:
+        missing = sorted(set(expected_indices) - set(indexed))
+        extra = sorted(set(indexed) - set(expected_indices))
+        raise ContractError(f"merged episode inventory mismatch: missing={missing}, extra={extra}")
+    merged_episodes = [indexed[index] for index in expected_indices]
+    successes = sum(int(episode["success"]) for episode in merged_episodes)
+    place_anytime_count = sum(int(bool(episode.get("place_anytime", False))) for episode in merged_episodes)
+    merged_value = dict(source_value)
+    for key in ("episode_range_start", "episode_range_stop", "target_episodes"):
+        merged_value.pop(key, None)
+    merged_value.update(
+        {
+            "success_rate": successes / args.expected_episodes,
+            "successes": successes,
+            "place_anytime_rate": place_anytime_count / args.expected_episodes,
+            "place_anytime_count": place_anytime_count,
+            "episodes": args.expected_episodes,
+            "episode_results": merged_episodes,
+            "complete": True,
+        }
+    )
+    write_json(args.output, {args.task: merged_value})
+    receipt = {
+        "schema_version": "metadata_no_hash_v1",
+        "kind": "cwam_h_episode_fragment_merge",
+        "status": "passed",
+        "completed_at_utc": utc_now(),
+        "task": args.task,
+        "source": str(args.source.resolve()),
+        "source_episodes": len(source_episodes),
+        "fragments": fragment_receipts,
+        "output": str(args.output.resolve()),
+        "final_episodes": args.expected_episodes,
+        "final_successes": successes,
+    }
+    write_json(args.receipt, receipt)
+    return receipt
 
 
 def summarize(args: argparse.Namespace) -> dict[str, Any]:
@@ -536,10 +817,35 @@ def build_parser() -> argparse.ArgumentParser:
     progress.add_argument("--baseline-record", type=Path, required=True)
     progress.add_argument("--comparison-output", type=Path, required=True)
     progress.add_argument("--output", type=Path, required=True)
+    resume_progress = commands.add_parser("watch-resume-progress")
+    resume_progress.add_argument("--experiment-id", required=True)
+    resume_progress.add_argument("--logical-run-id", required=True)
+    resume_progress.add_argument("--model-label", required=True)
+    resume_progress.add_argument("--task-spec", action="append", required=True)
+    resume_progress.add_argument("--resume-task-spec", action="append", required=True)
+    resume_progress.add_argument("--fragment-spec", action="append", required=True)
+    resume_progress.add_argument("--expected-episodes", type=int, required=True)
+    resume_progress.add_argument("--pid", type=int, action="append", required=True)
+    resume_progress.add_argument("--interval-seconds", type=float, default=15)
+    resume_progress.add_argument("--baseline-record", type=Path, required=True)
+    resume_progress.add_argument("--comparison-output", type=Path, required=True)
+    resume_progress.add_argument("--output", type=Path, required=True)
     check = commands.add_parser("check-task")
     check.add_argument("--task", required=True)
     check.add_argument("--result", type=Path, required=True)
     check.add_argument("--expected-episodes", type=int, required=True)
+    partial = commands.add_parser("check-partial-task")
+    partial.add_argument("--task", required=True)
+    partial.add_argument("--result", type=Path, required=True)
+    partial.add_argument("--expected-episodes", type=int, required=True)
+    partial.add_argument("--expected-successes", type=int, required=True)
+    merge = commands.add_parser("merge-resume-fragments")
+    merge.add_argument("--task", required=True)
+    merge.add_argument("--source", type=Path, required=True)
+    merge.add_argument("--fragment", action="append", required=True)
+    merge.add_argument("--expected-episodes", type=int, required=True)
+    merge.add_argument("--output", type=Path, required=True)
+    merge.add_argument("--receipt", type=Path, required=True)
     summary = commands.add_parser("summarize")
     summary.add_argument("--experiment-id", required=True)
     summary.add_argument("--logical-run-id", required=True)
@@ -575,8 +881,14 @@ def main() -> int:
             result = shutdown_server(args)
         elif args.command == "watch-progress":
             result = watch_progress(args)
+        elif args.command == "watch-resume-progress":
+            result = watch_resume_progress(args)
         elif args.command == "check-task":
             result = check_task(args)
+        elif args.command == "check-partial-task":
+            result = check_partial_task(args)
+        elif args.command == "merge-resume-fragments":
+            result = merge_resume_fragments(args)
         elif args.command == "summarize":
             result = summarize(args)
         else:

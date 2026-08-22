@@ -1,0 +1,133 @@
+diff --git a/demian_wam/eval_utils/run_robocasa_eval.py b/demian_wam/eval_utils/run_robocasa_eval.py
+--- a/demian_wam/eval_utils/run_robocasa_eval.py
++++ b/demian_wam/eval_utils/run_robocasa_eval.py
+@@ -526,6 +526,11 @@ class Args:
+     """First episode index to run; lets you extend a 5-ep eval to 20 eps by setting
+     episodes=20 and episodes_start=5. Existing per-task episode_results (0..start-1)
+     are reused from the cell's prior results_shard{task_shard}.json if it exists."""
++    episode_range_start: Optional[int] = None
++    """Exact absolute episode start for an isolated range result."""
++    episode_range_stop: Optional[int] = None
++    """Exact exclusive episode stop for an isolated range result. Both range
++    arguments require a single task and disable the regular resume path."""
+     max_steps: int = 400
+     open_loop_horizon: int = 12  # WAM: 3 latent frames × 4 temporal compression
+ 
+@@ -685,6 +690,19 @@ def select_tasks(args: Args) -> list[str]:
+ 
+ def main(args: Args):
+     task_names = select_tasks(args)
++    range_mode = args.episode_range_start is not None or args.episode_range_stop is not None
++    if range_mode:
++        if args.episode_range_start is None or args.episode_range_stop is None:
++            raise ValueError("--episode-range-start and --episode-range-stop must be used together")
++        if len(task_names) != 1:
++            raise ValueError("exact episode ranges require exactly one selected task")
++        if args.episodes_start != 0:
++            raise ValueError("exact episode ranges cannot be combined with --episodes-start")
++        if not 0 <= args.episode_range_start < args.episode_range_stop <= args.episodes:
++            raise ValueError(
++                "episode range must satisfy 0 <= start < stop <= episodes; "
++                f"got start={args.episode_range_start}, stop={args.episode_range_stop}, episodes={args.episodes}"
++            )
+     print(f"Evaluating {len(task_names)} tasks (shard {args.task_shard}/{args.num_shards}): {task_names}")
+ 
+     run_name = args.run_name or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+@@ -783,6 +801,6 @@ def main(args: Args):
+     # task 0's entry, dropping all other tasks. The per-task resume logic below
+     # then overlays this shard's task entries with reused prior episodes.
+-    if args.episodes_start > 0:
++    if args.episodes_start > 0 and not range_mode:
+         _prior_shard_path = out_dir / f"results_shard{args.task_shard}.json"
+         if _prior_shard_path.exists():
+             try:
+@@ -865,8 +883,8 @@ def main(args: Args):
+         # run 11 more). Without this, a preempted retry would discard the 9 prior
+         # eps and restart from 0 — wasting compute. Effectively `episodes_start`
+         # is just a sentinel to opt into resume mode; the actual resume point is
+         # set per-task from what's on disk.
+-        if args.episodes_start > 0 and results_path.exists():
++        if args.episodes_start > 0 and not range_mode and results_path.exists():
+             try:
+                 _prior = json.loads(results_path.read_text())
+                 _prior_eps = _prior.get(task_name, {}).get("episode_results", []) or []
+@@ -881,13 +899,16 @@ def main(args: Args):
+             except Exception as _e:
+                 print(f"  [resume] could not load prior episodes ({_e}); starting from ep 0")
+ 
+-        _seeded = len(episode_results)
++        _ep_start = args.episode_range_start if range_mode else len(episode_results)
++        _ep_stop = args.episode_range_stop if range_mode else num_episodes
++        _planned_episodes = _ep_stop - _ep_start if range_mode else num_episodes
++        _seeded = len(episode_results)
+         all_results[task_name] = {
+             "success_rate": (successes / _seeded) if _seeded else 0.0,
+             "successes": successes,
+             "place_anytime_rate": (place_anytime_count / _seeded) if _seeded else 0.0,
+             "place_anytime_count": place_anytime_count,
+-            "episodes": num_episodes,
++            "episodes": _planned_episodes,
+             "episode_results": episode_results,
+             "instruction": instruction,
+             "split": "atomic" if task_name in ATOMIC_TASKS else "composite",
+@@ -895,8 +916,13 @@ def main(args: Args):
+         }
+ 
+         # Start from `episodes_start` if we successfully resumed; else from 0.
+-        _ep_start = len(episode_results)
+-        for ep in tqdm(range(_ep_start, num_episodes), desc=task_name, initial=_ep_start, total=num_episodes):
++        if range_mode:
++            all_results[task_name].update({
++                "episode_range_start": _ep_start,
++                "episode_range_stop": _ep_stop,
++                "target_episodes": num_episodes,
++            })
++        for ep in tqdm(range(_ep_start, _ep_stop), desc=task_name, total=_ep_stop - _ep_start):
+             init_state = eval_init_states[ep] if eval_init_states else None
+             # Fresh env per episode. Two reasons:
+             #  (1) When using eval_dataset, ep_meta differs per episode and reusing
+@@ -914,7 +940,7 @@ def main(args: Args):
+             #   (a) call con.free() / gl_ctx.free() directly on the render context
+             #   (b) env.close() to free the sim
+             #   (c) gc.collect() to drop any remaining cycles
+-            if ep > 0:
++            if ep > _ep_start:
+                 try:
+                     sim = env.unwrapped.sim if hasattr(env, 'unwrapped') else None
+                     rctx = getattr(sim, '_render_context_offscreen', None) if sim else None
+@@ -981,24 +1007,29 @@ def main(args: Args):
+                     result["video"],
+                     fps=15,
+                 )
+-            episode_results.append({k: v for k, v in result.items() if k != "video"})
++            episode_record = {k: v for k, v in result.items() if k != "video"}
++            if range_mode:
++                episode_record["episode_index"] = ep
++            episode_results.append(episode_record)
+ 
+             # Incremental save after every episode — survives mid-task SIGABRT.
++            completed_episodes = len(episode_results)
+             all_results[task_name]["successes"] = successes
+-            all_results[task_name]["success_rate"] = successes / (ep + 1)
++            all_results[task_name]["success_rate"] = successes / completed_episodes
+             all_results[task_name]["place_anytime_count"] = place_anytime_count
+-            all_results[task_name]["place_anytime_rate"] = place_anytime_count / (ep + 1)
++            all_results[task_name]["place_anytime_rate"] = place_anytime_count / completed_episodes
+             results_path.write_text(json.dumps(all_results, indent=2))
+ 
+         # Task finished: finalize.
+-        sr = successes / num_episodes
++        completed_episodes = len(episode_results)
++        sr = successes / completed_episodes
+         all_results[task_name]["success_rate"] = sr
+-        all_results[task_name]["place_anytime_rate"] = place_anytime_count / num_episodes
++        all_results[task_name]["place_anytime_rate"] = place_anytime_count / completed_episodes
+         all_results[task_name]["complete"] = True
+         if dyn:
+             all_results[task_name]["task_instructions"] = dyn["task_instructions"]
+             all_results[task_name]["instruction_steps"] = dyn["instruction_steps"]
+         results_path.write_text(json.dumps(all_results, indent=2))
+-        print(f"  Success rate: {successes}/{args.episodes} = {sr:.1%}  (place_anytime: {place_anytime_count}/{num_episodes} = {place_anytime_count/num_episodes:.1%})")
++        print(f"  Success rate: {successes}/{completed_episodes} = {sr:.1%}  (place_anytime: {place_anytime_count}/{completed_episodes} = {place_anytime_count/completed_episodes:.1%})")
+ 
+         env.close()
