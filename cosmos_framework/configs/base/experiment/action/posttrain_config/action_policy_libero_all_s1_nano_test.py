@@ -8,6 +8,9 @@ def test_libero_s1_enables_fresh_router_without_mutating_baseline() -> None:
     baseline = action_policy_libero_all_nano
     s1 = action_policy_libero_all_s1_nano
 
+    expected_tokenizer_path = "${oc.env:QWEN3_VL_TOKENIZER_PATH}"
+    assert baseline.model.config.vlm_config.tokenizer.pretrained_model_name == expected_tokenizer_path
+    assert s1.model.config.vlm_config.tokenizer.pretrained_model_name == expected_tokenizer_path
     assert baseline.model.config.get("action_relevance_enabled", False) is False
     assert s1.model.config.action_relevance_enabled is True
     assert s1.model.config.action_relevance_routing_dim == 512

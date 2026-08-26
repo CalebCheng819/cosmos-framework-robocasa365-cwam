@@ -38,6 +38,7 @@ def _action_policy_libero_nano_model_config() -> dict:
     cfg["rectified_flow_training_config"]["loss_scale"] = 10.0
     cfg["rectified_flow_training_config"]["image_loss_scale"] = None
     cfg["tokenizer"]["encode_exact_durations"] = [17, 61, 73]  # match Cosmos3 base + reference SFT (do NOT reduce)
+    cfg["vlm_config"]["tokenizer"]["pretrained_model_name"] = "${oc.env:QWEN3_VL_TOKENIZER_PATH}"
     return cfg
 
 
