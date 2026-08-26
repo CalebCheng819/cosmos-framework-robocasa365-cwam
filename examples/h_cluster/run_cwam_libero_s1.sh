@@ -188,10 +188,8 @@ if [[ "$RUN_PREFLIGHT_FIRST" == 1 ]]; then
         EXTRA_TAIL_OVERRIDES="trainer.max_iter=2 trainer.logging_iter=1 trainer.grad_accum_iter=1 checkpoint.save_iter=1000 dataloader_train.max_samples_per_batch=4" \
         "$LAUNCHER"
     [[ -s "$PREFLIGHT_LOG" ]] || { echo "ERROR: preflight log missing: $PREFLIGHT_LOG" >&2; exit 1; }
-    if grep -Eiq '(^|[^[:alpha:]])(nan|[-+]?inf)([^[:alpha:]]|$)' "$PREFLIGHT_LOG"; then
-        echo "ERROR: non-finite value found in runtime preflight log" >&2
-        exit 1
-    fi
+    "$COSMOS_ENV/bin/python" "$SOURCE_ROOT/examples/h_cluster/validate_training_log_finite.py" \
+        "$PREFLIGHT_LOG" --min-iterations 2
     echo "PREFLIGHT_COMPLETE experiment=$EXPERIMENT_ID steps=2"
 fi
 
