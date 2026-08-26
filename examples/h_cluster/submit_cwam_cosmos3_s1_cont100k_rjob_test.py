@@ -8,6 +8,7 @@ def test_submitter_supports_selected_private_node_and_eight_gpus() -> None:
     text = (ROOT / "examples/h_cluster/submit_cwam_cosmos3_s1_cont100k_rjob.sh").read_text()
     assert "--private-machine=group" in text
     assert '--gpu="$GPU_COUNT"' in text
+    assert '--cpu="$CPU_COUNT"' in text
     assert 'NODE_TAG:=node/gpu-l-lg-cmc-h-h200-0252' in text
     assert '--positive-tags="$NODE_TAG"' in text
     assert "--store-host-nvme=true" in text
