@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the 8xH200 E35-S1 continuation to a selected private node.
+# Submit the E35-S1 continuation to a selected private node.
 
 set -Eeuo pipefail
 umask 022
@@ -15,6 +15,7 @@ umask 022
 : "${CHECKPOINT_KEYS_NOT_TO_RESUME:=[scheduler,dataloader]}"
 : "${GPU_COUNT:=8}"
 : "${CPU_COUNT:=128}"
+: "${MEMORY_MIB:=1500000}"
 : "${GRAD_ACCUM_ITER:=2}"
 : "${NODE_TAG:=node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn}"
 
@@ -31,6 +32,7 @@ readonly RUNNER="$COSMOS_SOURCE/examples/h_cluster/run_cwam_cosmos3_s1_cont100k.
 }
 [[ "$GPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: GPU_COUNT must be a positive integer" >&2; exit 1; }
 [[ "$CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: CPU_COUNT must be a positive integer" >&2; exit 1; }
+[[ "$MEMORY_MIB" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: MEMORY_MIB must be a positive integer" >&2; exit 1; }
 
 printf -v COMMAND '%q ' env \
     COSMOS_SOURCE="$COSMOS_SOURCE" EXPERIMENT_ID="$EXPERIMENT_ID" RUN_NAME="$RUN_NAME" \
@@ -52,7 +54,7 @@ rjob submit \
     -P 1 \
     --gpu="$GPU_COUNT" \
     --cpu="$CPU_COUNT" \
-    --memory=1500000 \
+    --memory="$MEMORY_MIB" \
     --share-host-shm=true \
     --store-host-nvme=true \
     --positive-tags="$NODE_TAG" \
