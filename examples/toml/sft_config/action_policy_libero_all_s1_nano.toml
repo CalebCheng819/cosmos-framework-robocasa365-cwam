@@ -1,0 +1,41 @@
+# CWAM S1 full-context action policy on all four LIBERO suites, one 4xH200 node.
+# Global batch: 128 packed samples x 4 data-parallel ranks x grad accumulation 4.
+
+[job]
+task         = "vfm"
+experiment   = "action_policy_libero_all_s1_nano"
+project      = "cwam_action_libero"
+group        = "action_sft"
+name         = "action_policy_libero_all_s1_nano"
+wandb_mode   = "offline"
+
+[model]
+precision = "bfloat16"
+max_num_tokens_after_packing = 74000
+
+[model.parallelism]
+data_parallel_shard_degree     = 4
+data_parallel_replicate_degree = 1
+
+[model.activation_checkpointing]
+mode           = "selective"
+save_ops_regex = ["fmha"]
+
+[model.tokenizer]
+vae_path = "${oc.env:WAN_VAE_PATH}"
+
+[optimizer]
+lr = 5.0e-05
+
+[scheduler]
+cycle_lengths = [5000]
+warm_up_steps = [500]
+
+[trainer]
+max_iter        = 5000
+logging_iter    = 10
+grad_accum_iter = 4
+
+[checkpoint]
+load_path = "${oc.env:BASE_CHECKPOINT_PATH}"
+save_iter = 500

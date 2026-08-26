@@ -25,6 +25,41 @@ from cosmos_framework.data.generator.action.pose_utils import compute_idle_frame
 _MODE_CHOICES = ("forward_dynamics", "inverse_dynamics", "policy")
 
 
+def _data_parquet_paths(root: Path) -> list[Path]:
+    """Return LeRobot v2/v3 frame parquet files in deterministic order."""
+    return sorted((root / "data").glob("chunk-*/*.parquet"))
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
+
+
+def _episode_records(root: Path) -> list[dict[str, Any]]:
+    parquet_paths = sorted((root / "meta" / "episodes").glob("chunk-*/*.parquet"))
+    if parquet_paths:
+        return [row for path in parquet_paths for row in pq.read_table(path).to_pylist()]
+    jsonl_path = root / "meta" / "episodes.jsonl"
+    if jsonl_path.is_file():
+        return _read_jsonl(jsonl_path)
+    raise FileNotFoundError(f"No LeRobot episode metadata found under {root / 'meta'}.")
+
+
+def _task_records(root: Path) -> list[dict[str, Any]]:
+    parquet_path = root / "meta" / "tasks.parquet"
+    if parquet_path.is_file():
+        tasks_df = pd.read_parquet(parquet_path)
+        task_texts = tasks_df["task"] if "task" in tasks_df.columns else tasks_df.index
+        return [
+            {"task_index": int(task_index), "task": str(task)}
+            for task, task_index in zip(task_texts, tasks_df["task_index"])
+        ]
+    jsonl_path = root / "meta" / "tasks.jsonl"
+    if jsonl_path.is_file():
+        return _read_jsonl(jsonl_path)
+    raise FileNotFoundError(f"No LeRobot task metadata found under {root / 'meta'}.")
+
+
 class ActionBaseDataset(ABC, Dataset):
     """Abstract base for Action LeRobot datasets.
 
@@ -65,16 +100,8 @@ class ActionBaseDataset(ABC, Dataset):
 
         self._root = Path(root)
         self._info = json.loads((self._root / "meta" / "info.json").read_text())
-        self._episodes = {
-            int(row["episode_index"]): row
-            for path in sorted((self._root / "meta" / "episodes").glob("chunk-*/file-*.parquet"))
-            for row in pq.read_table(path).to_pylist()
-        }
-        tasks_df = pd.read_parquet(self._root / "meta" / "tasks.parquet")
-        # LeRobot v2.x stores task text in a "task" column; v3.0 stores it as the
-        # (unnamed) DataFrame index and keeps only "task_index" as a column.
-        task_texts = tasks_df["task"] if "task" in tasks_df.columns else tasks_df.index
-        self._tasks = {int(task_index): str(task) for task, task_index in zip(task_texts, tasks_df["task_index"])}
+        self._episodes = {int(row["episode_index"]): row for row in _episode_records(self._root)}
+        self._tasks = {int(row["task_index"]): str(row["task"]) for row in _task_records(self._root)}
         # ``self._rows`` (the flat, index-sorted list of every frame dict) is built
         # lazily on first access — see the ``_rows`` property. Materializing all
         # ~18M frames as Python dicts plus a full sort costs ~13 min and tens of GB;
@@ -158,10 +185,15 @@ class ActionBaseDataset(ABC, Dataset):
         return self._mode
 
     def _video_path(self, episode: dict[str, Any], video_key: str) -> Path:
+        episode_index = int(episode["episode_index"])
+        chunks_size = int(self._info.get("chunks_size", 1000))
         chunk_idx = int(
             episode.get(
                 f"videos/{video_key}/chunk_index",
-                episode.get(f"videos/{video_key}/episode_chunk", episode.get("data/chunk_index", 0)),
+                episode.get(
+                    f"videos/{video_key}/episode_chunk",
+                    episode.get("data/chunk_index", episode_index // chunks_size),
+                ),
             )
         )
         file_idx = int(
@@ -176,6 +208,7 @@ class ActionBaseDataset(ABC, Dataset):
             file_index=file_idx,
             episode_chunk=chunk_idx,
             episode_file=file_idx,
+            episode_index=episode_index,
         )
         return self._root / rel
 
@@ -225,7 +258,7 @@ class ActionBaseDataset(ABC, Dataset):
             self._rows_cache = sorted(
                 (
                     row
-                    for path in sorted((self._root / "data").glob("chunk-*/file-*.parquet"))
+                    for path in _data_parquet_paths(self._root)
                     for row in pq.read_table(path).to_pylist()
                 ),
                 key=lambda row: int(row["index"]),

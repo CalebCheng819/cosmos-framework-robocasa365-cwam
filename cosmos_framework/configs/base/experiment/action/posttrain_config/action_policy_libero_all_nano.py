@@ -41,6 +41,22 @@ def _action_policy_libero_nano_model_config() -> dict:
     return cfg
 
 
+def _action_policy_libero_s1_nano_model_config() -> dict:
+    """Add the soft action-relevance router used by the CWAM S1 baseline."""
+    cfg = _action_policy_libero_nano_model_config()
+    cfg.update(
+        action_relevance_enabled=True,
+        action_relevance_routing_dim=512,
+        action_relevance_num_heads=8,
+        action_relevance_topk=32,
+        action_relevance_initial_gate=0.01,
+        action_relevance_sparsity_weight=0.01,
+        action_relevance_sparsity_start_iter=1000,
+        action_relevance_sparsity_anneal_iters=4000,
+    )
+    return cfg
+
+
 action_policy_libero_all_nano = LazyDict(
     dict(
         defaults=[
@@ -109,7 +125,7 @@ action_policy_libero_all_nano = LazyDict(
         ),
         trainer=dict(
             distributed_parallelism="fsdp",
-            grad_accum_iter=1,  # real run sets via TOML (GA=2)
+            grad_accum_iter=1,  # real run sets via TOML (GA=4 on the 4-GPU recipe)
             logging_iter=1,
             max_iter=100,  # smoke
             max_val_iter=None,
@@ -173,7 +189,7 @@ action_policy_libero_all_nano = LazyDict(
         dataloader_train=L(PackingDataLoader)(
             audio_sample_rate=48000,
             dataset_name="action_libero_all",
-            max_samples_per_batch=128,  # peak-mem bound (256 OOMs on H200); global = 128 x DP8 x grad_accum2 = 2048
+            max_samples_per_batch=128,  # peak-mem bound; 4-GPU recipe uses GA4 for global batch 2048
             max_sequence_length=None,  # None disables token packing (TOML can't express null)
             patch_spatial=2,
             sound_latent_fps=0,
@@ -197,7 +213,7 @@ action_policy_libero_all_nano = LazyDict(
                     _suite: dict(
                         ratio=1,
                         dataset=L(get_action_libero_sft_dataset)(
-                            root="${oc.env:LIBERO_ROOT}/" + _suite,
+                            root="${oc.env:LIBERO_ROOT}/" + _suite + "${oc.env:LIBERO_SUITE_DIR_SUFFIX,}",
                             fps=20,
                             chunk_length=16,
                             image_size=256,  # concat_view -> 256x512
@@ -228,6 +244,14 @@ action_policy_libero_all_nano = LazyDict(
 )
 
 
-for _item in [action_policy_libero_all_nano]:
+action_policy_libero_all_s1_nano = copy.deepcopy(action_policy_libero_all_nano)
+action_policy_libero_all_s1_nano.job.name = "action_policy_libero_all_s1_nano"
+action_policy_libero_all_s1_nano.model.config = _action_policy_libero_s1_nano_model_config()
+action_policy_libero_all_s1_nano.optimizer.keys_to_select.append("action_relevance")
+action_policy_libero_all_s1_nano.optimizer.lr_multipliers["action_relevance"] = 5.0
+action_policy_libero_all_s1_nano.checkpoint.keys_to_skip_loading.append("action_relevance")
+
+
+for _item in [action_policy_libero_all_nano, action_policy_libero_all_s1_nano]:
     _name = [k for k, v in globals().items() if v is _item][0]
     cs.store(group="experiment", package="_global_", name=_name, node=_item)
