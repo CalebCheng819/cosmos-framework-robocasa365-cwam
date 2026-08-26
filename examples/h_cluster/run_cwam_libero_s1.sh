@@ -26,6 +26,8 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${ARCHIVE_START_STEP:=500}"
 : "${ARCHIVE_END_STEP:=5000}"
 : "${ARCHIVE_INTERVAL:=500}"
+: "${LIBERO_LATENT_CACHE_MODE:=disabled}"
+: "${LIBERO_LATENT_CACHE_OSS_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826/wan-latent-cache-v1}"
 
 readonly CONFIG="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_libero_all_s1_nano.toml"
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_libero_all_s1_nano.sh"
@@ -38,6 +40,7 @@ readonly CHECKPOINTS_DIR="$OUTPUT_ROOT/cosmos3_action_libero/action_sft/$RUN_NAM
 readonly HANDOFF_ROOT="$PERSONAL_ROOT/runtime-handoffs/cwam-libero-s1/$KUBEBRAIN_RJOB_NAME"
 readonly SECRET_ROOT="/dev/shm/cwam-libero-s1-rclone"
 readonly RCLONE_CONFIG_PATH="$SECRET_ROOT/rclone.conf"
+readonly LIBERO_LATENT_CACHE_ROOT="$RUN_ROOT/wan-latent-cache"
 
 MONITOR_PID=""
 ARCHIVER_PID=""
@@ -51,6 +54,17 @@ for suite in libero_spatial libero_object libero_goal libero_10; do
         exit 1
     }
 done
+[[ "$LIBERO_LATENT_CACHE_MODE" == disabled || "$LIBERO_LATENT_CACHE_MODE" == required ]] || {
+    echo "ERROR: LIBERO_LATENT_CACHE_MODE must be disabled or required" >&2
+    exit 1
+}
+if [[ "$LIBERO_LATENT_CACHE_MODE" == required ]]; then
+    [[ "$ENABLE_OSS" == 1 ]] || { echo "ERROR: cache staging requires ENABLE_OSS=1" >&2; exit 1; }
+    [[ "$LIBERO_LATENT_CACHE_OSS_ROOT" == eailab-hdd2:eailab/chengjuntao/* ]] || {
+        echo "ERROR: invalid LIBERO_LATENT_CACHE_OSS_ROOT" >&2
+        exit 1
+    }
+fi
 [[ "$(nvidia-smi -L | wc -l)" -eq "$NUM_GPUS" ]] || { echo "ERROR: expected $NUM_GPUS GPUs" >&2; exit 1; }
 
 mkdir -p "$OUTPUT_ROOT" "$PREFLIGHT_OUTPUT_ROOT" "$EVIDENCE_ROOT"
@@ -111,6 +125,20 @@ PY
     echo "RCLONE_HANDOFF_READY remote=eailab-hdd2"
 fi
 
+if [[ "$LIBERO_LATENT_CACHE_MODE" == required ]]; then
+    mkdir -p "$LIBERO_LATENT_CACHE_ROOT"
+    echo "LATENT_CACHE_STAGE_START remote=$LIBERO_LATENT_CACHE_OSS_ROOT local=$LIBERO_LATENT_CACHE_ROOT"
+    for suite in libero_spatial libero_object libero_goal libero_10; do
+        "$RCLONE_BIN" copy "$LIBERO_LATENT_CACHE_OSS_ROOT/$suite" "$LIBERO_LATENT_CACHE_ROOT/$suite" \
+            --transfers=16 --checkers=32
+        [[ -s "$LIBERO_LATENT_CACHE_ROOT/$suite/_SUCCESS.json" ]] || {
+            echo "ERROR: staged latent cache is incomplete for suite=$suite" >&2
+            exit 1
+        }
+    done
+    echo "LATENT_CACHE_STAGE_COMPLETE root=$LIBERO_LATENT_CACHE_ROOT"
+fi
+
 source "$COSMOS_ENV/bin/activate"
 export PATH="$(dirname "$RCLONE_BIN"):$COSMOS_ENV/bin:$PATH" PYTHONPATH="$COSMOS_SOURCE"
 # TorchCodec needs standard FFmpeg sonames, while PyAV's wheel contains the same
@@ -142,6 +170,7 @@ export LD_LIBRARY_PATH="$TORCHCODEC_FFMPEG_LIB_DIR:$AV_WHEEL_LIB_DIR:$CUDA_WHEEL
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 export PYTHONHASHSEED=42 NCCL_NVLS_ENABLE=0 NPROC_PER_NODE="$NUM_GPUS"
 export LIBERO_ROOT LIBERO_SUITE_DIR_SUFFIX BASE_CHECKPOINT_PATH WAN_VAE_PATH QWEN3_VL_TOKENIZER_PATH
+export LIBERO_LATENT_CACHE_MODE LIBERO_LATENT_CACHE_ROOT
 export EXPERIMENT_ID SOURCE_COMMIT
 export OUTPUT_ROOT IMAGINAIRE_OUTPUT_ROOT="$OUTPUT_ROOT" RUN_NAME
 export LOG_FILENAME="${RUN_NAME}.train.log"
@@ -169,7 +198,10 @@ import os
 import sys
 from pathlib import Path
 
-keys = ("EXPERIMENT_ID", "RUN_NAME", "SOURCE_COMMIT", "LIBERO_ROOT", "LIBERO_SUITE_DIR_SUFFIX", "BASE_CHECKPOINT_PATH", "OSS_RUN_ROOT")
+keys = (
+    "EXPERIMENT_ID", "RUN_NAME", "SOURCE_COMMIT", "LIBERO_ROOT", "LIBERO_SUITE_DIR_SUFFIX",
+    "BASE_CHECKPOINT_PATH", "OSS_RUN_ROOT", "LIBERO_LATENT_CACHE_MODE", "LIBERO_LATENT_CACHE_ROOT",
+)
 Path(sys.argv[1]).write_text(json.dumps({key: os.environ.get(key, "") for key in keys}, indent=2) + "\n")
 PY
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,power.draw,power.limit \

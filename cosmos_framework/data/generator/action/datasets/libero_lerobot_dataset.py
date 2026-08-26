@@ -32,8 +32,10 @@ import pyarrow.parquet as pq
 import torch
 import torch.nn.functional as F
 
+from cosmos_framework.data.generator.action.action_normalization import normalize_action
 from cosmos_framework.data.generator.action.action_spec import ActionSpec, Gripper, Pos, Rot, build_action_spec
 from cosmos_framework.data.generator.action.datasets.base_dataset import ActionBaseDataset, _data_parquet_paths
+from cosmos_framework.data.generator.action.datasets.libero_latent_cache import LiberoLatentCache
 from cosmos_framework.data.generator.action.libero_pose_utils import libero_action_dim, libero_rotation_format
 from cosmos_framework.data.generator.action.pose_utils import convert_rotation
 from cosmos_framework.utils import log
@@ -83,6 +85,8 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
         val_ratio: float = 0.01,
         seed: int = 0,
         sample_stride: int = 1,
+        latent_cache_root: str | None = None,
+        latent_cache_mode: str = "disabled",
     ) -> None:
         if action_space != "frame_wise_relative":
             raise NotImplementedError(
@@ -95,6 +99,13 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
             raise ValueError(f"Unsupported split={split!r}. Use train/val/full.")
         if chunk_length % 4 != 0:
             raise ValueError(f"chunk_length must be divisible by 4, got {chunk_length}.")
+        latent_cache_mode = latent_cache_mode.lower().strip()
+        if latent_cache_mode not in {"disabled", "required"}:
+            raise ValueError(
+                f"Unsupported latent_cache_mode={latent_cache_mode!r}. Use disabled/required."
+            )
+        if latent_cache_mode == "required" and not latent_cache_root:
+            raise ValueError("latent_cache_root is required when latent_cache_mode='required'.")
 
         super().__init__(
             root=root,
@@ -127,6 +138,11 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
         self._pose_coordinate_frame = pose_coordinate_frame
         self._embodiment_type = embodiment_type
         self._requested_normalization = action_normalization
+        self._split = "train" if split == "train" else ("full" if split == "full" else "val")
+        self._val_ratio = float(val_ratio)
+        self._seed = int(seed)
+        self._latent_cache_mode = latent_cache_mode
+        self._latent_cache: LiberoLatentCache | None = None
         # quantile_rot normalizes against the raw (un-orthonormalized) rotation stats
         # under "global_raw"; everything else uses "global".
         self._stats_key = "global_raw" if action_normalization == "quantile_rot" else "global"
@@ -169,6 +185,44 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
         kept_counts = ep_counts.astype(np.int64)[kept]
         # Within-episode windows only: total - n_kept_episodes * chunk_length valid samples.
         self._valid_cum = np.cumsum(np.maximum(0, kept_counts - self._chunk_length)).astype(np.int64)
+
+        if self._latent_cache_mode == "required":
+            # Derive the exact active VideoResize metadata rather than duplicating
+            # its resolution selection and padding rules in the cache reader.
+            from cosmos_framework.data.generator.action.transforms import VideoResize
+
+            probe_width = self._image_size * (2 if self._camera_mode == "concat_view" else 1)
+            probe = VideoResize()(
+                {
+                    "video": torch.zeros(
+                        (3, self._chunk_length + 1, self._image_size, probe_width),
+                        dtype=torch.uint8,
+                    )
+                },
+                None,
+            )
+            expected_image_size = tuple(int(value) for value in probe["image_size"].tolist())
+            suite = next(
+                (
+                    candidate
+                    for candidate in ("libero_spatial", "libero_object", "libero_goal", "libero_10")
+                    if self._root.name.startswith(candidate)
+                ),
+                self._root.name,
+            )
+            self._latent_cache = LiberoLatentCache(
+                latent_cache_root,
+                expected_dataset_name=self._root.name,
+                expected_suite=suite,
+                expected_split=self._split,
+                expected_val_ratio=self._val_ratio,
+                expected_seed=self._seed,
+                expected_chunk_length=self._chunk_length,
+                expected_camera_mode=self._camera_mode,
+                expected_dataset_image_size=self._image_size,
+                expected_num_samples=len(self),
+                expected_image_size=expected_image_size,  # type: ignore[arg-type]
+            )
 
         log.info(
             f"Loaded LIBERO dataset root={self._root} split={split!r} camera_mode={camera_mode!r} "
@@ -255,6 +309,10 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
     # ---- sample build ------------------------------------------------------
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        if self._latent_cache is not None:
+            # Cache indices are exact. Never hide a corrupt/missing record by
+            # resampling another action window.
+            return self._build_item(idx)
         # Resample a different valid window if a frame fails to decode (bounded retries).
         n = len(self)
         last_err: Exception | None = None
@@ -270,16 +328,8 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
 
     def _build_item(self, idx: int) -> dict[str, Any]:
         mode = self._choose_mode()
-        idx = int(idx)
-        ep = int(np.searchsorted(self._valid_cum, idx, side="right"))
-        prev = int(self._valid_cum[ep - 1]) if ep > 0 else 0
-        start = int(self._ep_starts[ep]) + (idx - prev)
-        episode_index = int(self._ep_vals[ep])
-        episode = self._episodes[episode_index]
-
-        stop = start + self._chunk_length + 1
-        timestamps = [float(self._row_timestamp[j]) for j in range(start, stop)]
-        video = self._load_video(episode, timestamps)
+        idx, _episode_index, episode, start, timestamps = self._resolve_index(idx)
+        video = None if self._latent_cache is not None else self._load_video(episode, timestamps)
 
         # frame_wise_relative: chunk per-frame deltas are the stored actions directly.
         raw = self._row_action[start : start + self._chunk_length]  # [chunk, 7]
@@ -293,7 +343,103 @@ class LIBEROLeRobotDataset(ActionBaseDataset):
             extras["additional_view_description"] = (
                 "The left half shows the third-person view; the right half shows the wrist-mounted camera."
             )
-        return self._build_result(mode=mode, video=video, action=action, ai_caption=ai_caption, **extras)
+        if self._latent_cache is None:
+            assert video is not None
+            return self._build_result(mode=mode, video=video, action=action, ai_caption=ai_caption, **extras)
+        idle_frames = self._compute_idle_frames(action)
+        normalized_action = (
+            action
+            if self.action_normalization is None
+            else normalize_action(action, self.action_normalization, self._load_norm_stats())
+        )
+        return {
+            "ai_caption": ai_caption,
+            "video_latent": self._latent_cache.read_sample(idx),
+            "video_num_frames": torch.tensor(self._latent_cache.video_num_frames, dtype=torch.long),
+            "image_size": torch.tensor(self._latent_cache.image_size, dtype=torch.float32),
+            "action": normalized_action,
+            "conditioning_fps": torch.tensor(self._fps, dtype=torch.long),
+            "mode": mode,
+            "domain_id": torch.tensor(self._domain_id, dtype=torch.long),
+            "viewpoint": self._viewpoint,
+            "idle_frames": torch.tensor(idle_frames, dtype=torch.long),
+            **extras,
+        }
+
+    def _resolve_index(
+        self, idx: int
+    ) -> tuple[int, int, dict[str, Any], int, list[float]]:
+        n = len(self)
+        idx = int(idx)
+        if idx < 0:
+            idx += n
+        if not 0 <= idx < n:
+            raise IndexError(f"LIBERO sample index out of range: {idx} for {n} samples.")
+        ep = int(np.searchsorted(self._valid_cum, idx, side="right"))
+        prev = int(self._valid_cum[ep - 1]) if ep > 0 else 0
+        start = int(self._ep_starts[ep]) + (idx - prev)
+        episode_index = int(self._ep_vals[ep])
+        stop = start + self._chunk_length + 1
+        timestamps = [float(self._row_timestamp[j]) for j in range(start, stop)]
+        return idx, episode_index, self._episodes[episode_index], start, timestamps
+
+    def load_video_exact(self, idx: int) -> torch.Tensor:
+        """Decode one online-path window as uint8 ``[C,T,H,W]``."""
+
+        _idx, _episode_index, episode, _start, timestamps = self._resolve_index(idx)
+        video = self._load_video(episode, timestamps)
+        return (video * 255.0).clamp(0.0, 255.0).to(torch.uint8).permute(1, 0, 2, 3)
+
+    def load_video_windows(self, indices: list[int]) -> torch.Tensor:
+        """Decode overlapping windows once per episode and reconstruct them exactly."""
+
+        if not indices:
+            return torch.empty(
+                (0, 3, self._chunk_length + 1, self._image_size, self._image_size),
+                dtype=torch.uint8,
+            )
+        from lerobot.datasets.video_utils import decode_video_frames
+
+        resolved = [self._resolve_index(index) for index in indices]
+        output: list[torch.Tensor | None] = [None] * len(indices)
+        positions_by_episode: dict[int, list[int]] = {}
+        for position, (_idx, episode_index, _episode, _start, _timestamps) in enumerate(resolved):
+            positions_by_episode.setdefault(episode_index, []).append(position)
+
+        for episode_index, positions in positions_by_episode.items():
+            episode = self._episodes[episode_index]
+            union_timestamps = sorted(
+                {timestamp for position in positions for timestamp in resolved[position][4]}
+            )
+            timestamp_to_position = {timestamp: position for position, timestamp in enumerate(union_timestamps)}
+            frames_by_view: dict[str, torch.Tensor] = {}
+            for key in self._video_keys:
+                from_ts = float(episode.get(f"videos/{key}/from_timestamp", 0.0))
+                frames = decode_video_frames(
+                    self._video_path(episode, key),
+                    [from_ts + timestamp for timestamp in union_timestamps],
+                    self._tolerance_s,
+                )
+                frames_by_view[key] = self._resize(frames)
+            for position in positions:
+                selected = torch.tensor(
+                    [timestamp_to_position[timestamp] for timestamp in resolved[position][4]],
+                    dtype=torch.long,
+                )
+                if self._camera_mode == "concat_view":
+                    video = torch.cat(
+                        [
+                            frames_by_view[_IMAGE_FEATURE].index_select(0, selected),
+                            frames_by_view[_WRIST_FEATURE].index_select(0, selected),
+                        ],
+                        dim=-1,
+                    )
+                else:
+                    video = frames_by_view[self._video_keys[0]].index_select(0, selected)
+                output[position] = (video * 255.0).clamp(0.0, 255.0).to(torch.uint8).permute(1, 0, 2, 3)
+        if any(video is None for video in output):
+            raise RuntimeError("LIBERO union decoder did not reconstruct every requested window.")
+        return torch.stack([video for video in output if video is not None], dim=0)
 
     def _build_frame_wise_action(self, raw: np.ndarray) -> torch.Tensor:
         raw_t = torch.from_numpy(np.ascontiguousarray(raw)).float()  # [chunk, 7]

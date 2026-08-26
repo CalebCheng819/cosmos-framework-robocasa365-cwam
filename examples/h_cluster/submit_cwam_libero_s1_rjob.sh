@@ -15,6 +15,8 @@ umask 022
 : "${CPU_COUNT:=$((NUM_GPUS * 16))}"
 : "${MEMORY_MB:=$((NUM_GPUS * 180000))}"
 : "${EXTRA_TAIL_OVERRIDES:=}"
+: "${LIBERO_LATENT_CACHE_MODE:=disabled}"
+: "${LIBERO_LATENT_CACHE_OSS_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826/wan-latent-cache-v1}"
 
 readonly IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
 readonly PERSONAL_GPFS="gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs"
@@ -27,7 +29,9 @@ readonly RUNNER="$COSMOS_SOURCE/examples/h_cluster/run_cwam_libero_s1.sh"
 printf -v COMMAND '%q ' env \
     COSMOS_SOURCE="$COSMOS_SOURCE" EXPERIMENT_ID="$EXPERIMENT_ID" RUN_NAME="$RUN_NAME" \
     SOURCE_COMMIT="$SOURCE_COMMIT" KUBEBRAIN_RJOB_NAME="$RJOB_NAME" OSS_RUN_ROOT="$OSS_RUN_ROOT" \
-    NUM_GPUS="$NUM_GPUS" ENABLE_OSS="$ENABLE_OSS" EXTRA_TAIL_OVERRIDES="$EXTRA_TAIL_OVERRIDES" "$RUNNER"
+    NUM_GPUS="$NUM_GPUS" ENABLE_OSS="$ENABLE_OSS" EXTRA_TAIL_OVERRIDES="$EXTRA_TAIL_OVERRIDES" \
+    LIBERO_LATENT_CACHE_MODE="$LIBERO_LATENT_CACHE_MODE" \
+    LIBERO_LATENT_CACHE_OSS_ROOT="$LIBERO_LATENT_CACHE_OSS_ROOT" "$RUNNER"
 
 rjob submit \
     --name="$RJOB_NAME" --priority=9 --group=eailabagent_gpu --charged-group=eailabagent_gpu \

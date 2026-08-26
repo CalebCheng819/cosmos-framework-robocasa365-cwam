@@ -1,0 +1,19 @@
+schema_version = 1
+
+[project]
+id = "CWAM-COSMOS3"
+name = "CWAM Cosmos3 integration"
+experiment_id_prefix = "CWAM-COSMOS3"
+repository_url = "https://github.com/CalebCheng819/cosmos-framework-robocasa365-cwam.git"
+
+[notion]
+project_page_id = "39721e77-89cc-809e-8877-da95648820dc"
+experiments_database_id = "14754915-73de-47c8-b180-ee1ec97dff22"
+experiments_data_source_id = "74256a26-ec9d-4ddb-b674-ee84cac23be4"
+workspace_id = "2dc05352-6acc-48e1-a630-f42652151140"
+workflow_page_id = "39e21e77-89cc-8032-9342-fde858da46f1"
+calendar_date_property = "Experiment Window"
+
+[storage]
+artifact_root = "eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826"
+outbox_directory = ".research-workflow/outbox"
