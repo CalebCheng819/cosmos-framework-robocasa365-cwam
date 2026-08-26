@@ -14,6 +14,8 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${SOURCE_CHECKPOINT_URI:?Set SOURCE_CHECKPOINT_URI to the durable checkpoint on OSS.}"
 : "${RESUME_STEP:=10000}"
 : "${CHECKPOINT_KEYS_NOT_TO_RESUME:=[scheduler,dataloader]}"
+: "${GPU_COUNT:=8}"
+: "${GRAD_ACCUM_ITER:=2}"
 : "${KUBEBRAIN_RJOB_NAME:=unknown}"
 : "${PERSONAL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao}"
 : "${COSMOS_ENV:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/envs/cosmos-framework-09f23119-cu128-train}"
@@ -28,6 +30,8 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${NVME_ROOT:=/nvme/cwam-s1-cont100k}"
 
 [[ "$RESUME_STEP" =~ ^[0-9]+$ ]] || { echo "ERROR: RESUME_STEP must be a non-negative integer" >&2; exit 1; }
+[[ "$GPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: GPU_COUNT must be a positive integer" >&2; exit 1; }
+[[ "$GRAD_ACCUM_ITER" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: GRAD_ACCUM_ITER must be a positive integer" >&2; exit 1; }
 printf -v RESUME_TAG 'iter_%09d' "$RESUME_STEP"
 
 readonly CONFIG="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_s1_cont100k_nano.toml"
@@ -54,7 +58,7 @@ for path in "$CONFIG" "$LAUNCHER" "$ARCHIVER" "$COSMOS_ENV/bin/python" "$BASE_CH
     "$WAN_VAE_PATH" "$QWEN3_VL_TOKENIZER_PATH/tokenizer.json"; do
     [[ -e "$path" ]] || { echo "ERROR: required input missing: $path" >&2; exit 1; }
 done
-[[ "$(nvidia-smi -L | wc -l)" -eq 8 ]] || { echo "ERROR: expected exactly eight GPUs" >&2; exit 1; }
+[[ "$(nvidia-smi -L | wc -l)" -eq "$GPU_COUNT" ]] || { echo "ERROR: visible GPU count does not match GPU_COUNT=$GPU_COUNT" >&2; exit 1; }
 [[ -x "$RCLONE_BIN" ]] || { echo "ERROR: rclone binary missing: $RCLONE_BIN" >&2; exit 1; }
 [[ -x /usr/bin/openssl ]] || { echo "ERROR: openssl is unavailable" >&2; exit 1; }
 command -v rsync >/dev/null
@@ -145,7 +149,7 @@ rsync -a --delete --info=stats2 "$GPFS_LATENT_CACHE_ROOT/" "$CACHE_ROOT/"
 source "$COSMOS_ENV/bin/activate"
 export PATH="$(dirname "$RCLONE_BIN"):$COSMOS_ENV/bin:$PATH" PYTHONPATH="$COSMOS_SOURCE"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
-export PYTHONHASHSEED=42 NCCL_NVLS_ENABLE=0 NPROC_PER_NODE=8
+export PYTHONHASHSEED=42 NCCL_NVLS_ENABLE=0 NPROC_PER_NODE="$GPU_COUNT"
 export ROBOCASA365_ROOT ROBOCASA365_SOURCE_ROOT BASE_CHECKPOINT_PATH WAN_VAE_PATH QWEN3_VL_TOKENIZER_PATH
 export ROBOCASA365_LATENT_CACHE_ROOT="$CACHE_ROOT"
 export ROBOCASA365_LATENT_CACHE_MODE=required CWAM_METADATA_ONLY_VIDEO_TOKENIZER=1
@@ -155,7 +159,7 @@ export TOML_FILE="$CONFIG" RESUME_CHECKPOINT_PATH="$RESUME_ROOT"
 export OUTPUT_ROOT IMAGINAIRE_OUTPUT_ROOT="$OUTPUT_ROOT" RUN_NAME
 export RESUME_EXISTING_RUN=0 ALLOW_DATA_STREAM_REPLAY=0
 export LOG_FILENAME
-export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8"
+export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8 trainer.grad_accum_iter=$GRAD_ACCUM_ITER"
 
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,power.draw,power.limit \
     --format=csv -l 30 >"$EVIDENCE_ROOT/nvidia-smi.csv" 2>&1 &
@@ -179,7 +183,7 @@ MONITOR_PID=$!
 ) >"$EVIDENCE_ROOT/archive.log" 2>&1 &
 ARCHIVER_PID=$!
 
-echo "TRAIN_START experiment=$EXPERIMENT_ID resume_step=$RESUME_STEP target_step=100000 keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME"
+echo "TRAIN_START experiment=$EXPERIMENT_ID resume_step=$RESUME_STEP target_step=100000 gpu_count=$GPU_COUNT grad_accum_iter=$GRAD_ACCUM_ITER keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME"
 "$LAUNCHER"
 wait "$ARCHIVER_PID"
 echo "TRAIN_AND_ARCHIVE_COMPLETE target_step=100000"

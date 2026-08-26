@@ -13,6 +13,8 @@ umask 022
 : "${SOURCE_CHECKPOINT_URI:=eailab-hdd2:eailab/chengjuntao/migrate-20260805_142643/outputs/cwam-cosmos3-formal/cosmos3_action_robocasa365/action_sft/CWAM-E35-S1-SCRATCH-ARR-8GPU-S42-R3-20260731/checkpoints/iter_000010000}"
 : "${RESUME_STEP:=10000}"
 : "${CHECKPOINT_KEYS_NOT_TO_RESUME:=[scheduler,dataloader]}"
+: "${GPU_COUNT:=8}"
+: "${GRAD_ACCUM_ITER:=2}"
 : "${NODE_TAG:=node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn}"
 
 readonly IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
@@ -31,7 +33,8 @@ printf -v COMMAND '%q ' env \
     COSMOS_SOURCE="$COSMOS_SOURCE" EXPERIMENT_ID="$EXPERIMENT_ID" RUN_NAME="$RUN_NAME" \
     SOURCE_COMMIT="$SOURCE_COMMIT" KUBEBRAIN_RJOB_NAME="$RJOB_NAME" OSS_RUN_ROOT="$OSS_RUN_ROOT" \
     SOURCE_CHECKPOINT_URI="$SOURCE_CHECKPOINT_URI" RESUME_STEP="$RESUME_STEP" \
-    CHECKPOINT_KEYS_NOT_TO_RESUME="$CHECKPOINT_KEYS_NOT_TO_RESUME" "$RUNNER"
+    CHECKPOINT_KEYS_NOT_TO_RESUME="$CHECKPOINT_KEYS_NOT_TO_RESUME" GPU_COUNT="$GPU_COUNT" \
+    GRAD_ACCUM_ITER="$GRAD_ACCUM_ITER" "$RUNNER"
 WORKER_COMMAND="set -Eeuo pipefail
 printf 'WORKER_BOOTSTRAP_START %s\\n' \"\$(date -Is)\"
 exec $COMMAND"
@@ -44,7 +47,7 @@ rjob submit \
     --private-machine=group \
     --task-type=normal \
     -P 1 \
-    --gpu=8 \
+    --gpu="$GPU_COUNT" \
     --cpu=128 \
     --memory=1500000 \
     --share-host-shm=true \
