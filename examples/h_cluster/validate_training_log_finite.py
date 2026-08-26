@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 LOSS_PATTERN = re.compile(r"Iteration\s+(?P<iteration>\d+):.*?Loss:\s*(?P<value>[^\s|]+)")
-GRAD_PATTERN = re.compile(r"clip_grad_norm/[^:]+:\s*(?P<value>[^\s|]+)")
+GRAD_PATTERN = re.compile(r"clip_grad_norm/[^\s:|]+:\s*(?P<value>[^\s|]+)")
 
 
 def _finite_values(text: str, pattern: re.Pattern[str], label: str) -> list[float]:
