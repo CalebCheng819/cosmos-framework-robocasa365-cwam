@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Continue E35-S1 from iter 10,000 to 100,000 on one 8xH200 node.
+# Continue E35-S1 from a durable checkpoint to 100,000 on one 8xH200 node.
 
 set -Eeuo pipefail
 umask 022
@@ -11,7 +11,9 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${LOG_FILENAME:=${RUN_NAME}.train.log}"
 : "${SOURCE_COMMIT:?Set SOURCE_COMMIT.}"
 : "${OSS_RUN_ROOT:?Set OSS_RUN_ROOT below an authorized chengjuntao prefix.}"
-: "${SOURCE_CHECKPOINT_URI:?Set SOURCE_CHECKPOINT_URI to iter_000010000 on OSS.}"
+: "${SOURCE_CHECKPOINT_URI:?Set SOURCE_CHECKPOINT_URI to the durable checkpoint on OSS.}"
+: "${RESUME_STEP:=10000}"
+: "${CHECKPOINT_KEYS_NOT_TO_RESUME:=[scheduler,dataloader]}"
 : "${KUBEBRAIN_RJOB_NAME:=unknown}"
 : "${PERSONAL_ROOT:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao}"
 : "${COSMOS_ENV:=/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/envs/cosmos-framework-09f23119-cu128-train}"
@@ -25,12 +27,15 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${QWEN3_VL_TOKENIZER_PATH:=/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Qwen--Qwen3-VL-8B-Instruct}"
 : "${NVME_ROOT:=/nvme/cwam-s1-cont100k}"
 
+[[ "$RESUME_STEP" =~ ^[0-9]+$ ]] || { echo "ERROR: RESUME_STEP must be a non-negative integer" >&2; exit 1; }
+printf -v RESUME_TAG 'iter_%09d' "$RESUME_STEP"
+
 readonly CONFIG="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_s1_cont100k_nano.toml"
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_robocasa365_nano.sh"
 readonly ARCHIVER="$COSMOS_SOURCE/examples/h_cluster/archive_cwam_s1_cont100k.py"
 readonly RUN_ROOT="$NVME_ROOT/$EXPERIMENT_ID/$KUBEBRAIN_RJOB_NAME"
 readonly OUTPUT_ROOT="$RUN_ROOT/output"
-readonly RESUME_ROOT="$RUN_ROOT/resume/iter_000010000"
+readonly RESUME_ROOT="$RUN_ROOT/resume/$RESUME_TAG"
 readonly CACHE_ROOT="$RUN_ROOT/latent-cache"
 readonly EVIDENCE_ROOT="$RUN_ROOT/evidence"
 readonly RCLONE_HANDOFF_ROOT="$RCLONE_HANDOFF_BASE/$KUBEBRAIN_RJOB_NAME"
@@ -150,7 +155,7 @@ export TOML_FILE="$CONFIG" RESUME_CHECKPOINT_PATH="$RESUME_ROOT"
 export OUTPUT_ROOT IMAGINAIRE_OUTPUT_ROOT="$OUTPUT_ROOT" RUN_NAME
 export RESUME_EXISTING_RUN=0 ALLOW_DATA_STREAM_REPLAY=0
 export LOG_FILENAME
-export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=[scheduler,dataloader] checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8"
+export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8"
 
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,power.draw,power.limit \
     --format=csv -l 30 >"$EVIDENCE_ROOT/nvidia-smi.csv" 2>&1 &
@@ -174,7 +179,7 @@ MONITOR_PID=$!
 ) >"$EVIDENCE_ROOT/archive.log" 2>&1 &
 ARCHIVER_PID=$!
 
-echo "TRAIN_START experiment=$EXPERIMENT_ID resume_step=10000 target_step=100000"
+echo "TRAIN_START experiment=$EXPERIMENT_ID resume_step=$RESUME_STEP target_step=100000 keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME"
 "$LAUNCHER"
 wait "$ARCHIVER_PID"
 echo "TRAIN_AND_ARCHIVE_COMPLETE target_step=100000"

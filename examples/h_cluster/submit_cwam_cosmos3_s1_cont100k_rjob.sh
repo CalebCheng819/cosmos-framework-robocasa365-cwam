@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the 8xH200 E35-S1 continuation specifically to private node 0252.
+# Submit the 8xH200 E35-S1 continuation to a selected private node.
 
 set -Eeuo pipefail
 umask 022
@@ -11,9 +11,12 @@ umask 022
 : "${RJOB_NAME:=cwam-s1-cont100k-s42-r1-h252-0820}"
 : "${OSS_RUN_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam-cosmos3/e35-s1-cont100k/$EXPERIMENT_ID}"
 : "${SOURCE_CHECKPOINT_URI:=eailab-hdd2:eailab/chengjuntao/migrate-20260805_142643/outputs/cwam-cosmos3-formal/cosmos3_action_robocasa365/action_sft/CWAM-E35-S1-SCRATCH-ARR-8GPU-S42-R3-20260731/checkpoints/iter_000010000}"
+: "${RESUME_STEP:=10000}"
+: "${CHECKPOINT_KEYS_NOT_TO_RESUME:=[scheduler,dataloader]}"
+: "${NODE_TAG:=node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn}"
 
 readonly IMAGE="registry.h.pjlab.org.cn/ailab/vulkan@sha256:59204dea15a88b9b444b4f20c2e54b6b92d41582ca718f35e9194335cc8615f7"
-readonly NODE_TAG="node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn"
+readonly NODE_TAG
 readonly PERSONAL_GPFS="gpfs://gpfs2/ailab-eailabagent-gpfs:/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs"
 readonly PUBLIC_GPFS="gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public"
 readonly RUNNER="$COSMOS_SOURCE/examples/h_cluster/run_cwam_cosmos3_s1_cont100k.sh"
@@ -27,7 +30,8 @@ readonly RUNNER="$COSMOS_SOURCE/examples/h_cluster/run_cwam_cosmos3_s1_cont100k.
 printf -v COMMAND '%q ' env \
     COSMOS_SOURCE="$COSMOS_SOURCE" EXPERIMENT_ID="$EXPERIMENT_ID" RUN_NAME="$RUN_NAME" \
     SOURCE_COMMIT="$SOURCE_COMMIT" KUBEBRAIN_RJOB_NAME="$RJOB_NAME" OSS_RUN_ROOT="$OSS_RUN_ROOT" \
-    SOURCE_CHECKPOINT_URI="$SOURCE_CHECKPOINT_URI" "$RUNNER"
+    SOURCE_CHECKPOINT_URI="$SOURCE_CHECKPOINT_URI" RESUME_STEP="$RESUME_STEP" \
+    CHECKPOINT_KEYS_NOT_TO_RESUME="$CHECKPOINT_KEYS_NOT_TO_RESUME" "$RUNNER"
 WORKER_COMMAND="set -Eeuo pipefail
 printf 'WORKER_BOOTSTRAP_START %s\\n' \"\$(date -Is)\"
 exec $COMMAND"

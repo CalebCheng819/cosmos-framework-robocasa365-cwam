@@ -4,11 +4,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_submitter_pins_private_0252_and_eight_gpus() -> None:
+def test_submitter_supports_selected_private_node_and_eight_gpus() -> None:
     text = (ROOT / "examples/h_cluster/submit_cwam_cosmos3_s1_cont100k_rjob.sh").read_text()
     assert "--private-machine=group" in text
     assert "--gpu=8" in text
-    assert "gpu-l-lg-cmc-h-h200-0252" in text
+    assert 'NODE_TAG:=node/gpu-l-lg-cmc-h-h200-0252' in text
+    assert '--positive-tags="$NODE_TAG"' in text
     assert "--store-host-nvme=true" in text
     assert "--restart-policy=never" in text
     assert "--group=eailabagent_gpu" in text
@@ -19,12 +20,17 @@ def test_submitter_pins_private_0252_and_eight_gpus() -> None:
     assert "WORKER_BOOTSTRAP_START" in text
     assert "/bin/bash --noprofile --norc" in text
     assert 'KUBEBRAIN_RJOB_NAME="$RJOB_NAME"' in text
+    assert 'RESUME_STEP="$RESUME_STEP"' in text
+    assert 'CHECKPOINT_KEYS_NOT_TO_RESUME="$CHECKPOINT_KEYS_NOT_TO_RESUME"' in text
 
 
-def test_runner_restores_optimizer_but_restarts_scheduler() -> None:
+def test_runner_parameterizes_resume_step_and_training_state_components() -> None:
     text = (ROOT / "examples/h_cluster/run_cwam_cosmos3_s1_cont100k.sh").read_text()
     assert "checkpoint.load_training_state=true" in text
-    assert "checkpoint.keys_not_to_resume=[scheduler,dataloader]" in text
+    assert ': "${RESUME_STEP:=10000}"' in text
+    assert ': "${CHECKPOINT_KEYS_NOT_TO_RESUME:=[scheduler,dataloader]}"' in text
+    assert 'readonly RESUME_ROOT="$RUN_ROOT/resume/$RESUME_TAG"' in text
+    assert "checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME" in text
     assert "checkpoint.save_iter" not in text
     assert "--query-gpu=" in text
 
