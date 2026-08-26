@@ -1,3 +1,5 @@
+import os
+
 from cosmos_framework.configs.base.experiment.action.posttrain_config.action_policy_libero_all_nano import (
     _action_policy_libero_nano_model_config,
     _action_policy_libero_s1_nano_model_config,
@@ -10,7 +12,7 @@ def test_libero_s1_enables_fresh_router_without_mutating_baseline() -> None:
     baseline = action_policy_libero_all_nano
     s1 = action_policy_libero_all_s1_nano
 
-    expected_tokenizer_path = "${oc.env:QWEN3_VL_TOKENIZER_PATH}"
+    expected_tokenizer_path = os.environ["QWEN3_VL_TOKENIZER_PATH"]
     baseline_config = _action_policy_libero_nano_model_config()
     s1_config = _action_policy_libero_s1_nano_model_config()
     assert baseline_config["vlm_config"]["tokenizer"]["pretrained_model_name"] == expected_tokenizer_path
