@@ -119,11 +119,12 @@ def test_server_args_disable_generative_media_guardrails() -> None:
     assert overrides.dp_replicate_size == 1
     assert overrides.cp_size == 1
     assert overrides.cfgp_size == 1
-    assert overrides.experiment_overrides[-1] == (
+    assert overrides.experiment_overrides[-2] == (
         "model.config.tokenizer._target_="
         "cosmos_framework.model.generator.tokenizers.wan2pt2_vae_4x16x16."
         "Wan2pt2VAEInterface"
     )
+    assert overrides.experiment_overrides[-1] == "~model.config.tokenizer.latent_ch"
     assert not any("vae_path=" in value for value in overrides.experiment_overrides)
     assert not any("pretrained_model_name=" in value for value in overrides.experiment_overrides)
 
@@ -323,9 +324,12 @@ def test_frozen_cached_config_resolves_to_online_wan_for_serving(
             }
         }
     )
+    setup_overrides = args.build_setup_overrides().experiment_overrides
+    assert "~model.config.tokenizer.latent_ch" in setup_overrides
+    del frozen.model.config.tokenizer.latent_ch
     merged = OmegaConf.merge(
         frozen,
-        OmegaConf.from_dotlist(args.build_setup_overrides().experiment_overrides),
+        OmegaConf.from_dotlist([value for value in setup_overrides if not value.startswith("~")]),
     )
     monkeypatch.setattr(
         wan,
@@ -336,7 +340,7 @@ def test_frozen_cached_config_resolves_to_online_wan_for_serving(
     tokenizer = instantiate(merged.model.config.tokenizer)
 
     assert type(tokenizer) is wan.Wan2pt2VAEInterface
-    assert tokenizer.latent_ch == 48
+    assert "latent_ch" not in merged.model.config.tokenizer
 
 
 def test_server_args_pin_pure_fsdp_to_torchrun_world_size(

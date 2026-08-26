@@ -1361,7 +1361,6 @@ class Wan2pt2VAEInterface(VideoTokenizerInterface):
         # Compression factors for spatial and temporal dimensions (4x16x16 tokenizer).
         spatial_compression_factor: int = 16,
         temporal_compression_factor: int = 4,
-        latent_ch: int = 48,
         # Deprecated arguments. This is kept for backwards compatibility
         # with older configurations.
         temporal_window: int | None = None,
@@ -1386,8 +1385,6 @@ class Wan2pt2VAEInterface(VideoTokenizerInterface):
         assert isinstance(encode_chunk_frames, Mapping)
 
         assert all(c % 4 == 0 for c in encode_chunk_frames.values()), "encode_chunk_frames must be a multiple of 4"
-        if int(latent_ch) != 48:
-            raise ValueError("Wan2pt2VAEInterface requires latent_ch=48.")
 
         self.chunk_duration = chunk_duration
 

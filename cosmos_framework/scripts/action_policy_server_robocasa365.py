@@ -506,6 +506,7 @@ class RoboCasa365ServerArgs(ActionServerArgs):
         experiment_overrides = [
             *overrides.experiment_overrides,
             f"model.config.tokenizer._target_={_ONLINE_WAN2PT2_TARGET}",
+            "~model.config.tokenizer.latent_ch",
         ]
         vae_path, qwen_path = self.resolve_external_model_paths()
         if vae_path is not None:
