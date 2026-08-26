@@ -3,7 +3,7 @@
 
 set -Eeuo pipefail
 
-TOML_FILE="examples/toml/sft_config/action_policy_libero_all_s1_nano.toml"
+: "${TOML_FILE:=examples/toml/sft_config/action_policy_libero_all_s1_nano.toml}"
 : "${BASE_CHECKPOINT_PATH:=examples/checkpoints/Cosmos3-Nano}"
 : "${LIBERO_SUITE_DIR_SUFFIX:=_no_noops_lerobot}"
 export LIBERO_ROOT="${LIBERO_ROOT:-}"

@@ -28,19 +28,24 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${ARCHIVE_INTERVAL:=500}"
 : "${LIBERO_LATENT_CACHE_MODE:=disabled}"
 : "${LIBERO_LATENT_CACHE_OSS_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826/wan-latent-cache-v1}"
+: "${TOML_FILE:=$COSMOS_SOURCE/examples/toml/sft_config/action_policy_libero_all_s1_nano.toml}"
+: "${SOURCE_CHECKPOINT_URI:=}"
+: "${RESUME_STEP:=0}"
+: "${ALLOW_DATA_STREAM_REPLAY:=0}"
 
-readonly CONFIG="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_libero_all_s1_nano.toml"
+readonly CONFIG="$TOML_FILE"
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_libero_all_s1_nano.sh"
 readonly ARCHIVER="$COSMOS_SOURCE/examples/h_cluster/archive_cwam_s1_cont100k.py"
 readonly RUN_ROOT="$NVME_ROOT/$EXPERIMENT_ID/$KUBEBRAIN_RJOB_NAME"
 readonly OUTPUT_ROOT="$RUN_ROOT/output"
 readonly PREFLIGHT_OUTPUT_ROOT="$RUN_ROOT/preflight-output"
 readonly EVIDENCE_ROOT="$RUN_ROOT/evidence"
-readonly CHECKPOINTS_DIR="$OUTPUT_ROOT/cosmos3_action_libero/action_sft/$RUN_NAME/checkpoints"
+readonly CHECKPOINTS_DIR="$OUTPUT_ROOT/cwam_action_libero/action_sft/$RUN_NAME/checkpoints"
 readonly HANDOFF_ROOT="$PERSONAL_ROOT/runtime-handoffs/cwam-libero-s1/$KUBEBRAIN_RJOB_NAME"
 readonly SECRET_ROOT="/dev/shm/cwam-libero-s1-rclone"
 readonly RCLONE_CONFIG_PATH="$SECRET_ROOT/rclone.conf"
 readonly LIBERO_LATENT_CACHE_ROOT="$RUN_ROOT/wan-latent-cache"
+readonly RESUME_ROOT="$RUN_ROOT/resume/iter_$(printf '%09d' "$RESUME_STEP")"
 
 MONITOR_PID=""
 ARCHIVER_PID=""
@@ -58,6 +63,27 @@ done
     echo "ERROR: LIBERO_LATENT_CACHE_MODE must be disabled or required" >&2
     exit 1
 }
+[[ "$RESUME_STEP" =~ ^[0-9]+$ ]] || { echo "ERROR: RESUME_STEP must be a non-negative integer" >&2; exit 1; }
+[[ "$ALLOW_DATA_STREAM_REPLAY" =~ ^[01]$ ]] || {
+    echo "ERROR: ALLOW_DATA_STREAM_REPLAY must be 0 or 1" >&2
+    exit 1
+}
+if [[ -n "$SOURCE_CHECKPOINT_URI" ]]; then
+    [[ "$ENABLE_OSS" == 1 ]] || { echo "ERROR: checkpoint staging requires ENABLE_OSS=1" >&2; exit 1; }
+    [[ "$SOURCE_CHECKPOINT_URI" == eailab-hdd2:eailab/chengjuntao/* ]] || {
+        echo "ERROR: invalid SOURCE_CHECKPOINT_URI" >&2
+        exit 1
+    }
+    [[ "$RESUME_STEP" -gt 0 ]] || { echo "ERROR: RESUME_STEP must be positive for continuation" >&2; exit 1; }
+    [[ "$ALLOW_DATA_STREAM_REPLAY" == 1 ]] || {
+        echo "ERROR: LIBERO iterable loader has no checkpointed cursor; set ALLOW_DATA_STREAM_REPLAY=1" >&2
+        exit 1
+    }
+    [[ "$RUN_PREFLIGHT_FIRST" == 0 ]] || {
+        echo "ERROR: continuation cannot run the base-init preflight; set RUN_PREFLIGHT_FIRST=0" >&2
+        exit 1
+    }
+fi
 if [[ "$LIBERO_LATENT_CACHE_MODE" == required ]]; then
     [[ "$ENABLE_OSS" == 1 ]] || { echo "ERROR: cache staging requires ENABLE_OSS=1" >&2; exit 1; }
     [[ "$LIBERO_LATENT_CACHE_OSS_ROOT" == eailab-hdd2:eailab/chengjuntao/* ]] || {
@@ -97,7 +123,7 @@ if [[ "$ENABLE_OSS" == 1 ]]; then
     chmod 700 "$SECRET_ROOT" "$HANDOFF_ROOT"
     openssl req -x509 -newkey rsa:3072 -nodes -days 1 -subj "/CN=$KUBEBRAIN_RJOB_NAME" \
         -keyout "$SECRET_ROOT/recipient.key" -out "$HANDOFF_ROOT/recipient.pem" >/dev/null 2>&1
-    export KUBEBRAIN_RJOB_NAME OSS_RUN_ROOT
+    export KUBEBRAIN_RJOB_NAME OSS_RUN_ROOT SOURCE_CHECKPOINT_URI RESUME_STEP
     "$COSMOS_ENV/bin/python" - "$HANDOFF_ROOT/request.json" <<'PY'
 import json
 import os
@@ -108,6 +134,8 @@ Path(sys.argv[1]).write_text(json.dumps({
     "schema_version": 1,
     "job_id": os.environ["KUBEBRAIN_RJOB_NAME"],
     "oss_run_root": os.environ["OSS_RUN_ROOT"],
+    "source_checkpoint_uri": os.environ["SOURCE_CHECKPOINT_URI"],
+    "resume_step": int(os.environ["RESUME_STEP"]),
 }, indent=2) + "\n")
 PY
     chmod 444 "$HANDOFF_ROOT/recipient.pem" "$HANDOFF_ROOT/request.json"
@@ -123,6 +151,20 @@ PY
     export RCLONE_CONFIG="$RCLONE_CONFIG_PATH"
     "$RCLONE_BIN" lsd eailab-hdd2:eailab/chengjuntao >/dev/null
     echo "RCLONE_HANDOFF_READY remote=eailab-hdd2"
+fi
+
+if [[ -n "$SOURCE_CHECKPOINT_URI" ]]; then
+    mkdir -p "$RESUME_ROOT"
+    echo "CHECKPOINT_STAGE_START source=$SOURCE_CHECKPOINT_URI local=$RESUME_ROOT"
+    "$RCLONE_BIN" copy "$SOURCE_CHECKPOINT_URI" "$RESUME_ROOT" \
+        --transfers=16 --checkers=32 --multi-thread-streams=8
+    for component in model optim scheduler trainer; do
+        [[ -s "$RESUME_ROOT/$component/.metadata" ]] || {
+            echo "ERROR: staged checkpoint is incomplete: $component/.metadata" >&2
+            exit 1
+        }
+    done
+    echo "CHECKPOINT_STAGE_COMPLETE resume_step=$RESUME_STEP local=$RESUME_ROOT"
 fi
 
 if [[ "$LIBERO_LATENT_CACHE_MODE" == required ]]; then
@@ -174,6 +216,12 @@ export LIBERO_LATENT_CACHE_MODE LIBERO_LATENT_CACHE_ROOT
 export EXPERIMENT_ID SOURCE_COMMIT
 export OUTPUT_ROOT IMAGINAIRE_OUTPUT_ROOT="$OUTPUT_ROOT" RUN_NAME
 export LOG_FILENAME="${RUN_NAME}.train.log"
+export TOML_FILE="$CONFIG"
+if [[ -n "$SOURCE_CHECKPOINT_URI" ]]; then
+    export RESUME_CHECKPOINT_PATH="$RESUME_ROOT"
+    EXTRA_TAIL_OVERRIDES="${EXTRA_TAIL_OVERRIDES:+$EXTRA_TAIL_OVERRIDES }checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=[scheduler,dataloader] checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false"
+    export EXTRA_TAIL_OVERRIDES
+fi
 
 "$COSMOS_ENV/bin/python" - <<'PY'
 import os
@@ -201,6 +249,7 @@ from pathlib import Path
 keys = (
     "EXPERIMENT_ID", "RUN_NAME", "SOURCE_COMMIT", "LIBERO_ROOT", "LIBERO_SUITE_DIR_SUFFIX",
     "BASE_CHECKPOINT_PATH", "OSS_RUN_ROOT", "LIBERO_LATENT_CACHE_MODE", "LIBERO_LATENT_CACHE_ROOT",
+    "SOURCE_CHECKPOINT_URI", "RESUME_CHECKPOINT_PATH", "RESUME_STEP", "ALLOW_DATA_STREAM_REPLAY",
 )
 Path(sys.argv[1]).write_text(json.dumps({key: os.environ.get(key, "") for key in keys}, indent=2) + "\n")
 PY
@@ -238,7 +287,7 @@ if [[ "$ENABLE_OSS" == 1 ]]; then
     ARCHIVER_PID=$!
 fi
 
-echo "TRAIN_START experiment=$EXPERIMENT_ID gpus=$NUM_GPUS"
+echo "TRAIN_START experiment=$EXPERIMENT_ID gpus=$NUM_GPUS resume_step=$RESUME_STEP target_step=$ARCHIVE_END_STEP"
 "$LAUNCHER"
 [[ -z "$ARCHIVER_PID" ]] || wait "$ARCHIVER_PID"
 echo "TRAIN_AND_ARCHIVE_COMPLETE target_step=$ARCHIVE_END_STEP"
