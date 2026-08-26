@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Continue E35-S1 from a durable checkpoint to 100,000 on one 8xH200 node.
+# Continue E35-S1 from a durable checkpoint to 100,000 on one H200 node.
 
 set -Eeuo pipefail
 umask 022
@@ -159,7 +159,7 @@ export TOML_FILE="$CONFIG" RESUME_CHECKPOINT_PATH="$RESUME_ROOT"
 export OUTPUT_ROOT IMAGINAIRE_OUTPUT_ROOT="$OUTPUT_ROOT" RUN_NAME
 export RESUME_EXISTING_RUN=0 ALLOW_DATA_STREAM_REPLAY=0
 export LOG_FILENAME
-export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8 trainer.grad_accum_iter=$GRAD_ACCUM_ITER"
+export EXTRA_TAIL_OVERRIDES="checkpoint.load_training_state=true checkpoint.strict_resume=true checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME checkpoint.keys_to_skip_loading=[] checkpoint.dcp_async_mode_enabled=false trainer.run_validation_on_start=false trainer.validation_iter=10000 trainer.max_val_iter=8 trainer.grad_accum_iter=$GRAD_ACCUM_ITER trainer.callbacks.production_batch_memory_gate.expected_grad_accum_iter=$GRAD_ACCUM_ITER trainer.callbacks.production_batch_memory_gate.allowed_world_sizes=[$GPU_COUNT]"
 
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,power.draw,power.limit \
     --format=csv -l 30 >"$EVIDENCE_ROOT/nvidia-smi.csv" 2>&1 &

@@ -38,6 +38,14 @@ def test_runner_parameterizes_resume_step_and_training_state_components() -> Non
     assert 'readonly RESUME_ROOT="$RUN_ROOT/resume/$RESUME_TAG"' in text
     assert "checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME" in text
     assert "trainer.grad_accum_iter=$GRAD_ACCUM_ITER" in text
+    assert (
+        "trainer.callbacks.production_batch_memory_gate.expected_grad_accum_iter="
+        "$GRAD_ACCUM_ITER" in text
+    )
+    assert (
+        "trainer.callbacks.production_batch_memory_gate.allowed_world_sizes="
+        "[$GPU_COUNT]" in text
+    )
     assert "checkpoint.save_iter" not in text
     assert "--query-gpu=" in text
 
