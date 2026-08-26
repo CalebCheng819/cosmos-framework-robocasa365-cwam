@@ -8,7 +8,7 @@ umask 022
 : "${SOURCE_COMMIT:?Set SOURCE_COMMIT.}"
 : "${EXPERIMENT_ID:=CWAM-LIBERO-S1-4SUITE-4H200-H254-S42-R1-20260826}"
 : "${RUN_NAME:=$EXPERIMENT_ID}"
-: "${RJOB_NAME:=cosmos-cwam-libero-s1-h254-r1}"
+: "${RJOB_NAME:=cosmos-s1-h254-r1}"
 : "${NUM_GPUS:=4}"
 : "${ENABLE_OSS:=1}"
 : "${OSS_RUN_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826/$EXPERIMENT_ID}"
