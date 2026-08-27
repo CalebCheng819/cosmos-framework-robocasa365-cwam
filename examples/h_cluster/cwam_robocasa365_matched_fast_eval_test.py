@@ -144,5 +144,112 @@ class ResumeMergeTest(unittest.TestCase):
                 )
 
 
+class SummaryProtocolTest(unittest.TestCase):
+    def test_summary_records_intervention_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            task = "OpenDrawer"
+            result = root / "result.json"
+            baseline = root / "baseline.json"
+            runtime = root / "runtime.json"
+            shutdown = root / "shutdown.json"
+            checkpoint = root / "checkpoint"
+            output = root / "summary.json"
+            csv_output = root / "summary.csv"
+            progress = root / "progress.ndjson"
+            checkpoint.mkdir()
+            write_result(result, task, [True, False], complete=True)
+            baseline.write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "aggregate": {"episodes": 100, "successes": 50, "success_rate": 0.5},
+                        "tasks": [
+                            {
+                                "task": task,
+                                "completed": 100,
+                                "successes": 50,
+                                "success_rate": 0.5,
+                                "complete": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime.write_text(json.dumps({"status": "passed"}), encoding="utf-8")
+            shutdown.write_text(json.dumps({"status": "passed"}), encoding="utf-8")
+            progress.write_text("", encoding="utf-8")
+
+            summary = MODULE.summarize(
+                argparse.Namespace(
+                    task_spec=[f"{task}={result}"],
+                    baseline_record=baseline,
+                    expected_episodes=2,
+                    runtime_receipt=[runtime],
+                    shutdown_receipt=[shutdown],
+                    experiment_id="test",
+                    logical_run_id="test-logical",
+                    model_label="test-model",
+                    source_revision="test-revision",
+                    checkpoint=checkpoint,
+                    node="test-node",
+                    rjob_name="test-rjob",
+                    max_steps=24,
+                    open_loop_horizon=12,
+                    base_seed=42,
+                    intervention_condition="shuffle",
+                    trace_fixed_horizon=True,
+                    progress_log=progress,
+                    output=output,
+                    csv_output=csv_output,
+                )
+            )
+            self.assertEqual(summary["protocol"]["max_steps"], 24)
+            self.assertEqual(summary["protocol"]["intervention_condition"], "shuffle")
+            self.assertTrue(summary["protocol"]["trace_fixed_horizon"])
+
+    def test_summary_allows_paired_protocol_without_historical_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            task = "OpenDrawer"
+            result = root / "result.json"
+            runtime = root / "runtime.json"
+            shutdown = root / "shutdown.json"
+            checkpoint = root / "checkpoint"
+            checkpoint.mkdir()
+            write_result(result, task, [True, False], complete=True)
+            runtime.write_text(json.dumps({"status": "passed"}), encoding="utf-8")
+            shutdown.write_text(json.dumps({"status": "passed"}), encoding="utf-8")
+            progress = root / "progress.ndjson"
+            progress.write_text("", encoding="utf-8")
+
+            summary = MODULE.summarize(
+                argparse.Namespace(
+                    task_spec=[f"{task}={result}"],
+                    baseline_record=None,
+                    expected_episodes=2,
+                    runtime_receipt=[runtime],
+                    shutdown_receipt=[shutdown],
+                    experiment_id="test",
+                    logical_run_id="test-logical",
+                    model_label="test-model",
+                    source_revision="test-revision",
+                    checkpoint=checkpoint,
+                    node="test-node",
+                    rjob_name="test-rjob",
+                    max_steps=24,
+                    open_loop_horizon=12,
+                    base_seed=42,
+                    intervention_condition="normal",
+                    trace_fixed_horizon=True,
+                    progress_log=progress,
+                    output=root / "summary.json",
+                    csv_output=root / "summary.csv",
+                )
+            )
+            self.assertNotIn("baseline_comparison", summary)
+
+
 if __name__ == "__main__":
     unittest.main()

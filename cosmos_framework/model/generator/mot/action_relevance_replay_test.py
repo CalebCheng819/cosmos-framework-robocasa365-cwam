@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: OpenMDW-1.1
+
+from pathlib import Path
+
+import pytest
+import torch
+
+from cosmos_framework.model.generator.mot.action_relevance_replay import (
+    FixedInterventionReplayBank,
+    build_fixed_intervention_bank,
+)
+
+
+def _write_trace(path: Path, *, episode: int, task: str, step: int, value: float) -> None:
+    torch.save(
+        {
+            "schema_version": 1,
+            "metadata": [
+                {
+                    "prompt": task,
+                    "evidence": {
+                        "episode_key": f"robocasa365:{episode:06d}",
+                        "task_id": task,
+                        "control_step": step,
+                    },
+                }
+            ],
+            "layers": [
+                {
+                    "module": "blocks.0.action_relevance",
+                    "intervention_mode": "normal",
+                    "routed_c": torch.full((1, 2, 4), value),
+                }
+            ],
+        },
+        path,
+    )
+
+
+def _complete_bank(tmp_path: Path) -> FixedInterventionReplayBank:
+    for episode, task, value in (
+        (0, "open drawer", 1.0),
+        (1, "open drawer", 2.0),
+        (2, "close drawer", 3.0),
+        (3, "close drawer", 4.0),
+    ):
+        _write_trace(tmp_path / f"trace_{episode:08d}.pt", episode=episode, task=task, step=4, value=value)
+    return FixedInterventionReplayBank(
+        build_fixed_intervention_bank(tmp_path.glob("trace_*.pt"), seed=0)
+    )
+
+
+def test_shuffle_pairs_same_task_and_step_with_other_episode(tmp_path: Path) -> None:
+    bank = _complete_bank(tmp_path)
+    layers, donor, donor_task = bank.routed_c(
+        condition="shuffle",
+        episode_key="robocasa365:000000",
+        task_id="open drawer",
+        control_step=4,
+    )
+    assert donor == "robocasa365:000001"
+    assert donor_task == "open drawer"
+    assert layers["blocks.0.action_relevance"].dtype == torch.float16
+    torch.testing.assert_close(
+        layers["blocks.0.action_relevance"],
+        torch.full((1, 2, 4), 2.0, dtype=torch.float16),
+    )
+
+
+def test_cross_episode_pairs_different_task_at_same_step(tmp_path: Path) -> None:
+    bank = _complete_bank(tmp_path)
+    _layers, donor, donor_task = bank.routed_c(
+        condition="cross_episode",
+        episode_key="robocasa365:000000",
+        task_id="open drawer",
+        control_step=4,
+    )
+    assert donor != "robocasa365:000000"
+    assert donor_task == "close drawer"
+
+
+def test_bank_rejects_singleton_task_step(tmp_path: Path) -> None:
+    _write_trace(tmp_path / "trace_00000000.pt", episode=0, task="open drawer", step=0, value=1.0)
+    _write_trace(tmp_path / "trace_00000001.pt", episode=1, task="close drawer", step=0, value=2.0)
+    with pytest.raises(ValueError, match="shuffle requires at least two episodes"):
+        build_fixed_intervention_bank(tmp_path.glob("trace_*.pt"), seed=0)
+
+
+def test_bank_requires_exact_target_task_and_condition(tmp_path: Path) -> None:
+    bank = _complete_bank(tmp_path)
+    with pytest.raises(KeyError, match="no exact target"):
+        bank.routed_c(
+            condition="shuffle",
+            episode_key="robocasa365:000000",
+            task_id="open drawer",
+            control_step=1,
+        )
+    with pytest.raises(ValueError, match="task drift"):
+        bank.routed_c(
+            condition="shuffle",
+            episode_key="robocasa365:000000",
+            task_id="close drawer",
+            control_step=4,
+        )
+    with pytest.raises(ValueError, match="Replay condition"):
+        bank.routed_c(
+            condition="zero",
+            episode_key="robocasa365:000000",
+            task_id="open drawer",
+            control_step=4,
+        )

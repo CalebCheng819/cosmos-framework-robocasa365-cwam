@@ -52,6 +52,12 @@ from cosmos_framework.data.generator.action.datasets.robocasa365_segment_dataset
 from cosmos_framework.data.generator.action.json_formatter import ActionPromptJsonFormatter
 from cosmos_framework.data.generator.action.pose_utils import convert_rotation
 from cosmos_framework.inference.common.args import tyro_cli
+from cosmos_framework.model.generator.mot.action_relevance import (
+    set_action_relevance_fixed_routed_c,
+)
+from cosmos_framework.model.generator.mot.action_relevance_replay import (
+    FixedInterventionReplayBank,
+)
 from cosmos_framework.scripts.action_policy_server_libero import ActionModelService, ActionServerArgs
 from cosmos_framework.utils import log
 
@@ -68,10 +74,13 @@ _ONLINE_WAN2PT2_TARGET = "cosmos_framework.model.generator.tokenizers.wan2pt2_va
 _TRAINING_CAMERA_DESCRIPTION = (
     "The left half shows the left third-person agent view; the right half shows the wrist-mounted camera."
 )
-_DISTRIBUTED_COMMAND_SCHEMA_VERSION = 1
+_DISTRIBUTED_COMMAND_SCHEMA_VERSION = 2
 _DISTRIBUTED_COMMAND_OPS = frozenset(("infer", "reset", "shutdown"))
 _CANONICAL_REQUEST_KEYS = frozenset(("image", "prompt", "domain_name", "image_size"))
 _CONTROL_REQUEST_KEYS = frozenset(("__cwam_control__", "launch_nonce"))
+_WIRE_EVIDENCE_KEYS = frozenset(
+    ("cwam_episode_key", "cwam_task_id", "cwam_control_step", "cwam_post_terminal")
+)
 
 
 def _load_openpi_websocket_policy_server() -> type[Any]:
@@ -468,6 +477,8 @@ class RoboCasa365ServerArgs(ActionServerArgs):
     """Optional canonical Wan2.2 VAE file override for portable serving."""
     qwen_tokenizer_path: Path | None = None
     """Optional canonical local Qwen tokenizer directory override."""
+    action_relevance_intervention_bank: Path | None = None
+    """Strict fixed routed-C bank required by shuffle and cross_episode replay."""
 
     def resolve_external_model_paths(self) -> tuple[Path | None, Path | None]:
         """Resolve optional portable model assets without changing H defaults."""
@@ -547,15 +558,44 @@ class RoboCasa365PolicyService(ActionModelService):
             raise ValueError(f"RoboCasa365 formal serving requires domain_name='robocasa365', got {args.domain_name!r}")
         if args.action_stats_path is None:
             raise ValueError("--action-stats-path is required for fail-closed RoboCasa365 serving")
+        replay_conditions = {"shuffle", "cross_episode"}
+        if args.action_relevance_intervention in replay_conditions and args.action_relevance_intervention_bank is None:
+            raise ValueError(
+                f"RoboCasa365 {args.action_relevance_intervention} requires "
+                "--action-relevance-intervention-bank"
+            )
+        if args.action_relevance_intervention not in replay_conditions and args.action_relevance_intervention_bank is not None:
+            raise ValueError(
+                "An action-relevance intervention bank is valid only for shuffle or cross_episode"
+            )
 
         self.camera_height = int(args.camera_height)
         self.camera_width = int(args.camera_width)
         self.domain_name = args.domain_name
         self.launch_nonce = args.launch_nonce
         self.wan2pt2_vae_path, self.qwen_tokenizer_path = args.resolve_external_model_paths()
+        self._evidence_episode = -1
+        self._evidence_control_step = 0
+        self._pending_evidence: dict[str, Any] | None = None
+        self._action_relevance_intervention = args.action_relevance_intervention
         super().__init__(args)
 
+        if args.action_relevance_intervention_bank is None:
+            self.action_relevance_intervention_bank_path = None
+            self._action_relevance_replay_bank = None
+        else:
+            bank_path = _canonical_non_symlink_path(
+                args.action_relevance_intervention_bank,
+                kind="file",
+            )
+            self.action_relevance_intervention_bank_path = bank_path
+            self._action_relevance_replay_bank = FixedInterventionReplayBank.load(bank_path)
+
         self.distributed_rank, self.distributed_world_size = _distributed_rank_and_world_size()
+        if self.distributed_rank != 0:
+            # Every FSDP rank participates in routing, but only rank 0 owns the
+            # evaluator observation and may persist evidence.
+            self.action_relevance_trace_dir = None
         _validate_fsdp_topology(
             self.setup_args,
             world_size=self.distributed_world_size,
@@ -591,6 +631,104 @@ class RoboCasa365PolicyService(ActionModelService):
         self._prompt_json_formatter = ActionPromptJsonFormatter(
             caption_key="ai_caption",
             include_idle_frames=False,
+        )
+
+    def _make_observation_evidence(self, obs: dict[str, Any]) -> dict[str, Any]:
+        state = _validate_state16(obs[_STATE_KEY])
+        present = _WIRE_EVIDENCE_KEYS.intersection(obs)
+        if present and present != _WIRE_EVIDENCE_KEYS:
+            missing = sorted(_WIRE_EVIDENCE_KEYS - present)
+            raise ValueError(f"RoboCasa365 CWAM evidence metadata is partial; missing={missing}")
+        explicit = present == _WIRE_EVIDENCE_KEYS
+        requires_explicit = (
+            getattr(self, "action_relevance_trace_dir", None) is not None
+            or getattr(self, "_action_relevance_intervention", "normal") in {"shuffle", "cross_episode"}
+        )
+        if requires_explicit and not explicit:
+            raise ValueError(
+                "RoboCasa365 trace/intervention requests require explicit episode, task, "
+                "control-step, and terminal metadata"
+            )
+        if explicit:
+            episode_key = obs["cwam_episode_key"]
+            task_id = obs["cwam_task_id"]
+            control_step = obs["cwam_control_step"]
+            post_terminal = obs["cwam_post_terminal"]
+            if not isinstance(episode_key, str) or not episode_key.strip():
+                raise ValueError("cwam_episode_key must be a non-empty string")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise ValueError("cwam_task_id must be a non-empty string")
+            if type(control_step) is not int or control_step < 0:
+                raise ValueError("cwam_control_step must be a non-negative integer")
+            if type(post_terminal) is not bool:
+                raise ValueError("cwam_post_terminal must be a bool")
+            episode_key = episode_key.strip()
+            task_id = task_id.strip()
+        else:
+            episode_key = self._current_evidence_episode_key()
+            task_id = str(obs["prompt"]).strip()
+            control_step = int(getattr(self, "_evidence_control_step", 0))
+            post_terminal = False
+        return {
+            "episode_key": episode_key,
+            "task_id": task_id,
+            "control_step": control_step,
+            "post_terminal": post_terminal,
+            "evidence_source": "explicit_wire_v1" if explicit else "legacy_server_counter",
+            "relevant_factors": state.tolist(),
+            "relevant_fields": {"wire_state16": state.tolist()},
+            "label_scope": "wire_state16_proprioceptive_proxy_no_object_ground_truth",
+            "state_conditioning": False,
+        }
+
+    def _current_evidence_episode_key(self) -> str:
+        episode = int(getattr(self, "_evidence_episode", -1))
+        if episode < 0:
+            episode = 0
+            self._evidence_episode = episode
+        return f"robocasa365:{episode:06d}"
+
+    def _configure_replay_for_current_step(self, *, evidence: dict[str, Any]) -> tuple[str, str] | None:
+        condition = getattr(self, "_action_relevance_intervention", "normal")
+        if condition not in {"shuffle", "cross_episode"}:
+            return None
+        bank = getattr(self, "_action_relevance_replay_bank", None)
+        if bank is None:
+            raise RuntimeError(f"{condition} was selected without a loaded routed-C replay bank")
+        layers, donor_episode_key, donor_task_id = bank.routed_c(
+            condition=condition,
+            episode_key=evidence["episode_key"],
+            task_id=evidence["task_id"],
+            control_step=evidence["control_step"],
+        )
+        configured = set_action_relevance_fixed_routed_c(self.model, layers)
+        if configured == 0:
+            raise RuntimeError("The loaded model has no ActionRelevanceAdapter for fixed replay")
+        return donor_episode_key, donor_task_id
+
+    def _advance_evidence_control_step(self) -> None:
+        self._evidence_control_step = int(getattr(self, "_evidence_control_step", 0)) + 1
+
+    def _write_action_relevance_trace(
+        self,
+        *,
+        requests: list[dict[str, Any]],
+        actions: list[list[list[float]]],
+        records: list[dict[str, Any]],
+    ) -> None:
+        if self.distributed_rank != 0 or self.action_relevance_trace_dir is None:
+            return
+        if self._pending_evidence is None:
+            raise RuntimeError("RoboCasa365 trace capture has no rank-0 observation evidence")
+        traced_requests = []
+        for request in requests:
+            traced = dict(request)
+            traced["evidence"] = dict(self._pending_evidence)
+            traced_requests.append(traced)
+        super()._write_action_relevance_trace(
+            requests=traced_requests,
+            actions=actions,
+            records=records,
         )
 
     def _load_action_normalization_stats(self) -> None:
@@ -761,10 +899,34 @@ class RoboCasa365PolicyService(ActionModelService):
             raise RuntimeError(f"Unsupported RoboCasa365 distributed command op: {op!r}")
         payload = command["payload"]
         if op == "infer":
-            payload = _validate_canonical_policy_request(payload)
+            if not isinstance(payload, dict) or set(payload) != {"request", "evidence"}:
+                raise RuntimeError("RoboCasa365 distributed infer payload requires request and evidence")
+            payload = {
+                "request": _validate_canonical_policy_request(payload["request"]),
+                "evidence": self._validate_distributed_evidence(payload["evidence"]),
+            }
         elif payload is not None:
             raise RuntimeError(f"RoboCasa365 distributed {op!r} command payload must be null")
         return op, payload
+
+    @staticmethod
+    def _validate_distributed_evidence(evidence: Any) -> dict[str, Any]:
+        if not isinstance(evidence, dict):
+            raise RuntimeError("RoboCasa365 distributed evidence must be a dict")
+        required = {"episode_key", "task_id", "control_step", "post_terminal"}
+        if not required.issubset(evidence):
+            raise RuntimeError(
+                f"RoboCasa365 distributed evidence is missing {sorted(required - set(evidence))}"
+            )
+        if not isinstance(evidence["episode_key"], str) or not evidence["episode_key"]:
+            raise RuntimeError("Distributed episode_key must be a non-empty string")
+        if not isinstance(evidence["task_id"], str) or not evidence["task_id"]:
+            raise RuntimeError("Distributed task_id must be a non-empty string")
+        if type(evidence["control_step"]) is not int or evidence["control_step"] < 0:
+            raise RuntimeError("Distributed control_step must be a non-negative integer")
+        if type(evidence["post_terminal"]) is not bool:
+            raise RuntimeError("Distributed post_terminal must be a bool")
+        return evidence
 
     def _broadcast_distributed_command(self, op: str, payload: Any = None) -> None:
         if self.distributed_world_size <= 1 or self.distributed_rank != 0:
@@ -799,13 +961,25 @@ class RoboCasa365PolicyService(ActionModelService):
         if isinstance(obs, dict) and "__cwam_control__" in obs:
             return self._handle_shutdown_control(obs)
         request = self._canonicalize_observation(obs)
-        if self.distributed_world_size == 1:
-            return self._execute_canonical_request(request)
         if self.distributed_rank != 0:
             raise RuntimeError("WebSocket inference is only valid on RoboCasa365 rank 0")
+        evidence = self._make_observation_evidence(obs)
         with self._dispatch_lock:
-            self._broadcast_distributed_command("infer", request)
-            return self._execute_canonical_request(request)
+            donor = self._configure_replay_for_current_step(evidence=evidence)
+            if donor is not None:
+                evidence["donor_episode_key"], evidence["donor_task_id"] = donor
+            self._pending_evidence = evidence
+            try:
+                if self.distributed_world_size > 1:
+                    self._broadcast_distributed_command(
+                        "infer",
+                        {"request": request, "evidence": evidence},
+                    )
+                response = self._execute_canonical_request(request)
+                self._advance_evidence_control_step()
+                return response
+            finally:
+                self._pending_evidence = None
 
     def _handle_shutdown_control(self, request: dict[str, Any]) -> dict[str, Any]:
         """Acknowledge a nonce-bound rank-0 shutdown and exit cleanly."""
@@ -842,10 +1016,12 @@ class RoboCasa365PolicyService(ActionModelService):
         time.sleep(2.0)
         os._exit(0)
 
-    @staticmethod
-    def _reset_local_state() -> None:
-        """The formal service is stateless across DeMiAn episodes."""
-        return None
+    def _reset_local_state(self) -> None:
+        """Reset evidence bookkeeping without changing model state."""
+        self._evidence_episode = int(getattr(self, "_evidence_episode", -1)) + 1
+        self._evidence_control_step = 0
+        if self.distributed_rank == 0:
+            self._pending_evidence = None
 
     def reset(self, reset_info: dict[str, Any] | None = None) -> None:
         if reset_info is not None and not isinstance(reset_info, dict):
@@ -867,7 +1043,9 @@ class RoboCasa365PolicyService(ActionModelService):
             if op == "infer":
                 # All ranks execute the identical model call; only rank 0 owns
                 # the client response, so worker outputs are deliberately dropped.
-                self._execute_canonical_request(payload)
+                self._configure_replay_for_current_step(evidence=payload["evidence"])
+                self._execute_canonical_request(payload["request"])
+                self._advance_evidence_control_step()
             elif op == "reset":
                 self._run_synchronized_stage("reset", self._reset_local_state)
             elif op == "shutdown":
@@ -910,6 +1088,19 @@ class RoboCasa365PolicyService(ActionModelService):
             "wire_inputs": [*_CAMERA_KEYS, _STATE_KEY, "prompt"],
             "conditioning_views": ["observation/agentview_left", "observation/eye_in_hand"],
             "state_conditioning": False,
+            "action_relevance_intervention": getattr(self, "_action_relevance_intervention", "normal"),
+            "action_relevance_seed": self._action_relevance_seed,
+            "action_relevance_jacobian_projections": self._action_relevance_jacobian_projections,
+            "action_relevance_jacobian_endpoint": (
+                "final_denoise_action_velocity_wrt_routed_c"
+                if self._action_relevance_jacobian_projections > 0
+                else None
+            ),
+            "action_relevance_intervention_bank": (
+                str(getattr(self, "action_relevance_intervention_bank_path", None))
+                if getattr(self, "action_relevance_intervention_bank_path", None) is not None
+                else None
+            ),
             "model_action": "[dpos3,rot6d_columns6,gripper1]",
             "output_action": "[dpos3,axisangle3,gripper1]",
             "gripper_transform": "identity",

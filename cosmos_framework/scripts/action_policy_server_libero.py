@@ -80,6 +80,13 @@ from cosmos_framework.inference.common.args import CheckpointOverrides, ConfigFi
 from cosmos_framework.inference.common.config import deserialize_config_dict
 from cosmos_framework.inference.common.init import init_output_dir
 from cosmos_framework.inference.inference import OmniInference
+from cosmos_framework.model.generator.mot.action_relevance import (
+    clear_action_relevance_graph_tensors,
+    collect_action_relevance_evidence,
+    collect_action_relevance_graph_tensors,
+    configure_action_relevance_modules,
+    estimate_action_relevance_jacobian_energy,
+)
 from cosmos_framework.scripts.action_policy_server_utils import (
     DEFAULT_FALLBACK_OUTPUT_DIR,
     disable_runtime_ema_for_frozen_config,
@@ -493,6 +500,20 @@ class ActionServerArgs(pydantic.BaseModel):
     dump_every: int = 1
     """Dump every N-th request (only used when ``--dump-dir`` is set)."""
 
+    # ----- action-relevance evidence -----------------------------------------
+    action_relevance_intervention: str = "normal"
+    """Routed-C intervention. One of normal, selected, complement,
+    random_matched, zero, shuffle, or cross_episode."""
+    action_relevance_seed: int = 0
+    """Deterministic seed for random-matched and temporal-shuffle interventions."""
+    action_relevance_trace_dir: Path | None = None
+    """Optional directory for routed-C evidence traces. Privileged labels supplied
+    in request ``evidence`` metadata are recorded but never passed to the model."""
+    action_relevance_jacobian_projections: int = 0
+    """Rademacher projections for the local final-denoise action-velocity Jacobian.
+    Zero disables the diagnostic; positive values require normal intervention,
+    tracing, and guidance=1.0."""
+
     # ----- HTTP server --------------------------------------------------------
     host: str = "0.0.0.0"
     """HTTP host to bind."""
@@ -590,6 +611,44 @@ class ActionModelService:
         self.pipe: OmniInference = pipe
         self.model = pipe.model
         self.model.eval()
+        jacobian_projections = int(args.action_relevance_jacobian_projections)
+        if jacobian_projections < 0:
+            raise ValueError("--action-relevance-jacobian-projections must be non-negative")
+        if jacobian_projections > 0:
+            if args.action_relevance_intervention != "normal":
+                raise ValueError("Jacobian capture is defined only for the normal intervention")
+            if args.action_relevance_trace_dir is None:
+                raise ValueError("Jacobian capture requires --action-relevance-trace-dir")
+            if float(args.guidance) != 1.0:
+                raise ValueError("Jacobian capture requires --guidance 1.0")
+            self.model.requires_grad_(False)
+        action_relevance_modules = configure_action_relevance_modules(
+            self.model,
+            intervention_mode=args.action_relevance_intervention,
+            intervention_seed=int(args.action_relevance_seed),
+            capture_evidence=args.action_relevance_trace_dir is not None,
+            capture_graph=jacobian_projections > 0,
+        )
+        if (
+            args.action_relevance_intervention != "normal"
+            or args.action_relevance_trace_dir is not None
+        ) and action_relevance_modules == 0:
+            raise RuntimeError("No ActionRelevanceAdapter modules were found in the loaded checkpoint")
+        self._action_relevance_intervention = args.action_relevance_intervention
+        self._action_relevance_seed = int(args.action_relevance_seed)
+        self._action_relevance_jacobian_projections = jacobian_projections
+        self.action_relevance_trace_dir = args.action_relevance_trace_dir
+        if self.action_relevance_trace_dir is not None:
+            self.action_relevance_trace_dir.mkdir(parents=True, exist_ok=True)
+        self._evidence_trace_id = 0
+        self._evidence_trace_lock = threading.Lock()
+        log.info(
+            "[action-server] action relevance: "
+            f"modules={action_relevance_modules} "
+            f"intervention={args.action_relevance_intervention!r} "
+            f"jacobian_projections={jacobian_projections} "
+            f"trace_dir={str(self.action_relevance_trace_dir)!r}"
+        )
         # OmniInference always uses OmniSetupArgs at runtime, but the base class
         # types the attribute as the more general SetupArgs.
         assert isinstance(pipe.setup_args, OmniSetupArgs)
@@ -691,6 +750,91 @@ class ActionModelService:
 
         if args.run_validation:
             self._run_developer_validation()
+
+    def _write_action_relevance_trace(
+        self,
+        *,
+        requests: list[dict[str, Any]],
+        actions: list[list[list[float]]],
+        records: list[dict[str, Any]],
+    ) -> None:
+        if self.action_relevance_trace_dir is None:
+            return
+        if not records:
+            raise RuntimeError("Action-relevance tracing was enabled but no routed-C record was captured")
+
+        metadata = []
+        replay_inputs = []
+        for request in requests:
+            supplied = request.get("evidence", {})
+            if supplied is not None and not isinstance(supplied, dict):
+                raise ValueError("request evidence metadata must be a JSON object")
+            metadata.append(
+                {
+                    "prompt": str(request.get("prompt", "")),
+                    "evidence": supplied or {},
+                }
+            )
+            replay_inputs.append(
+                {
+                    "image_png": base64.b64decode(str(request["image"]), validate=True),
+                    "prompt": str(request.get("prompt", "")),
+                    "domain_name": str(request.get("domain_name", "libero")),
+                    "image_size": int(request.get("image_size", 256)),
+                    "evidence": supplied or {},
+                }
+            )
+        payload = {
+            "schema_version": 1,
+            "metadata": metadata,
+            "replay_inputs": replay_inputs,
+            "actions": torch.as_tensor(actions, dtype=torch.float32),
+            "layers": records,
+        }
+        with self._evidence_trace_lock:
+            self._evidence_trace_id += 1
+            path = self.action_relevance_trace_dir / f"trace_{self._evidence_trace_id:08d}.pt"
+            torch.save(payload, path)
+
+    def _prepare_action_relevance_jacobian(self) -> None:
+        if self._action_relevance_jacobian_projections <= 0:
+            return
+        self.model._action_relevance_local_prediction = None
+        clear_action_relevance_graph_tensors(self.model)
+
+    def _attach_action_relevance_jacobian(
+        self,
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        projections = self._action_relevance_jacobian_projections
+        if projections <= 0:
+            return records
+        prediction = getattr(self.model, "_action_relevance_local_prediction", None)
+        routed_tensors = collect_action_relevance_graph_tensors(self.model)
+        try:
+            if prediction is None:
+                raise RuntimeError("No final-denoise action prediction was captured")
+            with torch.enable_grad():
+                energy_by_module = estimate_action_relevance_jacobian_energy(
+                    prediction,
+                    routed_tensors,
+                    num_projections=projections,
+                    seed=self._action_relevance_seed,
+                )
+            expected_modules = {str(record["module"]) for record in records}
+            if expected_modules != set(energy_by_module):
+                raise RuntimeError(
+                    "Jacobian/evidence module mismatch: "
+                    f"evidence={sorted(expected_modules)}, jacobian={sorted(energy_by_module)}"
+                )
+            for record in records:
+                record["jacobian_energy"] = energy_by_module[str(record["module"])].cpu()
+                record["jacobian_endpoint"] = "final_denoise_action_velocity_wrt_routed_c"
+                record["jacobian_projections"] = projections
+            return records
+        finally:
+            self.model._action_relevance_local_prediction = None
+            clear_action_relevance_graph_tensors(self.model)
 
     # ------------------------------------------------------------------
     # Action denormalization
@@ -829,6 +973,15 @@ class ActionModelService:
             "max_action_dim": self.cfg.max_action_dim,
             "raw_action_dim": self.cfg.raw_action_dim,
             "action_stats_path": str(self.cfg.action_stats_path) if self.cfg.action_stats_path else None,
+            "action_relevance_intervention": self._action_relevance_intervention,
+            "action_relevance_seed": self._action_relevance_seed,
+            "action_relevance_jacobian_projections": self._action_relevance_jacobian_projections,
+            "action_relevance_jacobian_endpoint": (
+                "final_denoise_action_velocity_wrt_routed_c"
+                if self._action_relevance_jacobian_projections > 0
+                else None
+            ),
+            "action_relevance_trace_enabled": self.action_relevance_trace_dir is not None,
         }
 
     # ------------------------------------------------------------------
@@ -956,7 +1109,13 @@ class ActionModelService:
         }
         t_inf0 = time.monotonic()
         with self._lock:
-            with torch.inference_mode():
+            self._prepare_action_relevance_jacobian()
+            grad_context = (
+                torch.no_grad()
+                if self._action_relevance_jacobian_projections > 0
+                else torch.inference_mode()
+            )
+            with grad_context:
                 samples = self.model.generate_samples_from_batch(
                     batch,
                     guidance=self.cfg.guidance,
@@ -964,12 +1123,19 @@ class ActionModelService:
                     num_steps=self.cfg.num_steps,
                     has_negative_prompt=False,
                 )
+                evidence_records = collect_action_relevance_evidence(self.model)
+                evidence_records = self._attach_action_relevance_jacobian(evidence_records)
         t_inf1 = time.monotonic()
         actions: list[list[list[float]]] = []
         for i in range(n):
             pred = samples["action"][i].float().squeeze(0)  # [T,D]
             pred = self._denormalize_action(pred)
             actions.append(pred.detach().cpu().numpy().tolist())
+        self._write_action_relevance_trace(
+            requests=reqs,
+            actions=actions,
+            records=evidence_records,
+        )
         log.info(
             f"[action-server] predict_batch n={n} steps={self.cfg.num_steps} "
             f"ms_total={(time.monotonic() - t0) * 1000.0:.1f} ms_infer={(t_inf1 - t_inf0) * 1000.0:.1f}"
@@ -1058,7 +1224,13 @@ class ActionModelService:
         # Run inference
         t_inf0 = time.monotonic()
         with self._lock:
-            with torch.inference_mode():
+            self._prepare_action_relevance_jacobian()
+            grad_context = (
+                torch.no_grad()
+                if self._action_relevance_jacobian_projections > 0
+                else torch.inference_mode()
+            )
+            with grad_context:
                 samples = self.model.generate_samples_from_batch(
                     batch,
                     guidance=self.cfg.guidance,
@@ -1066,6 +1238,8 @@ class ActionModelService:
                     num_steps=self.cfg.num_steps,
                     has_negative_prompt=False,
                 )
+                evidence_records = collect_action_relevance_evidence(self.model)
+                evidence_records = self._attach_action_relevance_jacobian(evidence_records)
                 pred_action = samples["action"][0]  # [T,D] or [1,T,D]
 
                 # Decode vision for rollout video (samples["vision"] is a list; take first sample)
@@ -1080,6 +1254,11 @@ class ActionModelService:
         pred_action = self._denormalize_action(pred_action)
         pred_action_np = pred_action.detach().cpu().numpy()  # [T,D]
         pred_action_list = pred_action_np.tolist()  # List of [a0, a1, ..., aD]
+        self._write_action_relevance_trace(
+            requests=[req],
+            actions=[pred_action_list],
+            records=evidence_records,
+        )
 
         # Convert video to base64-encoded PNG frames
         pred_video_frames = _video_tensor_to_pil_images(pred_video_c_t_h_w)

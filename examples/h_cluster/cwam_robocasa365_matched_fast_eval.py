@@ -560,7 +560,11 @@ def check_partial_task(args: argparse.Namespace) -> dict[str, Any]:
 
 def watch_progress(args: argparse.Namespace) -> dict[str, Any]:
     specs = parse_task_specs(args.task_spec)
-    baseline = load_baseline(args.baseline_record, [task for task, _ in specs])
+    baseline = (
+        load_baseline(args.baseline_record, [task for task, _ in specs])
+        if args.baseline_record is not None
+        else None
+    )
     previous = None
     while True:
         states = None
@@ -583,10 +587,12 @@ def watch_progress(args: argparse.Namespace) -> dict[str, Any]:
                         "completed": sum(state["completed"] for state in states),
                         "successes": sum(state["successes"] for state in states),
                     },
-                    "baseline_comparison": compare_with_baseline(states, baseline),
                 }
+                if baseline is not None:
+                    event["baseline_comparison"] = compare_with_baseline(states, baseline)
                 append_ndjson(args.output, event)
-                write_json(args.comparison_output, event["baseline_comparison"], replace=True)
+                if baseline is not None and args.comparison_output is not None:
+                    write_json(args.comparison_output, event["baseline_comparison"], replace=True)
                 previous = signature
         alive = False
         for pid in args.pid:
@@ -619,7 +625,11 @@ def watch_resume_progress(args: argparse.Namespace) -> dict[str, Any]:
     if any(not fragments for fragments in fragments_by_task.values()):
         raise ContractError("every resume task needs at least one fragment")
     tasks = [task for task, _ in complete_specs + resume_specs]
-    baseline = load_baseline(args.baseline_record, tasks)
+    baseline = (
+        load_baseline(args.baseline_record, tasks)
+        if args.baseline_record is not None
+        else None
+    )
     previous = None
     while True:
         states = None
@@ -651,10 +661,12 @@ def watch_resume_progress(args: argparse.Namespace) -> dict[str, Any]:
                         "completed": sum(state["completed"] for state in states),
                         "successes": sum(state["successes"] for state in states),
                     },
-                    "baseline_comparison": compare_with_baseline(states, baseline),
                 }
+                if baseline is not None:
+                    event["baseline_comparison"] = compare_with_baseline(states, baseline)
                 append_ndjson(args.output, event)
-                write_json(args.comparison_output, event["baseline_comparison"], replace=True)
+                if baseline is not None and args.comparison_output is not None:
+                    write_json(args.comparison_output, event["baseline_comparison"], replace=True)
                 previous = signature
         alive = False
         for pid in args.pid:
@@ -750,7 +762,11 @@ def merge_resume_fragments(args: argparse.Namespace) -> dict[str, Any]:
 def summarize(args: argparse.Namespace) -> dict[str, Any]:
     specs = parse_task_specs(args.task_spec)
     states = [task_state(task, path) for task, path in specs]
-    baseline = load_baseline(args.baseline_record, [task for task, _ in specs])
+    baseline = (
+        load_baseline(args.baseline_record, [task for task, _ in specs])
+        if args.baseline_record is not None
+        else None
+    )
     if any(state["completed"] != args.expected_episodes or not state["complete"] for state in states):
         raise ContractError(f"incomplete task results: {states}")
     for path in args.runtime_receipt + args.shutdown_receipt:
@@ -772,20 +788,23 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
         "rjob_name": args.rjob_name,
         "protocol": {
             "episodes_per_task": args.expected_episodes,
-            "max_steps": 400,
-            "open_loop_horizon": 12,
+            "max_steps": args.max_steps,
+            "open_loop_horizon": args.open_loop_horizon,
             "policy_sampler": "unipc",
             "policy_steps": 30,
             "policy_guidance": 1.0,
-            "base_seed": 42,
+            "base_seed": args.base_seed,
+            "intervention_condition": args.intervention_condition,
+            "trace_fixed_horizon": args.trace_fixed_horizon,
         },
         "tasks": states,
         "aggregate": {"episodes": total, "successes": successes, "success_rate": successes / total},
-        "baseline_comparison": compare_with_baseline(states, baseline),
         "runtime_receipts": [str(path.resolve()) for path in args.runtime_receipt],
         "shutdown_receipts": [str(path.resolve()) for path in args.shutdown_receipt],
         "progress_log": str(args.progress_log.resolve()),
     }
+    if baseline is not None:
+        value["baseline_comparison"] = compare_with_baseline(states, baseline)
     write_json(args.output, value)
     with args.csv_output.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=("task", "successes", "episodes", "success_rate"))
@@ -844,8 +863,8 @@ def build_parser() -> argparse.ArgumentParser:
     progress.add_argument("--task-spec", action="append", required=True)
     progress.add_argument("--pid", type=int, action="append", required=True)
     progress.add_argument("--interval-seconds", type=float, default=15)
-    progress.add_argument("--baseline-record", type=Path, required=True)
-    progress.add_argument("--comparison-output", type=Path, required=True)
+    progress.add_argument("--baseline-record", type=Path)
+    progress.add_argument("--comparison-output", type=Path)
     progress.add_argument("--output", type=Path, required=True)
     resume_progress = commands.add_parser("watch-resume-progress")
     resume_progress.add_argument("--experiment-id", required=True)
@@ -857,8 +876,8 @@ def build_parser() -> argparse.ArgumentParser:
     resume_progress.add_argument("--expected-episodes", type=int, required=True)
     resume_progress.add_argument("--pid", type=int, action="append", required=True)
     resume_progress.add_argument("--interval-seconds", type=float, default=15)
-    resume_progress.add_argument("--baseline-record", type=Path, required=True)
-    resume_progress.add_argument("--comparison-output", type=Path, required=True)
+    resume_progress.add_argument("--baseline-record", type=Path)
+    resume_progress.add_argument("--comparison-output", type=Path)
     resume_progress.add_argument("--output", type=Path, required=True)
     check = commands.add_parser("check-task")
     check.add_argument("--task", required=True)
@@ -886,10 +905,19 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--rjob-name", required=True)
     summary.add_argument("--task-spec", action="append", required=True)
     summary.add_argument("--expected-episodes", type=int, default=20)
+    summary.add_argument("--max-steps", type=int, default=400)
+    summary.add_argument("--open-loop-horizon", type=int, default=12)
+    summary.add_argument("--base-seed", type=int, default=42)
+    summary.add_argument(
+        "--intervention-condition",
+        choices=("normal", "selected", "complement", "random_matched", "zero", "shuffle", "cross_episode"),
+        default="normal",
+    )
+    summary.add_argument("--trace-fixed-horizon", action="store_true")
     summary.add_argument("--runtime-receipt", type=Path, action="append", required=True)
     summary.add_argument("--shutdown-receipt", type=Path, action="append", required=True)
     summary.add_argument("--progress-log", type=Path, required=True)
-    summary.add_argument("--baseline-record", type=Path, required=True)
+    summary.add_argument("--baseline-record", type=Path)
     summary.add_argument("--output", type=Path, required=True)
     summary.add_argument("--csv-output", type=Path, required=True)
     status = commands.add_parser("write-status")

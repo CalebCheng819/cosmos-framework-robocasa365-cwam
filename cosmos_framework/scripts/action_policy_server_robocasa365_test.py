@@ -129,6 +129,29 @@ def test_server_args_disable_generative_media_guardrails() -> None:
     assert not any("pretrained_model_name=" in value for value in overrides.experiment_overrides)
 
 
+@pytest.mark.parametrize("condition", ["shuffle", "cross_episode"])
+def test_server_args_accept_intervention_bank_path(tmp_path: Path, condition: str) -> None:
+    bank_path = tmp_path / "bank.pt"
+    torch.save(
+        {
+            "schema_version": 1,
+            "pairing": "same_task_same_control_step_different_episode",
+            "entries": {"robocasa365:000000": {}},
+        },
+        bank_path,
+    )
+    args = server.RoboCasa365ServerArgs.model_validate(
+        {
+            "checkpoint": {"checkpoint_path": "/checkpoint/model"},
+            "launch_nonce": "a" * 64,
+            "action_relevance_intervention": condition,
+            "action_relevance_intervention_bank": bank_path,
+        }
+    )
+
+    assert args.action_relevance_intervention_bank == bank_path
+
+
 def test_server_args_apply_canonical_portable_model_asset_overrides(tmp_path: Path) -> None:
     vae_path = tmp_path / "Wan2.2_VAE.pth"
     vae_path.write_bytes(b"vae")
@@ -238,6 +261,8 @@ def test_policy_metadata_records_actual_portable_model_asset_paths(tmp_path: Pat
     service.checkpoint_path = checkpoint_path
     service.training_config_path = config_path
     service.action_stats_path = stats_path
+    service._action_relevance_seed = 42
+    service._action_relevance_jacobian_projections = 0
     service._checkpoint_weight_receipt = {
         "checkpoint_metadata_sha256": server._sha256_regular_file(metadata_path),
         "selected_weight_tree": "net_ema",
@@ -499,6 +524,7 @@ def test_infer_returns_demian_actions_contract_and_png_camera_order() -> None:
     service.domain_name = "robocasa365"
     service.distributed_rank = 0
     service.distributed_world_size = 1
+    service._dispatch_lock = threading.Lock()
     service.cfg = SimpleNamespace(action_chunk_size=16)
     identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
     raw = np.array([[0.1, 0.2, 0.3, *identity, -0.75]] * 16, dtype=np.float32)
@@ -543,6 +569,108 @@ def _identity_raw_action() -> np.ndarray:
     return np.array([[0.1, 0.2, 0.3, *identity, -0.75]] * 16, dtype=np.float32)
 
 
+def _explicit_observation(*, step: int = 0, post_terminal: bool = False) -> dict:
+    observation = _observation()
+    observation.update(
+        {
+            "cwam_episode_key": "robocasa365:open_drawer:seed42:ep000",
+            "cwam_task_id": "open_drawer",
+            "cwam_control_step": step,
+            "cwam_post_terminal": post_terminal,
+        }
+    )
+    return observation
+
+
+def test_trace_capture_requires_complete_explicit_wire_evidence() -> None:
+    service = _distributed_test_service(rank=0)
+    service.action_relevance_trace_dir = Path("/tmp/traces")
+    service._action_relevance_intervention = "normal"
+
+    with pytest.raises(ValueError, match="require explicit episode"):
+        service._make_observation_evidence(_observation())
+
+    partial = _observation()
+    partial["cwam_episode_key"] = "episode:0"
+    with pytest.raises(ValueError, match="metadata is partial"):
+        service._make_observation_evidence(partial)
+
+
+def test_explicit_wire_evidence_preserves_episode_task_step_and_terminal_marker() -> None:
+    service = _distributed_test_service(rank=0)
+    service.action_relevance_trace_dir = Path("/tmp/traces")
+    service._action_relevance_intervention = "normal"
+
+    evidence = service._make_observation_evidence(
+        _explicit_observation(step=13, post_terminal=True)
+    )
+
+    assert evidence["episode_key"] == "robocasa365:open_drawer:seed42:ep000"
+    assert evidence["task_id"] == "open_drawer"
+    assert evidence["control_step"] == 13
+    assert evidence["post_terminal"] is True
+    assert evidence["evidence_source"] == "explicit_wire_v1"
+
+
+@pytest.mark.parametrize("condition", ["shuffle", "cross_episode"])
+def test_replay_lookup_uses_exact_wire_evidence(condition: str) -> None:
+    service = _distributed_test_service(rank=0)
+    service._action_relevance_intervention = condition
+    captured: list[dict] = []
+
+    class Bank:
+        def routed_c(self, **kwargs: object) -> tuple[dict[str, torch.Tensor], str, str]:
+            captured.append(dict(kwargs))
+            return {"blocks.0.action_relevance": torch.zeros(1, 2, 4)}, "donor:1", "other_task"
+
+    service._action_relevance_replay_bank = Bank()
+    service.model = object()
+    evidence = {
+        "episode_key": "target:0",
+        "task_id": "open_drawer",
+        "control_step": 9,
+        "post_terminal": False,
+    }
+    with patch.object(server, "set_action_relevance_fixed_routed_c", return_value=1):
+        donor = service._configure_replay_for_current_step(evidence=evidence)
+
+    assert captured == [
+        {
+            "condition": condition,
+            "episode_key": "target:0",
+            "task_id": "open_drawer",
+            "control_step": 9,
+        }
+    ]
+    assert donor == ("donor:1", "other_task")
+
+
+def test_distributed_command_rejects_incomplete_evidence() -> None:
+    service = _distributed_test_service(rank=0)
+    request = {
+        "image": "encoded",
+        "prompt": "open the drawer",
+        "domain_name": "robocasa365",
+        "image_size": 256,
+    }
+    command = {
+        "schema_version": 2,
+        "sequence": 0,
+        "op": "infer",
+        "payload": {
+            "request": request,
+            "evidence": {
+                "episode_key": "target:0",
+                "task_id": "open_drawer",
+                "control_step": 0,
+            },
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="missing.*post_terminal"):
+        service._validate_distributed_command(command, expected_sequence=0)
+
+
 def test_distributed_rank0_broadcasts_canonical_request_and_executes_same_model_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -576,12 +704,17 @@ def test_distributed_rank0_broadcasts_canonical_request_and_executes_same_model_
     assert response["actions"].shape == (16, 7)
     assert len(broadcasts) == 1
     command = broadcasts[0]
-    assert command["schema_version"] == 1
+    assert command["schema_version"] == 2
     assert command["sequence"] == 0
     assert command["op"] == "infer"
-    assert set(command["payload"]) == {"image", "prompt", "domain_name", "image_size"}
-    assert prepared_requests == [command["payload"]]
-    assert predicted_requests == [command["payload"]]
+    assert set(command["payload"]) == {"request", "evidence"}
+    canonical = command["payload"]["request"]
+    evidence = command["payload"]["evidence"]
+    assert set(canonical) == {"image", "prompt", "domain_name", "image_size"}
+    assert evidence["episode_key"] == "robocasa365:000000"
+    assert evidence["control_step"] == 0
+    assert prepared_requests == [canonical]
+    assert predicted_requests == [canonical]
     assert stages == ["prepare", "postprocess"]
 
 
@@ -627,7 +760,13 @@ def test_distributed_worker_executes_infer_resets_and_discards_result() -> None:
         "domain_name": "robocasa365",
         "image_size": 256,
     }
-    commands = iter((("infer", canonical), ("reset", None), ("shutdown", None)))
+    evidence = {
+        "episode_key": "task:000",
+        "task_id": "open_drawer",
+        "control_step": 0,
+        "post_terminal": False,
+    }
+    commands = iter((("infer", {"request": canonical, "evidence": evidence}), ("reset", None), ("shutdown", None)))
     executed: list[dict] = []
     synchronized: list[str] = []
 
@@ -745,7 +884,18 @@ def test_distributed_worker_model_exception_fails_closed() -> None:
         "domain_name": "robocasa365",
         "image_size": 256,
     }
-    service._receive_distributed_command = lambda: ("infer", canonical)
+    service._receive_distributed_command = lambda: (
+        "infer",
+        {
+            "request": canonical,
+            "evidence": {
+                "episode_key": "task:000",
+                "task_id": "open_drawer",
+                "control_step": 0,
+                "post_terminal": False,
+            },
+        },
+    )
 
     def fail(_request: dict) -> dict:
         raise RuntimeError("worker model failed")

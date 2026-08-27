@@ -1,0 +1,196 @@
+diff --git a/demian_wam/eval_utils/run_robocasa_eval.py b/demian_wam/eval_utils/run_robocasa_eval.py
+--- a/demian_wam/eval_utils/run_robocasa_eval.py
++++ b/demian_wam/eval_utils/run_robocasa_eval.py
+@@ -107,9 +107,22 @@ class RoboCasaClient:
+         self.actions_from_chunk_completed = 0
+         self.pred_action_chunk = None
+         self._last_generated_text = ""
++        self._cwam_episode_key = None
++        self._cwam_task_id = None
++        self._cwam_control_step = 0
++        self._cwam_post_terminal = False
+ 
+-    def reset(self):
++    def reset(self, *, cwam_episode_key: str | None = None, cwam_task_id: str | None = None):
+         self._reset_state()
++        if (cwam_episode_key is None) != (cwam_task_id is None):
++            raise ValueError("CWAM episode key and task id must be supplied together")
++        self._cwam_episode_key = cwam_episode_key
++        self._cwam_task_id = cwam_task_id
++
++    def set_cwam_post_terminal(self, value: bool) -> None:
++        if type(value) is not bool:
++            raise TypeError("CWAM post-terminal marker must be a bool")
++        self._cwam_post_terminal = value
+ 
+     def infer(self, obs: dict, instruction: str, reasoning_text: str | None = None) -> dict:
+         """
+@@ -139,7 +152,17 @@ class RoboCasaClient:
+             }
+             if reasoning_text:
+                 request_data["reasoning_text"] = reasoning_text
++            if self._cwam_episode_key is not None:
++                request_data.update(
++                    {
++                        "cwam_episode_key": self._cwam_episode_key,
++                        "cwam_task_id": self._cwam_task_id,
++                        "cwam_control_step": self._cwam_control_step,
++                        "cwam_post_terminal": self._cwam_post_terminal,
++                    }
++                )
+             result = self.client.infer(request_data)
++            self._cwam_control_step += 1
+             actions = np.asarray(result["actions"])
+             assert actions.ndim == 2, f"Expected 2-D action chunk, got {actions.shape}"
+             assert actions.shape[-1] == 7, f"Expected 7 action dims, got {actions.shape[-1]}"
+@@ -327,6 +350,9 @@ def run_episode(
+     fg_caption_fn=None,
+     caption_suffix: str | None = None,
+     caption_format: str = "reasoning",
++    cwam_episode_key: str | None = None,
++    cwam_task_id: str | None = None,
++    trace_fixed_horizon: bool = False,
+ ) -> dict:
+     """
+     Runs one episode. Returns a result dict with keys:
+@@ -343,7 +369,7 @@ def run_episode(
+     # Each environment episode must start with a fresh policy chunk. Otherwise,
+     # actions left in the client's open-loop buffer can leak across episode and
+     # task boundaries when the previous rollout ends before the horizon.
+-    client.reset()
++    client.reset(cwam_episode_key=cwam_episode_key, cwam_task_id=cwam_task_id)
+     if init_state is not None:
+         # Deterministic reset: set ep_meta then reset.
+         # DO NOT use sim.set_state_from_flattened() — causes gray backgrounds
+@@ -379,8 +405,11 @@ def run_episode(
+     subtask_successes: list[bool] = []
+     action_log: list[list[float]] = []
+     generated_texts: list[str] = []
++    terminal_step: int | None = None
++    post_terminal = False
+ 
+     for step in range(max_steps):
++        client.set_cwam_post_terminal(post_terminal)
+         caption = fg_caption_fn(step) if fg_caption_fn else None
+         ret = client.infer(obs, instruction, reasoning_text=caption)
+         video.append(_add_subtitle(ret["viz"], subtitle_lines, step))
+@@ -397,6 +426,9 @@ def run_episode(
+             cv2.imshow("OpenPI \u2013 RoboCasa", cv2.cvtColor(ret["viz"], cv2.COLOR_RGB2BGR))
+             cv2.waitKey(1)
+ 
++        if post_terminal:
++            continue
++
+         obs, _reward, done, _truncated, info = env.step(ret["action_dict"])
+ 
+         if info.get("success", False):
+@@ -413,13 +445,18 @@ def run_episode(
+             subtask_successes = info["subtask_successes"]
+ 
+         if done:
+-            break
++            terminal_step = step + 1
++            if not trace_fixed_horizon:
++                break
++            post_terminal = True
+ 
+     result = {
+         "success": success,
+         "place_anytime": place_anytime,
+         "place_first_step": place_first_step,
+-        "steps": step + 1,
++        "steps": terminal_step if terminal_step is not None else step + 1,
++        "trace_steps": step + 1,
++        "trace_fixed_horizon": trace_fixed_horizon,
+         "subtask_successes": subtask_successes,
+         "video": video,
+         "action_log": action_log,
+@@ -528,6 +565,10 @@ class Args:
+     are reused from the cell's prior results_shard{task_shard}.json if it exists."""
+     max_steps: int = 400
+     open_loop_horizon: int = 12  # WAM: 3 latent frames × 4 temporal compression
++    trace_fixed_horizon: bool = False
++    """After terminal success, query the frozen final observation to max_steps for donor coverage."""
++    intervention_condition: str = "normal"
++    """CWAM intervention condition recorded in every episode result."""
+ 
+     # Policy server
+     host: str = "localhost"
+@@ -684,6 +725,21 @@ def select_tasks(args: Args) -> list[str]:
+ 
+ 
+ def main(args: Args):
++    protocol_conditions = {
++        "normal",
++        "selected",
++        "complement",
++        "random_matched",
++        "zero",
++        "shuffle",
++        "cross_episode",
++    }
++    if args.intervention_condition not in protocol_conditions:
++        raise ValueError(
++            f"Unsupported intervention_condition={args.intervention_condition!r}; "
++            f"expected one of {sorted(protocol_conditions)}"
++        )
++
+     task_names = select_tasks(args)
+     print(f"Evaluating {len(task_names)} tasks (shard {args.task_shard}/{args.num_shards}): {task_names}")
+ 
+@@ -872,6 +928,25 @@ def main(args: Args):
+                 # Cap at num_episodes (in case prior file has more than we want).
+                 _prior_eps = _prior_eps[:num_episodes]
+                 if _prior_eps:
++                    if args.trace_fixed_horizon or args.intervention_condition != "normal":
++                        for prior_ep, prior_result in enumerate(_prior_eps):
++                            prior_condition = prior_result.get("intervention_condition")
++                            prior_task = prior_result.get("protocol_task_id")
++                            prior_key = prior_result.get("episode_key")
++                            if prior_condition != args.intervention_condition:
++                                raise ValueError(
++                                    f"Resume condition mismatch for {task_name} episode {prior_ep}: "
++                                    f"found {prior_condition!r}, expected {args.intervention_condition!r}"
++                                )
++                            if prior_task != task_name:
++                                raise ValueError(
++                                    f"Resume task mismatch for {task_name} episode {prior_ep}: "
++                                    f"found {prior_task!r}"
++                                )
++                            if not isinstance(prior_key, str) or not prior_key:
++                                raise ValueError(
++                                    f"Resume episode {prior_ep} for {task_name} has no episode_key"
++                                )
+                     episode_results = list(_prior_eps)
+                     successes = sum(1 for r in episode_results if r.get("success"))
+                     place_anytime_count = sum(1 for r in episode_results if r.get("place_anytime"))
+@@ -949,6 +1024,8 @@ def main(args: Args):
+                     ep_caption_format = "reasoning"  # VLM captions use the standard reasoning prefix
+ 
+             if dyn:
++                if args.trace_fixed_horizon:
++                    raise ValueError("trace_fixed_horizon is not supported with dynamic instructions")
+                 result = run_episode_dynamic(
+                     env=env,
+                     client=client,
+@@ -969,7 +1046,20 @@ def main(args: Args):
+                     fg_caption_fn=fg_caption_fn,
+                     caption_suffix=ep_caption_suffix,
+                     caption_format=ep_caption_format,
++                    cwam_episode_key=(
++                        f"robocasa365:{task_name}:seed{ep_seed}:ep{ep:03d}"
++                    ),
++                    cwam_task_id=task_name,
++                    trace_fixed_horizon=args.trace_fixed_horizon,
+                 )
++            result.update(
++                {
++                    "episode_key": f"robocasa365:{task_name}:seed{ep_seed}:ep{ep:03d}",
++                    "protocol_task_id": task_name,
++                    "task_id": task_name,
++                    "intervention_condition": args.intervention_condition,
++                }
++            )
+             if result["success"]:
+                 successes += 1
+             if result.get("place_anytime", False):
