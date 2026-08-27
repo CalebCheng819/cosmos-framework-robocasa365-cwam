@@ -26,6 +26,7 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${ARCHIVE_START_STEP:=500}"
 : "${ARCHIVE_END_STEP:=5000}"
 : "${ARCHIVE_INTERVAL:=500}"
+: "${ARCHIVE_COMPACT_INTERVAL:=0}"
 : "${LIBERO_LATENT_CACHE_MODE:=disabled}"
 : "${LIBERO_LATENT_CACHE_OSS_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826/wan-latent-cache-v1}"
 : "${TOML_FILE:=$COSMOS_SOURCE/examples/toml/sft_config/action_policy_libero_all_s1_nano.toml}"
@@ -282,7 +283,8 @@ if [[ "$ENABLE_OSS" == 1 ]]; then
             --checkpoints-dir "$CHECKPOINTS_DIR" --remote-root "$OSS_RUN_ROOT" \
             --receipts-dir "$EVIDENCE_ROOT/checkpoint-receipts" --experiment-id "$EXPERIMENT_ID" \
             --job-id "$KUBEBRAIN_RJOB_NAME" --source-commit "$SOURCE_COMMIT" \
-            --start-step "$ARCHIVE_START_STEP" --end-step "$ARCHIVE_END_STEP" --interval "$ARCHIVE_INTERVAL"
+            --start-step "$ARCHIVE_START_STEP" --end-step "$ARCHIVE_END_STEP" \
+            --interval "$ARCHIVE_INTERVAL" --compact-interval "$ARCHIVE_COMPACT_INTERVAL"
     ) >"$EVIDENCE_ROOT/archive.log" 2>&1 &
     ARCHIVER_PID=$!
 fi

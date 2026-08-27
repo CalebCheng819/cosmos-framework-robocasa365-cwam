@@ -12,10 +12,14 @@ def test_continuation_contract_is_step_500_to_100k() -> None:
     assert "cycle_lengths = [99500]" in config
     assert "f_start = [1.0]" in config
     assert "max_iter        = 100000" in config
-    assert "save_iter = 5000" in config
+    assert "save_iter = 1000" in config
     assert 'RESUME_STEP:=500' in submit
     assert "LIBERO_LATENT_CACHE_MODE=required" in submit
     assert "ALLOW_DATA_STREAM_REPLAY=1" in submit
+    assert "ARCHIVE_START_STEP=1000" in submit
+    assert "ARCHIVE_INTERVAL=1000" in submit
+    assert "ARCHIVE_COMPACT_INTERVAL=10000" in submit
+    assert '--compact-interval "$ARCHIVE_COMPACT_INTERVAL"' in runner
     assert "checkpoint.load_training_state=true" in runner
     assert "checkpoint.keys_not_to_resume=[scheduler,dataloader]" in runner
     assert 'CHECKPOINTS_DIR="$OUTPUT_ROOT/cwam_action_libero/' in runner
