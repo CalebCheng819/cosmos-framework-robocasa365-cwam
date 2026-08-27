@@ -125,6 +125,7 @@ class EpisodeResult:
     steps: int
     error: str | None
     actions: list[list[float]]
+    trace_steps: int | None = None
 
 
 class ActionEnvironmentClient:
@@ -158,12 +159,11 @@ class ActionEnvironmentClient:
         except requests.RequestException:
             return False
 
-    def get_info(self) -> dict[str, str]:
+    def get_info(self) -> dict[str, Any]:
         """Get model server info."""
         resp = requests.get(f"{self.server_url}/info", timeout=5.0)
         resp.raise_for_status()
         return resp.json()
-
     def notify_next_episode(self) -> None:
         """Notify server to advance to next episode (used with dataset action server)."""
         try:
@@ -231,7 +231,12 @@ class ActionEnvironmentClient:
         resized = [self.resize_image(img) for img in images]
         return np.concatenate(resized, axis=1)
 
-    def predict(self, observation: np.ndarray | list[np.ndarray]) -> dict[str, Any]:
+    def predict(
+        self,
+        observation: np.ndarray | list[np.ndarray],
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Send observation(s) to model server and get predicted actions.
 
         Args:
@@ -252,6 +257,8 @@ class ActionEnvironmentClient:
             "domain_name": self.domain_name,
             "image_size": self.image_size,
         }
+        if evidence is not None:
+            payload["evidence"] = evidence
 
         resp = requests.post(
             f"{self.server_url}/predict",
@@ -266,21 +273,29 @@ class ActionEnvironmentClient:
             raise RuntimeError(f"Model server error: {result['error']}")
         return result
 
-    def predict_batch(self, observations: list[list[np.ndarray]]) -> list[list[list[float]]]:
+    def predict_batch(
+        self,
+        observations: list[list[np.ndarray]],
+        *,
+        evidence: list[dict[str, Any]] | None = None,
+    ) -> list[list[list[float]]]:
         """Batched inference: a list of per-env multi-view observations -> ONE
         POST /predict_batch -> a list of action chunks (one per env). Used by the
         vectorized eval so N parallel envs share a single diffusion forward."""
+        if evidence is not None and len(evidence) != len(observations):
+            raise ValueError("evidence metadata must align with batched observations")
         items = []
-        for obs_imgs in observations:
+        for index, obs_imgs in enumerate(observations):
             concat = self.concatenate_images(obs_imgs) if len(obs_imgs) > 1 else self.resize_image(obs_imgs[0])
-            items.append(
-                {
-                    "image": self.encode_image_raw(concat),
-                    "prompt": self.prompt,
-                    "domain_name": self.domain_name,
-                    "image_size": self.image_size,
-                }
-            )
+            item = {
+                "image": self.encode_image_raw(concat),
+                "prompt": self.prompt,
+                "domain_name": self.domain_name,
+                "image_size": self.image_size,
+            }
+            if evidence is not None:
+                item["evidence"] = evidence[index]
+            items.append(item)
         resp = requests.post(
             f"{self.server_url}/predict_batch",
             json={"items": items},
@@ -292,6 +307,115 @@ class ActionEnvironmentClient:
         if "error" in result and result["error"]:
             raise RuntimeError(f"Model server error: {result['error']}")
         return result["actions"]
+
+
+def _validate_server_intervention(server_info: dict[str, Any], expected: str) -> None:
+    actual = server_info.get("action_relevance_intervention")
+    if actual is None:
+        raise RuntimeError(
+            "Model server /info does not report action_relevance_intervention; "
+            "refusing to label the evaluation condition from client arguments alone"
+        )
+    if actual != expected:
+        raise RuntimeError(
+            f"Intervention mismatch: evaluator expects {expected!r}, server reports {actual!r}"
+        )
+    bank = server_info.get("action_relevance_intervention_bank")
+    if expected in {"shuffle", "cross_episode"} and not bank:
+        raise RuntimeError(f"Server condition {expected!r} requires a reported fixed replay bank")
+    if expected not in {"shuffle", "cross_episode"} and bank:
+        raise RuntimeError(f"Server condition {expected!r} unexpectedly reports a replay bank: {bank!r}")
+
+
+def _episode_records(task_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [episode for task in task_results for episode in task.get("episode_results", [])]
+
+
+def _observation_evidence(
+    observation: dict[str, Any],
+    *,
+    episode_key: str,
+    task_id: str,
+    episode: int,
+    control_step: int,
+    post_terminal: bool = False,
+) -> dict[str, Any]:
+    """Export privileged labels for analysis without adding them to policy inputs."""
+    relevant_keys = (
+        "robot0_eef_pos",
+        "robot0_eef_quat",
+        "robot0_gripper_qpos",
+        "object-state",
+    )
+    nuisance_keys = (
+        "robot0_joint_pos",
+        "robot0_joint_vel",
+        "robot0_gripper_qvel",
+    )
+
+    def fields_and_flat(keys: tuple[str, ...]) -> tuple[dict[str, list[float]], list[float]]:
+        fields: dict[str, list[float]] = {}
+        flat: list[float] = []
+        for key in keys:
+            if key not in observation:
+                continue
+            value = np.asarray(observation[key], dtype=np.float32).reshape(-1)
+            if not np.isfinite(value).all():
+                raise ValueError(f"Non-finite privileged observation field {key!r}")
+            values = value.tolist()
+            fields[key] = values
+            flat.extend(values)
+        return fields, flat
+
+    relevant_fields, relevant = fields_and_flat(relevant_keys)
+    nuisance_fields, nuisance = fields_and_flat(nuisance_keys)
+    if not relevant:
+        raise ValueError("LIBERO observation has no supported action-relevant state fields")
+    expected_lengths = {
+        "robot0_eef_pos": 3,
+        "robot0_eef_quat": 4,
+        "robot0_gripper_qpos": 2,
+        "robot0_joint_pos": 7,
+        "robot0_joint_vel": 7,
+        "robot0_gripper_qvel": 2,
+    }
+    for field, expected_length in expected_lengths.items():
+        actual_length = len(relevant_fields.get(field, nuisance_fields.get(field, [])))
+        if actual_length != expected_length:
+            raise ValueError(
+                f"LIBERO protocol field {field!r} has length {actual_length}, expected {expected_length}"
+            )
+
+    # LIBERO's object-state length varies across tasks.  A fixed schema is
+    # required before traces from all four suites can share one R2/MCC matrix.
+    object_state = relevant_fields.get("object-state", [])
+    if len(object_state) > 128:
+        raise ValueError(f"LIBERO object-state exceeds the 128-value protocol budget: {len(object_state)}")
+    object_state_padded = object_state + [0.0] * (128 - len(object_state))
+    relevant = (
+        relevant_fields.get("robot0_eef_pos", [])
+        + relevant_fields.get("robot0_eef_quat", [])
+        + relevant_fields.get("robot0_gripper_qpos", [])
+        + object_state_padded
+    )
+    return {
+        "episode_key": episode_key,
+        "task_id": task_id,
+        "episode": episode,
+        "control_step": control_step,
+        "post_terminal": post_terminal,
+        "relevant_factors": relevant,
+        "nuisance_factors": nuisance,
+        "relevant_fields": relevant_fields,
+        "nuisance_fields": nuisance_fields,
+        "relevant_factor_schema": {
+            "robot0_eef_pos": 3,
+            "robot0_eef_quat": 4,
+            "robot0_gripper_qpos": 2,
+            "object-state": 128,
+            "object_state_valid_length": len(object_state),
+        },
+    }
 
 
 def _find_accessible_dri_nodes() -> list[Path]:
@@ -617,9 +741,13 @@ def _run_episode(
     max_steps: int,
     warmup_steps: int,
     initial_state: np.ndarray | None,
+    task_id: int,
+    protocol_task_id: str,
+    episode_idx: int,
     gif_path: Path | None,
     gif_fps: int,
     comparison_path: Path | None = None,
+    trace_fixed_horizon: bool = False,
 ) -> EpisodeResult:
     env.reset()
     if initial_state is not None:
@@ -631,6 +759,8 @@ def _run_episode(
     base_pose: tuple[np.ndarray, np.ndarray] | None = None
     step = 0
     success = False
+    terminal_steps: int | None = None
+    post_terminal = False
     gif_frames: list[Image.Image] = []
     action_log: list[list[float]] = []
     is_multi_view = len(cameras) > 1
@@ -671,6 +801,14 @@ def _run_episode(
             continue
 
         if not action_queue:
+            evidence = _observation_evidence(
+                obs,
+                episode_key=f"{protocol_task_id}:{episode_idx:03d}",
+                task_id=protocol_task_id,
+                episode=episode_idx,
+                control_step=step,
+                post_terminal=post_terminal,
+            )
             if is_multi_view:
                 observation_imgs = _get_libero_images(
                     obs,
@@ -678,7 +816,7 @@ def _run_episode(
                     flip_images=flip_images,
                     rotate_180=rotate_180,
                 )
-                result = client.predict(observation_imgs)
+                result = client.predict(observation_imgs, evidence=evidence)
             else:
                 observation_img = _get_libero_image(
                     obs,
@@ -686,7 +824,7 @@ def _run_episode(
                     flip_images=flip_images,
                     rotate_180=rotate_180,
                 )
-                result = client.predict(observation_img)
+                result = client.predict(observation_img, evidence=evidence)
             actions = result.get("action", [])
             if not actions:
                 return EpisodeResult(False, step, "Empty action chunk from server", action_log)
@@ -725,6 +863,9 @@ def _run_episode(
         action_list = _remap_gripper(action_list, gripper_mode)
 
         action_log.append(action_list)
+        if post_terminal:
+            step += 1
+            continue
         obs, _, done, info = env.step(action_list)
         step += 1
         record_frame(obs)
@@ -734,16 +875,24 @@ def _run_episode(
 
         if isinstance(info, dict) and info.get("success"):
             success = True
-            break
-        if done:
+            terminal_steps = step
+            if trace_fixed_horizon:
+                post_terminal = True
+            else:
+                break
+        elif done:
             success = True if not isinstance(info, dict) else bool(info.get("success", True))
-            break
+            terminal_steps = step
+            if trace_fixed_horizon:
+                post_terminal = True
+            else:
+                break
 
     if gif_path is not None:
         _save_gif(gif_frames, gif_path, gif_fps)
     if comparison_path is not None and comparison_windows:
         _save_comparison_gif(comparison_windows, comparison_path, gif_fps)
-    return EpisodeResult(success, step, None, action_log)
+    return EpisodeResult(success, terminal_steps or step, None, action_log, trace_steps=step)
 
 
 def _load_initial_states(
@@ -754,9 +903,12 @@ def _load_initial_states(
     initial_states_path: str,
     episode_idx: int,
 ) -> np.ndarray | None:
-    default_initial_states = task_suite.get_task_init_states(task_id)
-
     if initial_states_path == "DEFAULT":
+        task = task_suite.get_task(task_id)
+        init_states_path = Path(get_libero_path("init_states")) / task.problem_folder / task.init_states_file
+        # The benchmark's legacy loader omits weights_only=False and breaks on
+        # torch>=2.6.  These are trusted, repo-provided LIBERO state tensors.
+        default_initial_states = torch.load(init_states_path, weights_only=False)
         return np.array(default_initial_states[episode_idx])
 
     with open(initial_states_path, "r", encoding="utf-8") as f:
@@ -823,6 +975,26 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP request timeout in seconds")
     parser.add_argument("--wait_timeout", type=float, default=60.0, help="Seconds to wait for server health")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--intervention_condition",
+        type=str,
+        default="normal",
+        choices=[
+            "normal",
+            "selected",
+            "complement",
+            "random_matched",
+            "zero",
+            "shuffle",
+            "cross_episode",
+        ],
+        help="Routed-C condition used by the paired action server.",
+    )
+    parser.add_argument(
+        "--trace_fixed_horizon",
+        action="store_true",
+        help="After terminal success, keep querying the frozen final observation to max_steps for aligned intervention traces.",
+    )
     parser.add_argument("--save_gifs", action="store_true", help="Save per-episode GIFs of rendered frames")
     parser.add_argument(
         "--save_comparison",
@@ -910,6 +1082,9 @@ def _run_task_vectorized(
     task: Any,
     task_description: str,
     *,
+    task_id: int,
+    protocol_task_id: str,
+    intervention_condition: str,
     num_trials: int,
     num_envs: int,
     env_image_size: int,
@@ -954,6 +1129,8 @@ def _run_task_vectorized(
         if init_states[t] is None:
             results[t] = {
                 "episode": t,
+                "episode_key": f"{protocol_task_id}:{t:03d}",
+                "intervention_condition": intervention_condition,
                 "success": False,
                 "steps": 0,
                 "error": "Skipped due to failed expert demo",
@@ -979,6 +1156,7 @@ def _run_task_vectorized(
         for w0 in range(0, len(runnable), n):
             wave = runnable[w0 : w0 + n]          # trial indices for this wave
             slots = list(range(len(wave)))        # env slots in use
+            trial_by_slot = dict(zip(slots, wave))
             t_wave0 = time.perf_counter()
             venv.reset(id=slots)
             states = np.stack([np.asarray(init_states[t], dtype=np.float64) for t in wave])
@@ -1005,8 +1183,18 @@ def _run_task_vectorized(
                     _get_libero_images(obs_by_slot[s], cameras, flip_images=flip_images, rotate_180=rotate_180)
                     for s in active
                 ]
+                evidence_batch = [
+                    _observation_evidence(
+                        obs_by_slot[s],
+                        episode_key=f"{protocol_task_id}:{trial_by_slot[s]:03d}",
+                        task_id=protocol_task_id,
+                        episode=trial_by_slot[s],
+                        control_step=step,
+                    )
+                    for s in active
+                ]
                 try:
-                    chunks = client.predict_batch(obs_batch)
+                    chunks = client.predict_batch(obs_batch, evidence=evidence_batch)
                 except Exception as e:  # noqa: BLE001
                     for s in active:
                         done[s] = True
@@ -1048,6 +1236,8 @@ def _run_task_vectorized(
             for s, t in zip(slots, wave):
                 results[t] = {
                     "episode": t,
+                    "episode_key": f"{protocol_task_id}:{t:03d}",
+                    "intervention_condition": intervention_condition,
                     "success": bool(succ[s]),
                     "steps": int(nsteps[s]),
                     "error": err[s],
@@ -1070,6 +1260,8 @@ def main() -> None:
         raise ValueError("--save_gifs requires --output_dir to be set")
     if args.save_comparison and not args.output_dir:
         raise ValueError("--save_comparison requires --output_dir to be set")
+    if args.trace_fixed_horizon and args.num_envs != 1:
+        raise ValueError("--trace_fixed_horizon requires --num_envs=1")
 
     # Parse cameras from comma-separated string
     cameras = [c.strip() for c in args.camera.split(",") if c.strip()]
@@ -1092,7 +1284,9 @@ def main() -> None:
     print(f"MuJoCo GL backend: {mujoco_backend}", flush=True)
     print("Waiting for model server...", flush=True)
     _wait_for_server(client, args.wait_timeout)
-    print(f"Connected to model server: {client.get_info()}", flush=True)
+    server_info = client.get_info()
+    _validate_server_intervention(server_info, args.intervention_condition)
+    print(f"Connected to model server: {server_info}", flush=True)
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[args.task_suite]()
@@ -1115,6 +1309,7 @@ def main() -> None:
 
     for task_id in selected_task_ids:
         task = task_suite.get_task(task_id)
+        protocol_task_id = f"{args.task_suite}:{task_id:03d}"
 
         # ---- Vectorized path: N parallel envs + one batched /predict_batch per step ----
         if args.num_envs > 1:
@@ -1133,6 +1328,9 @@ def main() -> None:
             episode_results = _run_task_vectorized(
                 task,
                 task_description,
+                task_id=task_id,
+                protocol_task_id=protocol_task_id,
+                intervention_condition=args.intervention_condition,
                 num_trials=args.num_trials_per_task,
                 num_envs=args.num_envs,
                 env_image_size=args.env_image_size,
@@ -1175,6 +1373,7 @@ def main() -> None:
                     "successes": task_successes,
                     "success_rate": task_success_rate,
                     "episode_results": episode_results,
+                    "intervention_condition": args.intervention_condition,
                 }
             )
             print(
@@ -1206,9 +1405,13 @@ def main() -> None:
             )
             if initial_state is None:
                 episode_elapsed_s = time.perf_counter() - episode_t0
+                task_episodes += 1
+                total_episodes += 1
                 episode_results.append(
                     {
                         "episode": episode_idx,
+                        "episode_key": f"{protocol_task_id}:{episode_idx:03d}",
+                        "intervention_condition": args.intervention_condition,
                         "success": False,
                         "steps": 0,
                         "error": "Skipped due to failed expert demo",
@@ -1247,9 +1450,13 @@ def main() -> None:
                     max_steps=max_steps,
                     warmup_steps=args.warmup_steps,
                     initial_state=initial_state,
+                    task_id=task_id,
+                    protocol_task_id=protocol_task_id,
+                    episode_idx=episode_idx,
                     gif_path=gif_path,
                     gif_fps=args.gif_fps,
                     comparison_path=comparison_path,
+                    trace_fixed_horizon=args.trace_fixed_horizon,
                 )
             except Exception as exc:
                 result = EpisodeResult(False, 0, str(exc), [])
@@ -1264,8 +1471,11 @@ def main() -> None:
             episode_results.append(
                 {
                     "episode": episode_idx,
+                    "episode_key": f"{protocol_task_id}:{episode_idx:03d}",
+                    "intervention_condition": args.intervention_condition,
                     "success": result.success,
                     "steps": result.steps,
+                    "trace_steps": result.trace_steps,
                     "error": result.error,
                     "elapsed_s": round(episode_elapsed_s, 3),
                 }
@@ -1300,6 +1510,7 @@ def main() -> None:
                 "successes": task_successes,
                 "success_rate": task_success_rate,
                 "episode_results": episode_results,
+                "intervention_condition": args.intervention_condition,
             }
         )
         print(
@@ -1314,6 +1525,25 @@ def main() -> None:
             pass
 
     overall_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0.0
+    expected_episodes = len(selected_task_ids) * args.num_trials_per_task
+    all_episode_results = _episode_records(task_results)
+    episode_keys = [str(episode.get("episode_key", "")) for episode in all_episode_results]
+    unique_episode_keys = set(episode_keys)
+    error_episodes = [episode for episode in all_episode_results if episode.get("error")]
+    completion_errors: list[str] = []
+    if total_episodes != expected_episodes:
+        completion_errors.append(f"episode_count={total_episodes}, expected={expected_episodes}")
+    if len(all_episode_results) != expected_episodes:
+        completion_errors.append(
+            f"episode_record_count={len(all_episode_results)}, expected={expected_episodes}"
+        )
+    if len(unique_episode_keys) != expected_episodes or "" in unique_episode_keys:
+        completion_errors.append(
+            f"unique_nonempty_episode_keys={len(unique_episode_keys - {''})}, expected={expected_episodes}"
+        )
+    if error_episodes:
+        completion_errors.append(f"error_episodes={len(error_episodes)}")
+    terminal_status = "COMPLETE" if not completion_errors else "INCOMPLETE"
     summary = {
         "task_suite": args.task_suite,
         "total_episodes": total_episodes,
@@ -1324,6 +1554,11 @@ def main() -> None:
         "action_space": args.action_space,
         "rotation_space": _infer_rotation_space(args.action_dim, args.rotation_space),
         "action_dim": args.action_dim,
+        "intervention_condition": args.intervention_condition,
+        "server_info": server_info,
+        "expected_episodes": expected_episodes,
+        "terminal_status": terminal_status,
+        "completion_errors": completion_errors,
         "task_results": task_results,
     }
 
@@ -1336,6 +1571,22 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         summary_path = output_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        status = {
+            "status": terminal_status,
+            "intervention_condition": args.intervention_condition,
+            "total_episodes": total_episodes,
+            "expected_episodes": expected_episodes,
+            "error_episodes": len(error_episodes),
+            "completion_errors": completion_errors,
+            "server_info": server_info,
+        }
+        status_path = output_dir / "status.json"
+        status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        complete_path = output_dir / "COMPLETE"
+        if terminal_status == "COMPLETE":
+            complete_path.write_text(json.dumps(status, sort_keys=True) + "\n", encoding="utf-8")
+        elif complete_path.exists():
+            complete_path.unlink()
         print(f"Saved summary to {summary_path}", flush=True)
 
 

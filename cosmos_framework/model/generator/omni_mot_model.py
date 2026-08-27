@@ -34,6 +34,7 @@ from cosmos_framework.model.generator.diffusion.samplers.edm import EDMSampler
 from cosmos_framework.model.generator.diffusion.samplers.fixed_step import FixedStepSampler
 from cosmos_framework.model.generator.diffusion.samplers.unipc import UniPCSampler, UniPCSamplerConfig
 from cosmos_framework.model.generator.mot.context_parallel_utils import context_parallel_broadcast_tensor_list
+from cosmos_framework.model.generator.mot.action_relevance import action_relevance_graph_capture_enabled
 from cosmos_framework.model.generator.mot.cosmos3_vfm_network import Cosmos3VFMNetwork, Cosmos3VFMNetworkConfig
 from cosmos_framework.model.generator.mot.inference_text_kv_memory import (
     InferenceTextKVMemoryState,
@@ -1093,6 +1094,8 @@ class OmniMoTModel(ImaginaireModel):
             "vae_pixel_shapes": _vae_pixel_shapes,
             **losses_dict,
         }
+        if action_relevance_graph_capture_enabled(self):
+            output_batch["action_relevance_pred_action"] = out_net["preds_action"]
         if sigmas_action is not None:
             output_batch["sigma_action"] = sigmas_action  # [n_action, 1] — dense over action-bearing samples
         if getattr(rf_cfg, "independent_sound_schedule", False) and sigmas_sound is not None:
@@ -2288,11 +2291,24 @@ class OmniMoTModel(ImaginaireModel):
             )
 
         # --- Network forward ---
-        out = self.denoise(
-            net=net,
-            data_batch_packed=packed_sequence,
-            memory=memory,
-        )
+        capture_local_action_jacobian = action_relevance_graph_capture_enabled(self)
+        if capture_local_action_jacobian:
+            # generate_samples_from_batch is no-grad. Re-enable autograd only for
+            # the final-forward candidate; each denoising call overwrites this
+            # reference, so the server later differentiates the last call only.
+            with torch.enable_grad():
+                out = self.denoise(
+                    net=net,
+                    data_batch_packed=packed_sequence,
+                    memory=memory,
+                )
+            self._action_relevance_local_prediction = out.get("preds_action")
+        else:
+            out = self.denoise(
+                net=net,
+                data_batch_packed=packed_sequence,
+                memory=memory,
+            )
 
         # --- Apply velocity masks ---
         # Zero out velocity for conditioned parts (they don't change during sampling)

@@ -7,12 +7,24 @@ from __future__ import annotations
 
 import math
 from itertools import accumulate
+from typing import Any
 
 import torch
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from cosmos_framework.data.generator.sequence_packing import ModalityData
+
+
+ACTION_RELEVANCE_INTERVENTIONS = (
+    "normal",
+    "selected",
+    "complement",
+    "random_matched",
+    "zero",
+    "shuffle",
+    "cross_episode",
+)
 
 
 def conditioned_vision_token_indexes(vision: ModalityData) -> torch.Tensor:
@@ -99,6 +111,41 @@ class ActionRelevanceAdapter(nn.Module):
         initial_logit = math.log(initial_residual_gate / (1.0 - initial_residual_gate))
         # FSDP2 rejects zero-dimensional parameters.
         self.residual_gate_logit = nn.Parameter(torch.tensor([initial_logit]))
+        self.intervention_mode = "normal"
+        self.intervention_seed = 0
+        self.capture_evidence = False
+        self.capture_graph = False
+        self.last_evidence: dict[str, Any] | None = None
+        self.last_routed_c: torch.Tensor | None = None
+        # Runtime-only donor used by strict episode-level replay interventions.
+        # This is deliberately not a buffer, so it never enters a checkpoint.
+        self.fixed_routed_c: torch.Tensor | None = None
+
+    def configure_evidence(
+        self,
+        *,
+        intervention_mode: str = "normal",
+        intervention_seed: int = 0,
+        capture_evidence: bool = False,
+        capture_graph: bool = False,
+    ) -> None:
+        if intervention_mode not in ACTION_RELEVANCE_INTERVENTIONS:
+            raise ValueError(
+                f"Unknown action-relevance intervention {intervention_mode!r}; "
+                f"expected one of {ACTION_RELEVANCE_INTERVENTIONS}"
+            )
+        self.intervention_mode = intervention_mode
+        self.intervention_seed = intervention_seed
+        self.capture_evidence = capture_evidence
+        self.capture_graph = capture_graph
+        self.last_evidence = None
+        self.last_routed_c = None
+
+    def set_fixed_routed_c(self, routed_c: torch.Tensor | None) -> None:
+        """Set one exact routed-C donor for the next forward pass."""
+        if routed_c is not None and not isinstance(routed_c, torch.Tensor):
+            raise TypeError("fixed routed C must be a tensor or None")
+        self.fixed_routed_c = routed_c
 
     def init_weights(self) -> None:
         nn.init.ones_(self.query_norm.weight)
@@ -144,6 +191,103 @@ class ActionRelevanceAdapter(nn.Module):
     def _signed_log_position_delta(delta: torch.Tensor) -> torch.Tensor:
         return delta.sign() * torch.log1p(delta.abs()) / 10.0
 
+    @staticmethod
+    def _renormalize_weights(weights: torch.Tensor) -> torch.Tensor:
+        denominator = weights.sum(dim=-1, keepdim=True)
+        return torch.where(denominator > 0, weights / denominator.clamp_min(1.0e-12), weights)
+
+    def _intervene_on_weights(
+        self,
+        weights: torch.Tensor,
+        context_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        mode = self.intervention_mode
+        if mode not in {"selected", "complement", "random_matched"}:
+            return weights
+
+        valid = context_valid[:, None, None, :].expand_as(weights)
+        k = min(self.topk, weights.shape[-1])
+        if mode in {"selected", "complement"}:
+            pooled_scores = weights.mean(dim=1, keepdim=True)
+            selected = torch.zeros_like(pooled_scores, dtype=torch.bool)
+            selected.scatter_(-1, pooled_scores.topk(k, dim=-1).indices, True)
+            selected = selected.expand_as(weights) & valid
+            keep = selected if mode == "selected" else valid & ~selected
+        else:
+            generator = torch.Generator(device=weights.device)
+            generator.manual_seed(self.intervention_seed)
+            random_scores = torch.rand(
+                (weights.shape[0], 1, weights.shape[2], weights.shape[3]),
+                device=weights.device,
+                dtype=torch.float32,
+                generator=generator,
+            ).masked_fill(~valid[:, :1], -torch.inf)
+            keep = torch.zeros_like(random_scores, dtype=torch.bool)
+            keep.scatter_(-1, random_scores.topk(k, dim=-1).indices, True)
+            keep = keep.expand_as(weights) & valid
+        return self._renormalize_weights(weights.masked_fill(~keep, 0.0))
+
+    def _intervene_on_routed(
+        self,
+        routed: torch.Tensor,
+        query_lengths: list[int],
+    ) -> torch.Tensor:
+        mode = self.intervention_mode
+        if mode == "zero":
+            return torch.zeros_like(routed)
+        if mode in {"shuffle", "cross_episode"}:
+            if self.fixed_routed_c is None:
+                raise ValueError(
+                    f"{mode} intervention requires an exact fixed routed-C donor"
+                )
+            if self.fixed_routed_c.shape != routed.shape:
+                raise ValueError(
+                    "fixed routed-C intervention shape mismatch: "
+                    f"expected={tuple(routed.shape)}, got={tuple(self.fixed_routed_c.shape)}"
+                )
+            return self.fixed_routed_c.to(device=routed.device, dtype=routed.dtype)
+        return routed
+
+    def _record_evidence(
+        self,
+        *,
+        base_weights: torch.Tensor,
+        used_weights: torch.Tensor,
+        routed_normal: torch.Tensor,
+        routed: torch.Tensor,
+        query_valid: torch.Tensor,
+        context_valid: torch.Tensor,
+        context_vision: torch.Tensor,
+        query_position: torch.Tensor,
+        context_position: torch.Tensor,
+        query_lengths: list[int],
+        context_lengths: list[int],
+    ) -> None:
+        self.last_routed_c = routed if self.capture_graph else None
+        if self.capture_graph and routed.requires_grad:
+            routed.retain_grad()
+        if not self.capture_evidence:
+            self.last_evidence = None
+            return
+
+        def cpu(value: torch.Tensor) -> torch.Tensor:
+            return value.detach().to(device="cpu")
+
+        self.last_evidence = {
+            "intervention_mode": self.intervention_mode,
+            "attention_normal": cpu(base_weights.mean(dim=1)),
+            "attention_used": cpu(used_weights.mean(dim=1)),
+            "routed_c_normal": cpu(routed_normal),
+            "routed_c": cpu(routed),
+            "query_valid": cpu(query_valid),
+            "context_valid": cpu(context_valid),
+            "context_is_vision": cpu(context_vision),
+            "query_position": cpu(query_position),
+            "context_position": cpu(context_position),
+            "query_lengths": list(query_lengths),
+            "context_lengths": list(context_lengths),
+        }
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -168,6 +312,8 @@ class ActionRelevanceAdapter(nn.Module):
             raise ValueError("sample_lens do not cover hidden_states")
 
         if action_indexes.numel() == 0:
+            self.last_evidence = None
+            self.last_routed_c = None
             zero = hidden_states.sum() * 0.0
             return hidden_states, {
                 "sparsity_loss": zero,
@@ -255,12 +401,39 @@ class ActionRelevanceAdapter(nn.Module):
         relation_logits = self.relation_bias(relation_features.to(query.dtype))
         logits = logits + relation_logits.permute(0, 3, 1, 2).float()
         logits = logits.masked_fill(~context_valid[:, None, None, :], -torch.inf)
-        weights = torch.softmax(logits, dim=-1)
+        base_weights = torch.softmax(logits, dim=-1)
+        weights = self._intervene_on_weights(base_weights, context_valid)
 
         routed = torch.matmul(weights.to(value.dtype), value)
         routed = routed.transpose(1, 2).reshape(num_samples, max_query, self.routing_dim)
-        routed = self.output_proj(routed)
+        if weights is base_weights:
+            routed_normal = routed
+        else:
+            routed_normal = torch.matmul(base_weights.to(value.dtype), value)
+            routed_normal = routed_normal.transpose(1, 2).reshape(
+                num_samples, max_query, self.routing_dim
+            )
+        routed = self._intervene_on_routed(routed, query_lengths)
         routed = routed * query_valid[:, :, None]
+        if self.capture_graph:
+            # The protocol measures the local downstream action Jacobian at routed C.
+            # Always detach here so this diagnostic cannot retain or accidentally
+            # attribute gradients through the visual/context encoder.
+            routed = routed.detach().requires_grad_(True)
+        self._record_evidence(
+            base_weights=base_weights,
+            used_weights=weights,
+            routed_normal=routed_normal,
+            routed=routed,
+            query_valid=query_valid,
+            context_valid=context_valid,
+            context_vision=context_vision,
+            query_position=query_position,
+            context_position=context_position,
+            query_lengths=query_lengths,
+            context_lengths=context_lengths,
+        )
+        routed = self.output_proj(routed)
 
         ordered_indexes = torch.cat(
             [indexes for indexes in action_index_groups if indexes.numel() > 0],
@@ -297,3 +470,167 @@ class ActionRelevanceAdapter(nn.Module):
             "residual_gate": residual_gate,
         }
         return updated_hidden, metrics
+
+
+def configure_action_relevance_modules(
+    root: nn.Module,
+    *,
+    intervention_mode: str = "normal",
+    intervention_seed: int = 0,
+    capture_evidence: bool = False,
+    capture_graph: bool = False,
+) -> int:
+    """Configure every action-relevance adapter without changing its state dict."""
+    count = 0
+    for module in root.modules():
+        if isinstance(module, ActionRelevanceAdapter):
+            module.configure_evidence(
+                intervention_mode=intervention_mode,
+                intervention_seed=intervention_seed,
+                capture_evidence=capture_evidence,
+                capture_graph=capture_graph,
+            )
+            count += 1
+    return count
+
+
+def collect_action_relevance_evidence(root: nn.Module) -> list[dict[str, Any]]:
+    """Collect the last captured routed-C record from each adapter layer."""
+    records = []
+    for name, module in root.named_modules():
+        if isinstance(module, ActionRelevanceAdapter) and module.last_evidence is not None:
+            records.append({"module": name, **module.last_evidence})
+    return records
+
+
+def set_action_relevance_fixed_routed_c(
+    root: nn.Module,
+    routed_by_module: dict[str, torch.Tensor] | None,
+) -> int:
+    """Install exact per-layer routed-C donors without changing model state."""
+    adapters = {
+        name: module
+        for name, module in root.named_modules()
+        if isinstance(module, ActionRelevanceAdapter)
+    }
+    if routed_by_module is None:
+        for module in adapters.values():
+            module.set_fixed_routed_c(None)
+        return len(adapters)
+
+    missing = sorted(set(adapters) - set(routed_by_module))
+    unexpected = sorted(set(routed_by_module) - set(adapters))
+    if missing or unexpected:
+        raise ValueError(
+            "fixed routed-C layer mismatch: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    for name, module in adapters.items():
+        module.set_fixed_routed_c(routed_by_module[name])
+    return len(adapters)
+
+
+def action_relevance_graph_capture_enabled(root: nn.Module) -> bool:
+    """Return whether any routed-C adapter is configured for graph capture."""
+    return any(
+        isinstance(module, ActionRelevanceAdapter) and module.capture_graph
+        for module in root.modules()
+    )
+
+
+def collect_action_relevance_graph_tensors(root: nn.Module) -> list[tuple[str, torch.Tensor]]:
+    """Collect routed-C graph tensors in deterministic module order."""
+    tensors: list[tuple[str, torch.Tensor]] = []
+    for name, module in root.named_modules():
+        if isinstance(module, ActionRelevanceAdapter) and module.last_routed_c is not None:
+            tensors.append((name, module.last_routed_c))
+    return tensors
+
+
+def clear_action_relevance_graph_tensors(root: nn.Module) -> None:
+    """Release routed-C graph references after a local Jacobian estimate."""
+    for module in root.modules():
+        if isinstance(module, ActionRelevanceAdapter):
+            module.last_routed_c = None
+
+
+def _flatten_action_predictions(prediction: Any) -> list[torch.Tensor]:
+    if isinstance(prediction, torch.Tensor):
+        return [prediction]
+    if isinstance(prediction, (list, tuple)):
+        return [tensor for item in prediction for tensor in _flatten_action_predictions(item)]
+    if isinstance(prediction, dict):
+        return [
+            tensor
+            for key in sorted(prediction)
+            for tensor in _flatten_action_predictions(prediction[key])
+        ]
+    raise TypeError(f"Unsupported action prediction container: {type(prediction).__name__}")
+
+
+def estimate_action_relevance_jacobian_energy(
+    prediction: Any,
+    routed_tensors: list[tuple[str, torch.Tensor]],
+    *,
+    num_projections: int = 8,
+    seed: int = 0,
+) -> dict[str, torch.Tensor]:
+    """Estimate per-C-coordinate action Jacobian energy with Rademacher VJPs.
+
+    For routed C shaped ``[B,Q,D]``, query positions are averaged and the
+    returned energy is ``[B,D]``. Multiple adapter layers remain separate so
+    downstream analysis can concatenate them without losing layer identity.
+    """
+    if num_projections <= 0:
+        raise ValueError("num_projections must be positive")
+    predictions = [tensor for tensor in _flatten_action_predictions(prediction) if tensor.numel()]
+    if not predictions:
+        raise ValueError("action prediction is empty")
+    if not routed_tensors:
+        raise ValueError("no routed-C graph tensors were captured")
+    if not torch.is_grad_enabled():
+        raise RuntimeError("Jacobian estimation requires torch.enable_grad()")
+
+    names = [name for name, _ in routed_tensors]
+    routed = [tensor for _, tensor in routed_tensors]
+    batch_size = routed[0].shape[0]
+    for name, tensor in routed_tensors:
+        if tensor.ndim < 2 or tensor.shape[0] != batch_size:
+            raise ValueError(f"routed C {name!r} must be batch-first with a shared batch size")
+        if not tensor.requires_grad:
+            raise ValueError(f"routed C {name!r} does not require gradients")
+
+    output_count = sum(tensor.numel() for tensor in predictions)
+    normalizer = math.sqrt(max(output_count, 1))
+    accumulated = [torch.zeros_like(tensor, dtype=torch.float32) for tensor in routed]
+    for projection in range(num_projections):
+        objective = predictions[0].new_zeros(())
+        for prediction_index, tensor in enumerate(predictions):
+            generator = torch.Generator(device=tensor.device)
+            generator.manual_seed(seed + projection * 104729 + prediction_index)
+            direction = torch.randint(
+                0,
+                2,
+                tensor.shape,
+                device=tensor.device,
+                generator=generator,
+                dtype=torch.int64,
+            ).mul_(2).sub_(1).to(dtype=tensor.dtype)
+            objective = objective + (tensor * direction).sum() / normalizer
+        gradients = torch.autograd.grad(
+            objective,
+            routed,
+            retain_graph=projection + 1 < num_projections,
+            allow_unused=True,
+        )
+        for index, gradient in enumerate(gradients):
+            if gradient is not None:
+                accumulated[index].add_(gradient.detach().float().square())
+
+    result: dict[str, torch.Tensor] = {}
+    for name, energy in zip(names, accumulated):
+        energy = energy / num_projections
+        if energy.ndim > 2:
+            energy = energy.mean(dim=tuple(range(1, energy.ndim - 1)))
+        result[name] = energy
+    return result
