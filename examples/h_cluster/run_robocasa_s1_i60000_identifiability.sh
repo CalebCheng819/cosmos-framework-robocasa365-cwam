@@ -41,7 +41,7 @@ readonly CHECKPOINT_ROOT="$RUN_ROOT/checkpoint"
 readonly SERVING_CHECKPOINT="$CHECKPOINT_ROOT/model"
 readonly TRAINING_CONFIG="$CHECKPOINT_ROOT/config.yaml"
 readonly RECEIPT="$CHECKPOINT_ROOT/ema-bf16-metadata-receipt.json"
-readonly DEMIAN_REPO="$RUN_ROOT/demian"
+readonly STAGED_DEMIAN_REPO="$RUN_ROOT/demian"
 readonly CONDITIONS_ROOT="$RUN_ROOT/conditions"
 readonly TRACE_ROOT="$RUN_ROOT/traces"
 readonly SCRATCH_ROOT="$RUN_ROOT/scratch"
@@ -83,7 +83,7 @@ done
 [[ "$OSS_RUN_ROOT" == eailab-hdd2:eailab/chengjuntao/* ]] || fail "run URI escapes authorized prefix"
 
 mkdir -p "$CHECKPOINT_ROOT" "$CONDITIONS_ROOT" "$TRACE_ROOT" "$SCRATCH_ROOT" \
-    "$EVIDENCE_ROOT" "$BANK_ROOT" "$SECRET_ROOT" "$HANDOFF_ROOT" "$DEMIAN_REPO"
+    "$EVIDENCE_ROOT" "$BANK_ROOT" "$SECRET_ROOT" "$HANDOFF_ROOT" "$STAGED_DEMIAN_REPO"
 chmod 700 "$SECRET_ROOT" "$HANDOFF_ROOT"
 
 cleanup() {
@@ -147,9 +147,9 @@ assert len(list(model.glob("*.distcp"))) == 8
 assert (model / ".metadata").is_file()
 PY
 
-cp -a "$DEMIAN_SOURCE/demian_wam" "$DEMIAN_REPO/"
-ln -s "$DEMIAN_SOURCE/openpi" "$DEMIAN_REPO/openpi"
-(cd "$DEMIAN_REPO" && git apply --check "$DEMIAN_PATCH" && git apply "$DEMIAN_PATCH")
+cp -a "$DEMIAN_SOURCE/demian_wam" "$STAGED_DEMIAN_REPO/"
+ln -s "$DEMIAN_SOURCE/openpi" "$STAGED_DEMIAN_REPO/openpi"
+(cd "$STAGED_DEMIAN_REPO" && git apply --check "$DEMIAN_PATCH" && git apply "$DEMIAN_PATCH")
 
 export EXPERIMENT_ID KUBEBRAIN_RJOB_NAME SOURCE_COMMIT PROTOCOL_COMMIT SOURCE_CHECKPOINT_URI OSS_RUN_ROOT
 export EPISODES_PER_TASK MAX_STEPS OPEN_LOOP_HORIZON POLICY_SEED SPLIT_SEED JACOBIAN_PROJECTIONS TOPK
@@ -180,7 +180,7 @@ run_condition() {
     [[ "$condition" == shuffle || "$condition" == cross_episode ]] && bank="$BANK_PATH"
 
     EVAL_CONTROL_SOURCE="$COSMOS_SOURCE" COSMOS_SOURCE="$COSMOS_SOURCE" \
-    COSMOS_ENV="$COSMOS_ENV" ROBOCASA_ENV="$ROBOCASA_ENV" DEMIAN_REPO="$DEMIAN_REPO" \
+    COSMOS_ENV="$COSMOS_ENV" ROBOCASA_ENV="$ROBOCASA_ENV" DEMIAN_REPO="$STAGED_DEMIAN_REPO" \
     ROBOCASA_REPO="$ROBOCASA_REPO" ROBOSUITE_REPO="$ROBOSUITE_REPO" \
     SERVING_CHECKPOINT_PATH="$SERVING_CHECKPOINT" TRAINING_CONFIG="$TRAINING_CONFIG" \
     ACTION_STATS="$ACTION_STATS" WAN2PT2_VAE="$WAN2PT2_VAE" QWEN_TOKENIZER="$QWEN_TOKENIZER" \
