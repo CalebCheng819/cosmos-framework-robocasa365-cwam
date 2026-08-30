@@ -66,3 +66,21 @@ def test_checkpoint_safe_probe_and_formal_continuation_contracts() -> None:
     assert 'ARCHIVE_END_STEP=100000' in formal
     assert '--positive-tags="$H253_TAG"' in probe
     assert '--positive-tags="$H253_TAG"' in formal
+
+
+def test_h252_eight_gpu_continuation_keeps_every_five_thousand_checkpoint() -> None:
+    submit = (
+        ROOT
+        / "examples/h_cluster/submit_cwam_libero_s1_checkpoint_safe_cont100k_h252_8g_rjob.sh"
+    ).read_text()
+
+    assert 'NUM_GPUS:=8' in submit
+    assert 'RESUME_STEP:=13000' in submit
+    assert 'iter_000013000' in submit
+    assert 'ARCHIVE_START_STEP=15000' in submit
+    assert 'ARCHIVE_END_STEP=100000' in submit
+    assert 'ARCHIVE_INTERVAL=5000' in submit
+    assert 'ARCHIVE_COMPACT_INTERVAL=0' in submit
+    assert 'EXTRA_TAIL_OVERRIDES=checkpoint.save_iter=5000' in submit
+    assert '--positive-tags="$H252_TAG"' in submit
+    assert '--gpu="$NUM_GPUS"' in submit
