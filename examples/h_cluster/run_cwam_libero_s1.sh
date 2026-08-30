@@ -27,6 +27,11 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 : "${ARCHIVE_END_STEP:=5000}"
 : "${ARCHIVE_INTERVAL:=500}"
 : "${ARCHIVE_COMPACT_INTERVAL:=0}"
+: "${ARCHIVER_POLL_SECONDS:=15}"
+: "${ARCHIVER_STABILITY_SECONDS:=30}"
+: "${ARCHIVER_READY_TIMEOUT_SECONDS:=120}"
+: "${ARCHIVER_DRAIN_SECONDS:=180}"
+: "${ARCHIVER_DRAIN_TIMEOUT_SECONDS:=240}"
 : "${LIBERO_LATENT_CACHE_MODE:=disabled}"
 : "${LIBERO_LATENT_CACHE_OSS_ROOT:=eailab-hdd2:eailab/chengjuntao/cwam/libero-s1-4suite-20260826/wan-latent-cache-v1}"
 : "${TOML_FILE:=$COSMOS_SOURCE/examples/toml/sft_config/action_policy_libero_all_s1_nano.toml}"
@@ -42,6 +47,7 @@ readonly OUTPUT_ROOT="$RUN_ROOT/output"
 readonly PREFLIGHT_OUTPUT_ROOT="$RUN_ROOT/preflight-output"
 readonly EVIDENCE_ROOT="$RUN_ROOT/evidence"
 readonly CHECKPOINTS_DIR="$OUTPUT_ROOT/cwam_action_libero/action_sft/$RUN_NAME/checkpoints"
+readonly ARCHIVER_HEARTBEAT="$EVIDENCE_ROOT/checkpoint-receipts/archiver-heartbeat.json"
 readonly HANDOFF_ROOT="$PERSONAL_ROOT/runtime-handoffs/cwam-libero-s1/$KUBEBRAIN_RJOB_NAME"
 readonly SECRET_ROOT="/dev/shm/cwam-libero-s1-rclone"
 readonly RCLONE_CONFIG_PATH="$SECRET_ROOT/rclone.conf"
@@ -50,6 +56,8 @@ readonly RESUME_ROOT="$RUN_ROOT/resume/iter_$(printf '%09d' "$RESUME_STEP")"
 
 MONITOR_PID=""
 ARCHIVER_PID=""
+TRAIN_PID=""
+ARCHIVER_READY=0
 for path in "$CONFIG" "$LAUNCHER" "$ARCHIVER" "$COSMOS_ENV/bin/python" \
     "$BASE_CHECKPOINT_PATH/model/.metadata" "$WAN_VAE_PATH" "$QWEN3_VL_TOKENIZER_PATH/tokenizer.json"; do
     [[ -e "$path" ]] || { echo "ERROR: required input missing: $path" >&2; exit 1; }
@@ -94,15 +102,33 @@ if [[ "$LIBERO_LATENT_CACHE_MODE" == required ]]; then
 fi
 [[ "$(nvidia-smi -L | wc -l)" -eq "$NUM_GPUS" ]] || { echo "ERROR: expected $NUM_GPUS GPUs" >&2; exit 1; }
 
-mkdir -p "$OUTPUT_ROOT" "$PREFLIGHT_OUTPUT_ROOT" "$EVIDENCE_ROOT"
+mkdir -p "$OUTPUT_ROOT" "$PREFLIGHT_OUTPUT_ROOT" "$EVIDENCE_ROOT" "$CHECKPOINTS_DIR"
 export PATH="$COSMOS_ENV/bin:$PATH"
+
+stop_process_bounded() {
+    local pid="$1" grace_seconds="$2" label="$3" elapsed=0
+    [[ -n "$pid" ]] || return 0
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; return 0; }
+    echo "${label}_STOP_REQUEST pid=$pid grace_seconds=$grace_seconds"
+    kill -TERM "$pid" 2>/dev/null || true
+    while kill -0 "$pid" 2>/dev/null && (( elapsed < grace_seconds )); do
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "${label}_STOP_TIMEOUT pid=$pid elapsed_seconds=$elapsed" >&2
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+}
 
 cleanup() {
     local status=$?
     trap - EXIT TERM INT
+    stop_process_bounded "$TRAIN_PID" 30 TRAIN || true
     [[ -z "$MONITOR_PID" ]] || kill "$MONITOR_PID" 2>/dev/null || true
-    [[ -z "$ARCHIVER_PID" || "$status" -eq 0 ]] || kill "$ARCHIVER_PID" 2>/dev/null || true
     [[ -z "$MONITOR_PID" ]] || wait "$MONITOR_PID" 2>/dev/null || true
+    stop_process_bounded "$ARCHIVER_PID" "$ARCHIVER_DRAIN_TIMEOUT_SECONDS" ARCHIVER || true
     if [[ "$ENABLE_OSS" == 1 && -s "$RCLONE_CONFIG_PATH" ]]; then
         "$RCLONE_BIN" copy "$EVIDENCE_ROOT" "$OSS_RUN_ROOT/evidence" --transfers=8 --checkers=16 || true
         local launch_log="$OUTPUT_ROOT/logs/${RUN_NAME}.train.log"
@@ -276,20 +302,77 @@ if [[ "$RUN_PREFLIGHT_FIRST" == 1 ]]; then
 fi
 
 if [[ "$ENABLE_OSS" == 1 ]]; then
-    (
-        for _ in $(seq 1 1200); do [[ -d "$CHECKPOINTS_DIR" ]] && break; sleep 1; done
-        [[ -d "$CHECKPOINTS_DIR" ]]
-        exec "$COSMOS_ENV/bin/python" "$ARCHIVER" \
-            --checkpoints-dir "$CHECKPOINTS_DIR" --remote-root "$OSS_RUN_ROOT" \
-            --receipts-dir "$EVIDENCE_ROOT/checkpoint-receipts" --experiment-id "$EXPERIMENT_ID" \
-            --job-id "$KUBEBRAIN_RJOB_NAME" --source-commit "$SOURCE_COMMIT" \
-            --start-step "$ARCHIVE_START_STEP" --end-step "$ARCHIVE_END_STEP" \
-            --interval "$ARCHIVE_INTERVAL" --compact-interval "$ARCHIVE_COMPACT_INTERVAL"
-    ) >"$EVIDENCE_ROOT/archive.log" 2>&1 &
+    rm -f "$ARCHIVER_HEARTBEAT"
+    "$COSMOS_ENV/bin/python" "$ARCHIVER" \
+        --checkpoints-dir "$CHECKPOINTS_DIR" --remote-root "$OSS_RUN_ROOT" \
+        --receipts-dir "$EVIDENCE_ROOT/checkpoint-receipts" --experiment-id "$EXPERIMENT_ID" \
+        --job-id "$KUBEBRAIN_RJOB_NAME" --source-commit "$SOURCE_COMMIT" \
+        --start-step "$ARCHIVE_START_STEP" --end-step "$ARCHIVE_END_STEP" \
+        --interval "$ARCHIVE_INTERVAL" --compact-interval "$ARCHIVE_COMPACT_INTERVAL" \
+        --poll-seconds "$ARCHIVER_POLL_SECONDS" --stability-seconds "$ARCHIVER_STABILITY_SECONDS" \
+        --drain-seconds "$ARCHIVER_DRAIN_SECONDS" --heartbeat-path "$ARCHIVER_HEARTBEAT" \
+        >"$EVIDENCE_ROOT/archive.log" 2>&1 &
     ARCHIVER_PID=$!
+    for _ in $(seq 1 "$ARCHIVER_READY_TIMEOUT_SECONDS"); do
+        kill -0 "$ARCHIVER_PID" 2>/dev/null || {
+            wait "$ARCHIVER_PID" || true
+            echo "ERROR: checkpoint archiver exited before readiness" >&2
+            exit 1
+        }
+        if [[ -s "$ARCHIVER_HEARTBEAT" ]] && "$COSMOS_ENV/bin/python" - "$ARCHIVER_HEARTBEAT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+heartbeat = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if heartbeat.get("schema_version") != 1 or heartbeat.get("status") != "alive":
+    raise SystemExit(1)
+PY
+        then
+            echo "ARCHIVER_HEALTHY pid=$ARCHIVER_PID heartbeat=$ARCHIVER_HEARTBEAT"
+            ARCHIVER_READY=1
+            break
+        fi
+        sleep 1
+    done
+    [[ "$ARCHIVER_READY" -eq 1 ]] || {
+        echo "ERROR: checkpoint archiver readiness timed out" >&2
+        exit 1
+    }
 fi
 
 echo "TRAIN_START experiment=$EXPERIMENT_ID gpus=$NUM_GPUS resume_step=$RESUME_STEP target_step=$ARCHIVE_END_STEP"
-"$LAUNCHER"
-[[ -z "$ARCHIVER_PID" ]] || wait "$ARCHIVER_PID"
+"$LAUNCHER" &
+TRAIN_PID=$!
+while kill -0 "$TRAIN_PID" 2>/dev/null; do
+    if [[ -n "$ARCHIVER_PID" ]] && ! kill -0 "$ARCHIVER_PID" 2>/dev/null; then
+        set +e
+        wait "$ARCHIVER_PID"
+        archiver_status=$?
+        set -e
+        ARCHIVER_PID=""
+        echo "ERROR: checkpoint archiver exited during training status=$archiver_status" >&2
+        stop_process_bounded "$TRAIN_PID" 30 TRAIN
+        TRAIN_PID=""
+        exit 1
+    fi
+    sleep 15
+done
+set +e
+wait "$TRAIN_PID"
+trainer_status=$?
+set -e
+TRAIN_PID=""
+[[ "$trainer_status" -eq 0 ]] || { echo "ERROR: trainer exited status=$trainer_status" >&2; exit "$trainer_status"; }
+if [[ -n "$ARCHIVER_PID" ]]; then
+    set +e
+    wait "$ARCHIVER_PID"
+    archiver_status=$?
+    set -e
+    ARCHIVER_PID=""
+    [[ "$archiver_status" -eq 0 ]] || {
+        echo "ERROR: checkpoint archiver exited status=$archiver_status" >&2
+        exit "$archiver_status"
+    }
+fi
 echo "TRAIN_AND_ARCHIVE_COMPLETE target_step=$ARCHIVE_END_STEP"

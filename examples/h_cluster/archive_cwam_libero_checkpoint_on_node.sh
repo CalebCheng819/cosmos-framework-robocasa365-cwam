@@ -83,5 +83,5 @@ echo "CHECKPOINT_RESCUE_WAIT source=$SOURCE_CHECKPOINTS_DIR step=$TARGET_STEP"
     --receipts-dir "$EVIDENCE_ROOT/receipts" --experiment-id "$EXPERIMENT_ID" \
     --job-id="$KUBEBRAIN_RJOB_NAME" --source-commit "$SOURCE_COMMIT" \
     --start-step "$TARGET_STEP" --end-step "$TARGET_STEP" --interval "$TARGET_STEP" \
-    --keep-local 2 --poll-seconds 15
+    --keep-local 2 --poll-seconds 15 --allow-legacy-metadata-only
 echo "CHECKPOINT_RESCUE_COMPLETE step=$TARGET_STEP"

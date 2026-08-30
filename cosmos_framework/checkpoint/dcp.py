@@ -41,6 +41,7 @@ The sharded format enables efficient distributed saving/loading by:
 
 import dataclasses
 import enum
+import json
 import multiprocessing
 import os
 import re
@@ -76,6 +77,32 @@ from cosmos_framework.utils import callback, distributed, log, misc
 from cosmos_framework.utils.config import CheckpointConfig, JobConfig
 from cosmos_framework.utils.easy_io import easy_io
 from cosmos_framework.utils.generator.rand_state import get_rand_state_dict, set_rand_state_dict
+
+
+CHECKPOINT_COMPLETE_MARKER = ".cwam_checkpoint_complete.json"
+
+
+def _write_local_json_atomic(path: str, payload: dict[str, Any]) -> None:
+    """Publish a local JSON marker only after its complete contents are durable."""
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    temporary = f"{path}.tmp-{os.getpid()}-{time.time_ns()}"
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 class ModelWrapper(Stateful):
@@ -1090,7 +1117,44 @@ class DistributedCheckpointer(AbstractCheckpointer):
         )
         log.info(f"Saved state to {path}")
 
+    def _checkpoint_complete_marker_path(self, checkpoint_file: str) -> str:
+        return os.path.join(self.save_dirname, checkpoint_file, CHECKPOINT_COMPLETE_MARKER)
+
+    def _clear_checkpoint_complete_marker(self, checkpoint_file: str) -> None:
+        marker_path = self._checkpoint_complete_marker_path(checkpoint_file)
+        if easy_io.exists(marker_path, backend_key=self.save_s3_backend_key):
+            easy_io.remove(marker_path, backend_key=self.save_s3_backend_key)
+
+    def _write_checkpoint_complete_marker(
+        self,
+        checkpoint_file: str,
+        components: list[str],
+    ) -> None:
+        marker_path = self._checkpoint_complete_marker_path(checkpoint_file)
+        payload = {
+            "schema_version": 1,
+            "status": "complete",
+            "checkpoint": checkpoint_file,
+            "iteration": int(checkpoint_file.removeprefix("iter_")),
+            "components": sorted(components),
+            "world_size": dist.get_world_size(),
+            "completed_at_unix_ns": time.time_ns(),
+        }
+        if self.save_to_object_store:
+            easy_io.dump(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                marker_path,
+                backend_key=self.save_s3_backend_key,
+            )
+        else:
+            _write_local_json_atomic(marker_path, payload)
+
     def save_state_dict_worker(self, to_save_dict: Dict[str, Tuple[Any, str]], checkpoint_file: str) -> None:
+        components = list(to_save_dict)
+        if distributed.is_rank0():
+            self._clear_checkpoint_complete_marker(checkpoint_file)
+        dist.barrier()
+
         for key, (v, full_checkpoint_path) in to_save_dict.items():
             if key == "dataloader":
                 self._save_as_pkl(v, full_checkpoint_path)
@@ -1110,9 +1174,12 @@ class DistributedCheckpointer(AbstractCheckpointer):
                     planner=save_planner,
                 )
 
+        dist.barrier()
         if distributed.is_rank0():
+            self._write_checkpoint_complete_marker(checkpoint_file, components)
             log.info(f"Saving last checkpoint file {checkpoint_file}")
             self._write_latest_checkpoint_file(checkpoint_file)
+        dist.barrier()
 
         log.info(f"Saved checkpoint to {os.path.join(self.save_dirname, checkpoint_file)}")
 
