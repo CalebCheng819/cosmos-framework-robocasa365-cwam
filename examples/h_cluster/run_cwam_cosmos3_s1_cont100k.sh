@@ -33,6 +33,7 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 [[ "$GPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: GPU_COUNT must be a positive integer" >&2; exit 1; }
 [[ "$GRAD_ACCUM_ITER" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: GRAD_ACCUM_ITER must be a positive integer" >&2; exit 1; }
 printf -v RESUME_TAG 'iter_%09d' "$RESUME_STEP"
+readonly ARCHIVE_START_STEP=$((RESUME_STEP + 10000))
 
 readonly CONFIG="$COSMOS_SOURCE/examples/toml/sft_config/action_policy_robocasa365_s1_cont100k_nano.toml"
 readonly LAUNCHER="$COSMOS_SOURCE/examples/launch_sft_action_policy_robocasa365_nano.sh"
@@ -179,7 +180,8 @@ MONITOR_PID=$!
         --receipts-dir "$EVIDENCE_ROOT/checkpoint-receipts" \
         --experiment-id "$EXPERIMENT_ID" \
         --job-id "$KUBEBRAIN_RJOB_NAME" \
-        --source-commit "$SOURCE_COMMIT"
+        --source-commit "$SOURCE_COMMIT" \
+        --start-step "$ARCHIVE_START_STEP"
 ) >"$EVIDENCE_ROOT/archive.log" 2>&1 &
 ARCHIVER_PID=$!
 

@@ -36,6 +36,8 @@ def test_runner_parameterizes_resume_step_and_training_state_components() -> Non
     assert ': "${GPU_COUNT:=8}"' in text
     assert ': "${GRAD_ACCUM_ITER:=2}"' in text
     assert 'readonly RESUME_ROOT="$RUN_ROOT/resume/$RESUME_TAG"' in text
+    assert 'readonly ARCHIVE_START_STEP=$((RESUME_STEP + 10000))' in text
+    assert '--start-step "$ARCHIVE_START_STEP"' in text
     assert "checkpoint.keys_not_to_resume=$CHECKPOINT_KEYS_NOT_TO_RESUME" in text
     assert "trainer.grad_accum_iter=$GRAD_ACCUM_ITER" in text
     assert (
