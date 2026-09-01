@@ -1,16 +1,16 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r4-h252-4g",
+  "attempt_id": "attempt-r4-h252-2g",
   "status": "prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
   "cluster": "H",
   "node": "H252",
   "resources": {
-    "gpus": 4,
-    "cpus": 36,
-    "memory_mib": 300000,
+    "gpus": 2,
+    "cpus": 24,
+    "memory_mib": 200000,
     "priority": 9
   },
   "checkpoint": "iter_000060000",
@@ -25,6 +25,11 @@
     "online_gaussian": true,
     "action_clipping": false,
     "policy_seed": 10000
+  },
+  "execution": {
+    "policy_server_gpu": 0,
+    "simulator_gpu": 1,
+    "task_scheduling": "sequential"
   },
   "prior_attempts": [
     {
@@ -43,5 +48,5 @@
       "reason": "Tyro boolean server arguments were passed as valueless flags instead of explicit True values"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r4-h252-4g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r4-h252-2g"
 }

@@ -26,7 +26,7 @@ CHECKPOINT_REMOTE="${CHECKPOINT_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosm
 NOPOSPLAT_REMOTE="${NOPOSPLAT_REMOTE:-eailab-hdd2:fkp-migrate/ailab-eailabagent-gpfs/chengjuntao/placefood_wam/Policy-Lightning/weights/noposplat.ckpt}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r2}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r4}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
@@ -36,8 +36,8 @@ EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252
   echo "EXEC_HORIZON must be positive" >&2
   exit 12
 }
-if [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -ne 4 ]]; then
-  echo "the formal job must see exactly four GPUs" >&2
+if [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -ne 2 ]]; then
+  echo "the formal job must see exactly two GPUs" >&2
   exit 14
 fi
 echo "{\"event\":\"scheduler_contract\",\"expected_node_tag\":\"${EXPECTED_NODE_TAG}\",\"pod_hostname\":\"$(hostname -s)\"}"
@@ -141,9 +141,9 @@ required = {
 missing = {name: str(path) for name, path in required.items() if not path.is_file()}
 if missing:
     raise RuntimeError(f"Cosmos3 asset preflight failed: {missing}")
-if not torch.cuda.is_available() or torch.cuda.device_count() != 4:
-    raise RuntimeError("Cosmos3 preflight requires exactly four visible GPUs")
-print(json.dumps({"event": "cosmos_preflight_passed", "gpu_count": 4}, sort_keys=True), flush=True)
+if not torch.cuda.is_available() or torch.cuda.device_count() != 2:
+    raise RuntimeError("Cosmos3 preflight requires exactly two visible GPUs")
+print(json.dumps({"event": "cosmos_preflight_passed", "gpu_count": 2}, sort_keys=True), flush=True)
 PY
 
 archive_loop >"${LOG_ROOT}/archiver.log" 2>&1 &
@@ -178,8 +178,7 @@ start_server() {
   CHILD_PIDS+=("$!")
 }
 
-start_server 0 18080 29580 placefood
-start_server 2 18082 29582 stackcube
+start_server 0 18080 29580 shared
 
 wait_for_server() {
   local port="$1"
@@ -211,8 +210,7 @@ PY
   echo "{\"event\":\"server_ready\",\"lane\":\"${lane}\",\"waited_seconds\":${waited}}"
 }
 
-wait_for_server 18080 "${CHILD_PIDS[0]}" placefood
-wait_for_server 18082 "${CHILD_PIDS[1]}" stackcube
+wait_for_server 18080 "${CHILD_PIDS[0]}" shared
 
 export NVIDIA_DRIVER_CAPABILITIES=all PYOPENGL_PLATFORM=egl MUJOCO_GL=egl
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
@@ -248,16 +246,16 @@ run_task() {
   CHILD_PIDS+=("$!")
 }
 
-echo '{"event":"formal_two_task_eval_started","tasks":["PlaceFood-rf","TwoRobotsStackCube-rf"]}'
+echo '{"event":"formal_two_task_eval_started","execution":"sequential","tasks":["PlaceFood-rf","TwoRobotsStackCube-rf"]}'
 run_task 1 18080 PlaceFood-rf placefood
-run_task 3 18082 TwoRobotsStackCube-rf stackcube
-
 eval_failed=0
-for index in 2 3; do
-  if ! wait "${CHILD_PIDS[index]}"; then
-    eval_failed=1
-  fi
-done
+if ! wait "${CHILD_PIDS[1]}"; then
+  eval_failed=1
+fi
+run_task 1 18080 TwoRobotsStackCube-rf stackcube
+if ! wait "${CHILD_PIDS[2]}"; then
+  eval_failed=1
+fi
 if [[ "${eval_failed}" -ne 0 ]]; then
   echo "one or more task evaluators failed" >&2
   exit 19
