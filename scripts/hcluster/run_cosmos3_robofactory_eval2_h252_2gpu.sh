@@ -154,25 +154,27 @@ start_server() {
   local port="$2"
   local process_group_port="$3"
   local lane="$4"
-  CUDA_VISIBLE_DEVICES="${gpu}" \
-  MASTER_ADDR=127.0.0.1 MASTER_PORT="${process_group_port}" \
-  RANK=0 LOCAL_RANK=0 WORLD_SIZE=1 LOCAL_WORLD_SIZE=1 \
-  PYTHONPATH="${COSMOS_SOURCE}" \
-    "${TRAIN_PY}" -u -m cosmos_framework.scripts.action_policy_server_robofactory \
-      --checkpoint-path "${CHECKPOINT_ROOT}" \
-      --config-file cosmos_framework/configs/base/config.py \
-      --experiment action_policy_robofactory_multi_robot_nano \
-      --output-dir "${LOCAL_ROOT}/server-${lane}" \
-      --seed 10000 \
-      --guidance 1.0 \
-      --num-steps 30 \
-      --fps 10 \
-      --action-chunk-size 32 \
-      --raw-action-dim 8 \
-      --action-stats-path "${STATS_PATH}" \
-      --host 127.0.0.1 \
-      --port "${port}" \
-      >"${LOG_ROOT}/server-${lane}.log" 2>&1 &
+  (
+    cd "${COSMOS_SOURCE}"
+    CUDA_VISIBLE_DEVICES="${gpu}" \
+    MASTER_ADDR=127.0.0.1 MASTER_PORT="${process_group_port}" \
+    RANK=0 LOCAL_RANK=0 WORLD_SIZE=1 LOCAL_WORLD_SIZE=1 \
+    PYTHONPATH="${COSMOS_SOURCE}" \
+      "${TRAIN_PY}" -u -m cosmos_framework.scripts.action_policy_server_robofactory \
+        --checkpoint-path "${CHECKPOINT_ROOT}" \
+        --config-file cosmos_framework/configs/base/config.py \
+        --experiment action_policy_robofactory_multi_robot_nano \
+        --output-dir "${LOCAL_ROOT}/server-${lane}" \
+        --seed 10000 \
+        --guidance 1.0 \
+        --num-steps 30 \
+        --fps 10 \
+        --action-chunk-size 32 \
+        --raw-action-dim 8 \
+        --action-stats-path "${STATS_PATH}" \
+        --host 127.0.0.1 \
+        --port "${port}"
+  ) >"${LOG_ROOT}/server-${lane}.log" 2>&1 &
   CHILD_PIDS+=("$!")
 }
 
