@@ -26,7 +26,7 @@ CHECKPOINT_REMOTE="${CHECKPOINT_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosm
 NOPOSPLAT_REMOTE="${NOPOSPLAT_REMOTE:-eailab-hdd2:fkp-migrate/ailab-eailabagent-gpfs/chengjuntao/placefood_wam/Policy-Lightning/weights/noposplat.ckpt}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r4}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r5}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
@@ -170,8 +170,6 @@ start_server() {
       --action-chunk-size 32 \
       --raw-action-dim 8 \
       --action-stats-path "${STATS_PATH}" \
-      --format-prompt-as-json True \
-      --http-400-on-error True \
       --host 127.0.0.1 \
       --port "${port}" \
       >"${LOG_ROOT}/server-${lane}.log" 2>&1 &

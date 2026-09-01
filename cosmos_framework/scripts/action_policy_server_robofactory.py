@@ -71,9 +71,17 @@ class RoboFactoryActionModelService(ActionModelService):
         # model output.  Keep its stats disabled and own the exact normalizer here.
         stats_path = args.action_stats_path
         parent_args = args.model_copy(
-            update={"action_stats_path": None, "action_chunk_size": 32, "raw_action_dim": 8}
+            update={
+                "action_stats_path": None,
+                "action_chunk_size": 32,
+                "raw_action_dim": 8,
+                "format_prompt_as_json": True,
+                "http_400_on_error": True,
+            }
         )
         super().__init__(parent_args)
+        if self._prompt_json_formatter is None:
+            raise RuntimeError("RoboFactory service requires structured JSON prompts")
         self.cfg = replace(self.cfg, action_stats_path=stats_path, raw_action_dim=8)
         self.raw_action_dim = 8
         self.action_normalizer = load_imagewam_zscore_normalizer(stats_path)
