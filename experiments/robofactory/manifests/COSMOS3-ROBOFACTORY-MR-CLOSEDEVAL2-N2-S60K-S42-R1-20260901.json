@@ -20,6 +20,19 @@
     "replica_ip": null
   },
   "checkpoint": "iter_000060000",
+  "foundation_assets": {
+    "wan_vae": {
+      "remote": "eailab-hdd2:fkp-migrate/gpfs-migrations/weights-results-20260727T164026+0800/external-link-targets/public-wan/Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth",
+      "bytes": 2818839170
+    },
+    "qwen3_vl_processor": {
+      "repository": "Qwen/Qwen3-VL-8B-Instruct",
+      "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+      "remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/eval-assets/qwen3-vl-8b-instruct-0c351d-processor-v1",
+      "files": 9,
+      "bytes": 11499960
+    }
+  },
   "tasks": [
     "PlaceFood-rf",
     "TwoRobotsStackCube-rf"
@@ -76,7 +89,7 @@
     {
       "attempt_id": "attempt-r8-h252-2g",
       "terminal_state": "failed",
-      "reason": "the formal worker began before the public GPFS Wan VAE path became visible; shared public assets now use a bounded readiness wait"
+      "reason": "the public GPFS Wan VAE and Qwen processor remained unavailable on a fresh H252 worker beyond a bounded wait; attempt r9 stages verified copies from HDD2 into local NVMe"
     }
   ],
   "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r9-h252-2g"

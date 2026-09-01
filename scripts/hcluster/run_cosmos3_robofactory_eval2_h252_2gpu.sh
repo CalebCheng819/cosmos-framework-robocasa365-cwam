@@ -18,15 +18,15 @@ PANEL_PATH="${PANEL_PATH:-${INPUT_ROOT}/table11-fixed-val100-panel.json}"
 STATS_PATH="${STATS_PATH:-${INPUT_ROOT}/checkpoint/dataset_stats.json}"
 ROBOFACTORY_ROOT="${ROBOFACTORY_ROOT:-${EVAL_ASSET_ROOT}/source/robofactory}"
 POLICY_LIGHTNING_ROOT="${POLICY_LIGHTNING_ROOT:-${GPFS_USER}/imagewam-formal/source/policy-lightning-c944b498-clean}"
-WAN_VAE_PATH="${WAN_VAE_PATH:-/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
-QWEN3_VL_TOKENIZER_PATH="${QWEN3_VL_TOKENIZER_PATH:-/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Qwen--Qwen3-VL-8B-Instruct}"
 RCLONE_BIN="${RCLONE_BIN:-${GPFS_USER}/tools/rclone}"
 RCLONE_CONFIG_SOURCE="${RCLONE_CONFIG_SOURCE:-${GPFS_USER}/.fastwam_runtime/rclone.conf}"
 CHECKPOINT_REMOTE="${CHECKPOINT_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/ITER-2026-08-30-COSMOS3-ROBOFACTORY-MR/checkpoints/iter_000060000/model}"
 NOPOSPLAT_REMOTE="${NOPOSPLAT_REMOTE:-eailab-hdd2:fkp-migrate/ailab-eailabagent-gpfs/chengjuntao/placefood_wam/Policy-Lightning/weights/noposplat.ckpt}"
+WAN_VAE_REMOTE="${WAN_VAE_REMOTE:-eailab-hdd2:fkp-migrate/gpfs-migrations/weights-results-20260727T164026+0800/external-link-targets/public-wan/Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
+QWEN3_VL_TOKENIZER_REMOTE="${QWEN3_VL_TOKENIZER_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/eval-assets/qwen3-vl-8b-instruct-0c351d-processor-v1}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r6}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r9}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
@@ -50,36 +50,16 @@ RUN_ROOT="${GPFS_USER}/evals/${EXPERIMENT_ID}/attempts/${ATTEMPT_ID}"
 LOCAL_ROOT="/nvme/${EXPERIMENT_ID}/${ATTEMPT_ID}"
 CHECKPOINT_ROOT="${LOCAL_ROOT}/checkpoint/iter_000060000"
 NOPOSPLAT_CHECKPOINT="${LOCAL_ROOT}/noposplat.ckpt"
+FOUNDATION_ASSET_ROOT="${LOCAL_ROOT}/foundation-assets"
+WAN_VAE_PATH="${WAN_VAE_PATH:-${FOUNDATION_ASSET_ROOT}/Wan2.2_VAE.pth}"
+QWEN3_VL_TOKENIZER_PATH="${QWEN3_VL_TOKENIZER_PATH:-${FOUNDATION_ASSET_ROOT}/Qwen3-VL-8B-Instruct}"
 LOG_ROOT="${RUN_ROOT}/logs"
 RESULTS_ROOT="${RUN_ROOT}/results"
 RCLONE_CONFIG="/dev/shm/${EXPERIMENT_ID}-${ATTEMPT_ID}-rclone.conf"
 
-wait_for_shared_file() {
-  local label="$1"
-  local path="$2"
-  local timeout_seconds="$3"
-  local waited=0
-  until [[ -e "${path}" ]]; do
-    if (( waited >= timeout_seconds )); then
-      echo "shared file readiness timeout: label=${label} path=${path}" >&2
-      return 1
-    fi
-    sleep 5
-    waited=$((waited + 5))
-  done
-  echo "{\"event\":\"shared_file_ready\",\"label\":\"${label}\",\"waited_seconds\":${waited}}"
-}
-
-# A newly scheduled worker can begin before the public GPFS namespace is fully
-# visible. Bound the wait so a mount race does not look like a missing asset,
-# while a genuinely wrong path still fails closed.
-wait_for_shared_file wan_vae "${WAN_VAE_PATH}" 300
-wait_for_shared_file qwen_tokenizer "${QWEN3_VL_TOKENIZER_PATH}/tokenizer_config.json" 300
-
 for required in \
   "${TRAIN_PY}" "${SIM_PY}" "${EVALUATOR}" "${AGGREGATOR}" \
-  "${PANEL_PATH}" "${STATS_PATH}" "${WAN_VAE_PATH}" \
-  "${QWEN3_VL_TOKENIZER_PATH}/tokenizer_config.json" "${RCLONE_BIN}" \
+  "${PANEL_PATH}" "${STATS_PATH}" "${RCLONE_BIN}" \
   "${RCLONE_CONFIG_SOURCE}"; do
   [[ -e "${required}" ]] || { echo "required path missing: ${required}" >&2; exit 15; }
 done
@@ -120,8 +100,38 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "{\"event\":\"asset_staging_started\",\"checkpoint\":\"iter_000060000\"}"
-mkdir -p "${CHECKPOINT_ROOT}/model"
+echo "{\"event\":\"asset_staging_started\",\"checkpoint\":\"iter_000060000\",\"foundation_assets\":\"hdd2_to_nvme\"}"
+mkdir -p "${CHECKPOINT_ROOT}/model" "${FOUNDATION_ASSET_ROOT}" "${QWEN3_VL_TOKENIZER_PATH}"
+"${RCLONE_BIN}" --config "${RCLONE_CONFIG}" copyto \
+  "${WAN_VAE_REMOTE}" "${WAN_VAE_PATH}" \
+  --retries 8 --low-level-retries 30
+"${RCLONE_BIN}" --config "${RCLONE_CONFIG}" copy \
+  "${QWEN3_VL_TOKENIZER_REMOTE}" "${QWEN3_VL_TOKENIZER_PATH}" \
+  --transfers 8 --checkers 16 --retries 8 --low-level-retries 30
+[[ "$(stat -c %s "${WAN_VAE_PATH}")" -eq 2818839170 ]] || {
+  echo "Wan2.2 VAE size mismatch" >&2
+  exit 19
+}
+for required in \
+  config.json chat_template.json merges.txt preprocessor_config.json \
+  tokenizer.json tokenizer_config.json video_preprocessor_config.json vocab.json; do
+  [[ -s "${QWEN3_VL_TOKENIZER_PATH}/${required}" ]] || {
+    echo "staged Qwen processor file missing: ${required}" >&2
+    exit 20
+  }
+done
+qwen_file_count=0
+qwen_total_bytes=0
+while IFS= read -r -d '' qwen_file; do
+  qwen_file_count=$((qwen_file_count + 1))
+  qwen_total_bytes=$((qwen_total_bytes + $(stat -c %s "${qwen_file}")))
+done < <(find "${QWEN3_VL_TOKENIZER_PATH}" -maxdepth 1 -type f -print0)
+[[ "${qwen_file_count}" -eq 9 && "${qwen_total_bytes}" -eq 11499960 ]] || {
+  echo "Qwen processor inventory mismatch: files=${qwen_file_count} bytes=${qwen_total_bytes}" >&2
+  exit 21
+}
+echo "{\"event\":\"foundation_assets_staged\",\"wan_vae_bytes\":2818839170,\"qwen_files\":${qwen_file_count},\"qwen_bytes\":${qwen_total_bytes}}"
+
 "${RCLONE_BIN}" --config "${RCLONE_CONFIG}" copy \
   "${CHECKPOINT_REMOTE}" "${CHECKPOINT_ROOT}/model" \
   --transfers 16 --checkers 32 --retries 8 --low-level-retries 30
