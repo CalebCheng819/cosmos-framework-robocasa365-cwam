@@ -54,6 +54,28 @@ LOG_ROOT="${RUN_ROOT}/logs"
 RESULTS_ROOT="${RUN_ROOT}/results"
 RCLONE_CONFIG="/dev/shm/${EXPERIMENT_ID}-${ATTEMPT_ID}-rclone.conf"
 
+wait_for_shared_file() {
+  local label="$1"
+  local path="$2"
+  local timeout_seconds="$3"
+  local waited=0
+  until [[ -e "${path}" ]]; do
+    if (( waited >= timeout_seconds )); then
+      echo "shared file readiness timeout: label=${label} path=${path}" >&2
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  echo "{\"event\":\"shared_file_ready\",\"label\":\"${label}\",\"waited_seconds\":${waited}}"
+}
+
+# A newly scheduled worker can begin before the public GPFS namespace is fully
+# visible. Bound the wait so a mount race does not look like a missing asset,
+# while a genuinely wrong path still fails closed.
+wait_for_shared_file wan_vae "${WAN_VAE_PATH}" 300
+wait_for_shared_file qwen_tokenizer "${QWEN3_VL_TOKENIZER_PATH}/tokenizer_config.json" 300
+
 for required in \
   "${TRAIN_PY}" "${SIM_PY}" "${EVALUATOR}" "${AGGREGATOR}" \
   "${PANEL_PATH}" "${STATS_PATH}" "${WAN_VAE_PATH}" \
