@@ -1,8 +1,8 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r6-h252-2g",
-  "status": "prepared",
+  "attempt_id": "attempt-r7-h252-2g",
+  "status": "running_asset_staging",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
   "cluster": "H",
@@ -12,6 +12,12 @@
     "cpus": 24,
     "memory_mib": 200000,
     "priority": 9
+  },
+  "scheduler": {
+    "job_name": "cosmos3-rf-eval2-s60k-h252-2g-r7-0901-49012433",
+    "replica": "cosmos3-rf-eval2-s60k-h252-2g-r7-0901-49012433-gxjkb",
+    "node": "gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn",
+    "replica_ip": "100.104.125.61"
   },
   "checkpoint": "iter_000060000",
   "tasks": [
@@ -56,7 +62,12 @@
       "attempt_id": "attempt-r5-h252-2g",
       "terminal_state": "failed",
       "reason": "Cosmos inference enabled content guardrails by default and the frozen environment intentionally has no nltk; RoboFactory serving now disables unrelated guardrails in code"
+    },
+    {
+      "attempt_id": "attempt-r6-h252-2g",
+      "terminal_state": "failed",
+      "reason": "the RoboFactory recipe retained the online pretrained Wan VAE path; inference now pins the verified local offline VAE through WAN_VAE_PATH"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r6-h252-2g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r7-h252-2g"
 }
