@@ -1,7 +1,7 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r10-h252-2g",
+  "attempt_id": "attempt-r11-h252-2g",
   "status": "relaunch_prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
@@ -95,7 +95,12 @@
       "attempt_id": "attempt-r9-h252-2g",
       "terminal_state": "failed",
       "reason": "the model server reached readiness, but the simulator adapter imported the optional ImageWAM training package at module import time; attempt r10 loads that dependency only for ImageWAM policy construction"
+    },
+    {
+      "attempt_id": "attempt-r10-h252-2g",
+      "terminal_state": "failed",
+      "reason": "the exact two-GPU H252 job started and staged foundation assets, but the 88.210 GiB DCP checkpoint exceeded the remaining local NVMe capacity; attempt r11 uses the mounted GPFS cache with 3.0 TiB available"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r10-h252-2g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r11-h252-2g"
 }

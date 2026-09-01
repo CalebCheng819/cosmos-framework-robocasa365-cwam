@@ -26,7 +26,7 @@ WAN_VAE_REMOTE="${WAN_VAE_REMOTE:-eailab-hdd2:fkp-migrate/gpfs-migrations/weight
 QWEN3_VL_TOKENIZER_REMOTE="${QWEN3_VL_TOKENIZER_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/eval-assets/qwen3-vl-8b-instruct-0c351d-processor-v1}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r10}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r11}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
@@ -47,10 +47,11 @@ SIM_PY="${SIM_ENV}/bin/python"
 EVALUATOR="${COSMOS_SOURCE}/experiments/robofactory/eval_robofactory_closed_loop.py"
 AGGREGATOR="${COSMOS_SOURCE}/experiments/robofactory/aggregate_cosmos3_robofactory_eval.py"
 RUN_ROOT="${GPFS_USER}/evals/${EXPERIMENT_ID}/attempts/${ATTEMPT_ID}"
-LOCAL_ROOT="/nvme/${EXPERIMENT_ID}/${ATTEMPT_ID}"
-CHECKPOINT_ROOT="${LOCAL_ROOT}/checkpoint/iter_000060000"
-NOPOSPLAT_CHECKPOINT="${LOCAL_ROOT}/noposplat.ckpt"
-FOUNDATION_ASSET_ROOT="${LOCAL_ROOT}/foundation-assets"
+CACHE_ROOT="${GPFS_USER}/eval-cache/cosmos3-robofactory-mr/iter_000060000"
+RUNTIME_ROOT="${GPFS_USER}/eval-runtime/${EXPERIMENT_ID}/${ATTEMPT_ID}"
+CHECKPOINT_ROOT="${CACHE_ROOT}/checkpoint/iter_000060000"
+NOPOSPLAT_CHECKPOINT="${CACHE_ROOT}/noposplat.ckpt"
+FOUNDATION_ASSET_ROOT="${CACHE_ROOT}/foundation-assets"
 WAN_VAE_PATH="${WAN_VAE_PATH:-${FOUNDATION_ASSET_ROOT}/Wan2.2_VAE.pth}"
 QWEN3_VL_TOKENIZER_PATH="${QWEN3_VL_TOKENIZER_PATH:-${FOUNDATION_ASSET_ROOT}/Qwen3-VL-8B-Instruct}"
 LOG_ROOT="${RUN_ROOT}/logs"
@@ -69,7 +70,7 @@ for required_dir in \
   [[ -d "${required_dir}" ]] || { echo "required directory missing: ${required_dir}" >&2; exit 16; }
 done
 
-mkdir -p "${LOG_ROOT}" "${RESULTS_ROOT}/cosmos3" "${LOCAL_ROOT}"
+mkdir -p "${LOG_ROOT}" "${RESULTS_ROOT}/cosmos3" "${RUNTIME_ROOT}"
 install -m 600 "${RCLONE_CONFIG_SOURCE}" "${RCLONE_CONFIG}"
 
 declare -a CHILD_PIDS=()
@@ -100,7 +101,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "{\"event\":\"asset_staging_started\",\"checkpoint\":\"iter_000060000\",\"foundation_assets\":\"hdd2_to_nvme\"}"
+echo "{\"event\":\"asset_staging_started\",\"checkpoint\":\"iter_000060000\",\"storage\":\"gpfs_cache\"}"
 mkdir -p "${CHECKPOINT_ROOT}/model" "${FOUNDATION_ASSET_ROOT}" "${QWEN3_VL_TOKENIZER_PATH}"
 "${RCLONE_BIN}" --config "${RCLONE_CONFIG}" copyto \
   "${WAN_VAE_REMOTE}" "${WAN_VAE_PATH}" \
@@ -151,7 +152,7 @@ export BASE_CHECKPOINT_PATH="${CHECKPOINT_ROOT}"
 export ROBOFACTORY_ROOT ROBOFACTORY_ACTION_STATS_PATH="${STATS_PATH}"
 export ROBOFACTORY_GAUSSIAN_CACHE_ROOT="${DATASET_ROOT}"
 export WAN_VAE_PATH QWEN3_VL_TOKENIZER_PATH
-export IMAGINAIRE_OUTPUT_ROOT="${LOCAL_ROOT}/cosmos-output"
+export IMAGINAIRE_OUTPUT_ROOT="${RUNTIME_ROOT}/cosmos-output"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -196,7 +197,7 @@ start_server() {
         --checkpoint-path "${CHECKPOINT_ROOT}" \
         --config-file cosmos_framework/configs/base/config.py \
         --experiment action_policy_robofactory_multi_robot_nano \
-        --output-dir "${LOCAL_ROOT}/server-${lane}" \
+        --output-dir "${RUNTIME_ROOT}/server-${lane}" \
         --seed 10000 \
         --guidance 1.0 \
         --num-steps 30 \
