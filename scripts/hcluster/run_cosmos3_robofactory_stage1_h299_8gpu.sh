@@ -6,7 +6,12 @@ set -Eeuo pipefail
 : "${COSMOS_SOURCE:?Set the staged Cosmos3 evaluation source}"
 : "${OUTPUT_REMOTE:?Set the exact OSS attempt destination}"
 
-EXPECTED_NODE_TAG="node/gpu-l-lg-cmc-h-h200-0299.host.h.pjlab.org.cn"
+EXPECTED_NODE_TAG="${EXPECTED_NODE_TAG:-node/gpu-l-lg-cmc-h-h200-0299.host.h.pjlab.org.cn}"
+EXPECTED_GPU_COUNT="${EXPECTED_GPU_COUNT:-8}"
+[[ "${EXPECTED_GPU_COUNT}" == "4" || "${EXPECTED_GPU_COUNT}" == "8" ]] || {
+  echo "Stage-1 supports exactly four or eight GPUs: ${EXPECTED_GPU_COUNT}" >&2
+  exit 14
+}
 [[ "${OUTPUT_REMOTE}" == eailab-hdd2:eailab/chengjuntao/* ]] || {
   echo "Stage-1 output must stay under eailab-hdd2:eailab/chengjuntao/: ${OUTPUT_REMOTE}" >&2
   exit 13
@@ -35,15 +40,15 @@ QWEN3_VL_TOKENIZER_REMOTE="${QWEN3_VL_TOKENIZER_REMOTE:-eailab-hdd2:eailab/cheng
 BASELINE_EPISODES_REMOTE="${BASELINE_EPISODES_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r16-h252-2g/results/cosmos3/PlaceFood-rf/episodes.jsonl}"
 EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-stage1-unset}"
 
-if [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -ne 8 ]]; then
-  echo "the formal Stage-1 job must see exactly eight GPUs" >&2
+if [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -ne "${EXPECTED_GPU_COUNT}" ]]; then
+  echo "the formal Stage-1 job must see exactly ${EXPECTED_GPU_COUNT} GPUs" >&2
   exit 14
 fi
-if [[ "$(nvidia-smi --query-gpu=name --format=csv,noheader | grep -c '^NVIDIA H200')" -ne 8 ]]; then
-  echo "the formal Stage-1 job must run on eight NVIDIA H200 GPUs" >&2
+if [[ "$(nvidia-smi --query-gpu=name --format=csv,noheader | grep -c '^NVIDIA H200')" -ne "${EXPECTED_GPU_COUNT}" ]]; then
+  echo "the formal Stage-1 job must run on ${EXPECTED_GPU_COUNT} NVIDIA H200 GPUs" >&2
   exit 14
 fi
-echo "{\"event\":\"scheduler_contract\",\"expected_node_tag\":\"${EXPECTED_NODE_TAG}\",\"pod_hostname\":\"$(hostname -s)\",\"gpus\":8}"
+echo "{\"event\":\"scheduler_contract\",\"expected_node_tag\":\"${EXPECTED_NODE_TAG}\",\"pod_hostname\":\"$(hostname -s)\",\"gpus\":${EXPECTED_GPU_COUNT}}"
 
 TRAIN_PY="${COSMOS_ENV}/bin/python"
 SIM_PY="${SIM_ENV}/bin/python"
@@ -95,7 +100,7 @@ robofactory_asset_files="$(find "${ROBOFACTORY_ASSET_DIR}" -type f | wc -l)"
 
 nvme_free_bytes="$(df -B1 --output=avail /nvme | tail -n 1 | tr -d ' ')"
 [[ "${nvme_free_bytes}" -ge 160000000000 ]] || {
-  echo "H299 NVMe free space is below the 160 GB Stage-1 floor: ${nvme_free_bytes}" >&2
+  echo "node NVMe free space is below the 160 GB Stage-1 floor: ${nvme_free_bytes}" >&2
   exit 17
 }
 mkdir -p "${LOG_ROOT}" "${RESULTS_ROOT}" "${BASELINE_ROOT}" "${RUNTIME_ROOT}"
@@ -176,12 +181,14 @@ for name in sorted(vars(tests)):
         vars(tests)[name]()
 print('{"event":"stage1_helper_tests_passed","tests":3}', flush=True)
 PY
-"${TRAIN_PY}" - <<'PY'
+EXPECTED_GPU_COUNT="${EXPECTED_GPU_COUNT}" "${TRAIN_PY}" - <<'PY'
 import json
+import os
 import torch
-if not torch.cuda.is_available() or torch.cuda.device_count() != 8:
-    raise RuntimeError("Cosmos3 Stage-1 preflight requires exactly eight visible GPUs")
-print(json.dumps({"event": "cosmos_preflight_passed", "gpu_count": 8}), flush=True)
+expected = int(os.environ["EXPECTED_GPU_COUNT"])
+if not torch.cuda.is_available() or torch.cuda.device_count() != expected:
+    raise RuntimeError(f"Cosmos3 Stage-1 preflight requires exactly {expected} visible GPUs")
+print(json.dumps({"event": "cosmos_preflight_passed", "gpu_count": expected}), flush=True)
 PY
 
 archive_loop >"${LOG_ROOT}/archiver.log" 2>&1 &
@@ -225,9 +232,13 @@ PY
 
 start_server 0 18080 29580 lane0
 start_server 2 18081 29581 lane1
-start_server 4 18082 29582 lane2
-start_server 6 18083 29583 lane3
-for lane in 0 1 2 3; do
+lane_count=2
+if [[ "${EXPECTED_GPU_COUNT}" -eq 8 ]]; then
+  start_server 4 18082 29582 lane2
+  start_server 6 18083 29583 lane3
+  lane_count=4
+fi
+for ((lane = 0; lane < lane_count; lane++)); do
   wait_for_server "$((18080 + lane))" "${SERVER_PIDS[lane]}" "lane${lane}"
 done
 
@@ -252,20 +263,33 @@ run_arm() {
   echo "{\"event\":\"arm_completed\",\"arm\":\"${arm}\"}"
 }
 
-(
-  run_arm 1 18080 a1-eh5-rolling 12 5 rolling-query none
-  run_arm 1 18080 o2-r0-gripper 8 1 rolling-query robot0-gripper
-) & LANE_PIDS+=("$!")
-(
-  run_arm 3 18081 a2-eh1-fixed 12 1 fixed-episode none
-) & LANE_PIDS+=("$!")
-(
-  run_arm 5 18082 a3-eh5-fixed 12 5 fixed-episode none
-  run_arm 5 18082 o3-r1-action 8 1 rolling-query robot1-action
-) & LANE_PIDS+=("$!")
-(
-  run_arm 7 18083 o1-r0-pose 8 1 rolling-query robot0-pose
-) & LANE_PIDS+=("$!")
+if [[ "${EXPECTED_GPU_COUNT}" -eq 4 ]]; then
+  (
+    run_arm 1 18080 a1-eh5-rolling 12 5 rolling-query none
+    run_arm 1 18080 a3-eh5-fixed 12 5 fixed-episode none
+    run_arm 1 18080 o2-r0-gripper 8 1 rolling-query robot0-gripper
+  ) & LANE_PIDS+=("$!")
+  (
+    run_arm 3 18081 a2-eh1-fixed 12 1 fixed-episode none
+    run_arm 3 18081 o1-r0-pose 8 1 rolling-query robot0-pose
+    run_arm 3 18081 o3-r1-action 8 1 rolling-query robot1-action
+  ) & LANE_PIDS+=("$!")
+else
+  (
+    run_arm 1 18080 a1-eh5-rolling 12 5 rolling-query none
+    run_arm 1 18080 o2-r0-gripper 8 1 rolling-query robot0-gripper
+  ) & LANE_PIDS+=("$!")
+  (
+    run_arm 3 18081 a2-eh1-fixed 12 1 fixed-episode none
+  ) & LANE_PIDS+=("$!")
+  (
+    run_arm 5 18082 a3-eh5-fixed 12 5 fixed-episode none
+    run_arm 5 18082 o3-r1-action 8 1 rolling-query robot1-action
+  ) & LANE_PIDS+=("$!")
+  (
+    run_arm 7 18083 o1-r0-pose 8 1 rolling-query robot0-pose
+  ) & LANE_PIDS+=("$!")
+fi
 
 lane_failed=0
 for pid in "${LANE_PIDS[@]}"; do
