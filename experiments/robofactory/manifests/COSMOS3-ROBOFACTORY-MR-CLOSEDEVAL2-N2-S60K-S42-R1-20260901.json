@@ -2,7 +2,7 @@
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
   "attempt_id": "attempt-r16-h252-2g",
-  "status": "relaunch_prepared",
+  "status": "running",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
   "cluster": "H",
@@ -14,10 +14,10 @@
     "priority": 9
   },
   "scheduler": {
-    "job_name": null,
-    "replica": null,
-    "node": null,
-    "replica_ip": null
+    "job_name": "cosmos3-rf-eval2-s60k-h252-2g-r16-0901-33769711",
+    "replica": "cosmos3-rf-eval2-s60k-h252-2g-r16-0901-33769711-g7gzl",
+    "node": "gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn",
+    "replica_ip": "100.104.125.105"
   },
   "checkpoint": "iter_000060000",
   "foundation_assets": {
@@ -63,6 +63,17 @@
     "policy_server_gpu": 0,
     "simulator_gpu": 1,
     "task_scheduling": "sequential"
+  },
+  "live_evidence": {
+    "observed_at": "2026-09-01T16:08:25+08:00",
+    "scheduler_state": "Running",
+    "checkpoint_loaded": true,
+    "action_server_ready": true,
+    "policy_initialized": true,
+    "first_episode_started": true,
+    "successful_action_requests_observed": 43,
+    "completed_episode_records": 0,
+    "scientific_result_available": false
   },
   "prior_attempts": [
     {
