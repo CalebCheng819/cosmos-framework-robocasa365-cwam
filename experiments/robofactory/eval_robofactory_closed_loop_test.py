@@ -7,6 +7,7 @@ import numpy as np
 from experiments.robofactory.eval_robofactory_closed_loop import (
     _apply_oracle_intervention,
     _chunk_overlap_error,
+    _policy_evaluation_horizon,
 )
 
 
@@ -53,3 +54,34 @@ def test_chunk_overlap_compares_the_same_future_actions() -> None:
     assert result["overlap_actions"] == 4
     assert result["mean_absolute_error"] == 0.0
     assert result["maximum_absolute_error"] == 0.0
+
+
+def test_non_oracle_policy_is_not_bounded_by_expert_reference() -> None:
+    assert (
+        _policy_evaluation_horizon(
+            max_steps=500,
+            expert_action_horizon=267,
+            oracle_intervention="none",
+        )
+        == 500
+    )
+
+
+def test_oracle_policy_is_bounded_by_available_reference() -> None:
+    for intervention in ("robot0-pose", "robot0-gripper", "robot1-action"):
+        assert (
+            _policy_evaluation_horizon(
+                max_steps=500,
+                expert_action_horizon=267,
+                oracle_intervention=intervention,
+            )
+            == 267
+        )
+    assert (
+        _policy_evaluation_horizon(
+            max_steps=100,
+            expert_action_horizon=267,
+            oracle_intervention="robot0-pose",
+        )
+        == 100
+    )

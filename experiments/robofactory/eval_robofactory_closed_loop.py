@@ -459,6 +459,32 @@ def _apply_oracle_intervention(
     return result, replaced
 
 
+def _policy_evaluation_horizon(
+    *,
+    max_steps: int,
+    expert_action_horizon: int,
+    oracle_intervention: str,
+) -> int:
+    """Return the executable horizon for a learned-policy episode.
+
+    Non-Oracle arms must remain closed-loop for the environment's full horizon;
+    expert actions are loaded there only to derive diagnostic references. A
+    causal Oracle arm can replace actions only while the recorded expert action
+    exists, so its evaluation window is explicitly bounded by that reference.
+    """
+    if oracle_intervention not in ORACLE_INTERVENTIONS:
+        raise ValueError(f"Unsupported Oracle intervention: {oracle_intervention!r}")
+    if max_steps < 1:
+        raise ValueError(f"max_steps must be positive, got {max_steps}")
+    if expert_action_horizon < 1:
+        raise ValueError(
+            f"expert_action_horizon must be positive, got {expert_action_horizon}"
+        )
+    if oracle_intervention == "none":
+        return max_steps
+    return min(max_steps, expert_action_horizon)
+
+
 def _vector3(value: Any, *, label: str) -> np.ndarray:
     vector = torch.as_tensor(value).detach().cpu().numpy().reshape(-1)
     if vector.size < 3:
@@ -904,9 +930,21 @@ def _run_episode(
         expert_actions = _load_expert_actions(
             source, str(episode["trajectory"]), agent_names
         )
+        expert_action_horizon = len(next(iter(expert_actions.values())))
         max_steps = int(episode["max_episode_steps"])
         if args.max_steps is not None:
             max_steps = min(max_steps, int(args.max_steps))
+        policy_evaluation_horizon = _policy_evaluation_horizon(
+            max_steps=max_steps,
+            expert_action_horizon=expert_action_horizon,
+            oracle_intervention=args.oracle_intervention,
+        )
+        if (
+            args.mode != "expert-replay"
+            and args.oracle_intervention != "none"
+            and policy_evaluation_horizon < max_steps
+        ):
+            termination_reason = "oracle_reference_end"
         expert_grasp_reference = _expert_grasp_reference(
             env=env,
             task_name=args.task,
@@ -1110,7 +1148,7 @@ def _run_episode(
             policy.update_obs(current_observation, env.unwrapped.get_state_dict())
             previous_action_chunk: np.ndarray | None = None
             previous_execute = 0
-            while steps < max_steps:
+            while steps < policy_evaluation_horizon:
                 query_started = time.monotonic()
                 action_views = policy.get_action_with_trace()
                 query_seconds.append(time.monotonic() - query_started)
@@ -1134,7 +1172,11 @@ def _run_episode(
                 if overlap is not None:
                     overlap["policy_query_index"] = policy_query_index
                     chunk_overlap_records.append(overlap)
-                execute = min(args.exec_horizon, len(action_chunk), max_steps - steps)
+                execute = min(
+                    args.exec_horizon,
+                    len(action_chunk),
+                    policy_evaluation_horizon - steps,
+                )
                 if execute < 1:
                     raise ValueError("Policy returned an empty executable action chunk")
                 stop_chunk = False
@@ -1143,18 +1185,26 @@ def _run_episode(
                     learned_target = _flat_action_to_dict(
                         action_chunk[index], agent_names
                     )
-                    if expert_actions is None:
-                        raise RuntimeError("Expert actions were not initialized")
-                    if steps >= len(next(iter(expert_actions.values()))):
-                        raise IndexError(
-                            f"Oracle reference ends at {len(next(iter(expert_actions.values())))} "
-                            f"before environment step {steps}"
+                    if args.oracle_intervention == "none":
+                        target_action, oracle_replaced = _apply_oracle_intervention(
+                            learned_target, {}, "none"
                         )
-                    target_action, oracle_replaced = _apply_oracle_intervention(
-                        learned_target,
-                        {name: expert_actions[name][steps] for name in agent_names},
-                        args.oracle_intervention,
-                    )
+                    else:
+                        if expert_actions is None:
+                            raise RuntimeError("Expert actions were not initialized")
+                        if steps >= expert_action_horizon:
+                            raise AssertionError(
+                                "Oracle evaluation horizon exceeded its validated "
+                                f"reference: step={steps} horizon={expert_action_horizon}"
+                            )
+                        target_action, oracle_replaced = _apply_oracle_intervention(
+                            learned_target,
+                            {
+                                name: expert_actions[name][steps]
+                                for name in agent_names
+                            },
+                            args.oracle_intervention,
+                        )
                     normalized_action = _flat_action_to_dict(
                         normalized_chunk[index], agent_names
                     )
@@ -1267,6 +1317,13 @@ def _run_episode(
             "policy_seed": episode_policy_seed,
             "noise_mode": args.noise_mode,
             "oracle_intervention": args.oracle_intervention,
+            "environment_max_steps": max_steps,
+            "expert_action_horizon": expert_action_horizon,
+            "evaluation_horizon": (
+                min(max_steps, expert_action_horizon)
+                if args.mode == "expert-replay"
+                else policy_evaluation_horizon
+            ),
             "success": success,
             "steps": steps,
             "policy_queries": policy_queries,
