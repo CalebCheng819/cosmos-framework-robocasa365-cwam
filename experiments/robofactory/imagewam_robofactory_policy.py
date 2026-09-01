@@ -15,8 +15,6 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from hydra.utils import instantiate
 
-from imagewam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
-
 from experiments.robofactory.online_gaussian import (
     MOMENT_MATCH_METHOD,
     NOPOSPLAT_CHECKPOINT_BYTES,
@@ -299,6 +297,14 @@ class ImageWAMRoboFactoryPolicy:
         self.checkpoint_load_report = dict(self.model.last_checkpoint_load_report)
         self.model = self.model.to(self.device).eval()
         self.processor = instantiate(cfg.data.val.processor).eval()
+        # Keep the ImageWAM training package optional for Cosmos3 evaluation.
+        # Cosmos3 reuses the observation helpers in this module, but performs
+        # normalization in its action server and must remain importable in the
+        # lightweight RoboFactory simulator environment.
+        from imagewam.datasets.lerobot.utils.normalizer import (
+            load_dataset_stats_from_json,
+        )
+
         stats = load_dataset_stats_from_json(str(self.stats_path))
         self.processor.set_normalizer_from_stats(stats)
         self._observation: Mapping[str, Any] | None = None
