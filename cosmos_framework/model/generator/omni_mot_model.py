@@ -1988,6 +1988,12 @@ class OmniMoTModel(ImaginaireModel):
             mask_timesteps,
             include_end_of_generation_token=self._derive_include_end_of_generation_token(),
         )
+        attach_multi_robot_action_contract(
+            packed_sequence,
+            data_batch,
+            action_sample_indices=[i for i, plan in enumerate(sequence_plans) if plan.has_action],
+            batch_size=len(sequence_plans),
+        )
 
         # 5. Initialize vision noise with conditioning
         assert packed_sequence.vision is not None, "Packed vision data required for inference noise"
@@ -2263,6 +2269,7 @@ class OmniMoTModel(ImaginaireModel):
         packed_sequence_template: PackedSequence | None = None,
         memory: MemoryState | None = None,
         has_noisy_actions: bool,
+        multi_robot_data_batch: Mapping[str, object] | None = None,
     ) -> list[torch.Tensor]:
         """
         Compute velocity prediction for a single sampling step.
@@ -2383,6 +2390,13 @@ class OmniMoTModel(ImaginaireModel):
                 include_end_of_generation_token=self._derive_include_end_of_generation_token(),
                 skip_text_tokens=skip_text_tokens,
             )
+            if multi_robot_data_batch is not None:
+                attach_multi_robot_action_contract(
+                    packed_sequence,
+                    multi_robot_data_batch,
+                    action_sample_indices=[i for i, plan in enumerate(sequence_plans) if plan.has_action],
+                    batch_size=len(sequence_plans),
+                )
 
             # Set the actual noisy latents (as lists)
             if packed_sequence.vision is not None:
@@ -2797,6 +2811,12 @@ class OmniMoTModel(ImaginaireModel):
                 include_end_of_generation_token=include_end_of_generation_token,
                 skip_text_tokens=False,
             )
+            attach_multi_robot_action_contract(
+                cond_packed_sequence_template,
+                data_batch,
+                action_sample_indices=[i for i, plan in enumerate(sequence_plans) if plan.has_action],
+                batch_size=len(sequence_plans),
+            )
             cond_packed_sequence_template.to_cuda()
             if guidance != 1.0 or velocity_postprocess_builder is not None:
                 uncond_packed_sequence_template = self._pack_input_sequence(
@@ -2806,6 +2826,12 @@ class OmniMoTModel(ImaginaireModel):
                     zero_timesteps,
                     include_end_of_generation_token=include_end_of_generation_token,
                     skip_text_tokens=skip_text_tokens_for_cfg,
+                )
+                attach_multi_robot_action_contract(
+                    uncond_packed_sequence_template,
+                    data_batch,
+                    action_sample_indices=[i for i, plan in enumerate(sequence_plans) if plan.has_action],
+                    batch_size=len(sequence_plans),
                 )
                 uncond_packed_sequence_template.to_cuda()
 
@@ -2927,6 +2953,7 @@ class OmniMoTModel(ImaginaireModel):
                         packed_sequence_template=packed_sequence_template,
                         memory=memory,
                         has_noisy_actions=has_noisy_actions,
+                        multi_robot_data_batch=data_batch,
                     )
 
                 needs_text_cfg = guidance != 1.0

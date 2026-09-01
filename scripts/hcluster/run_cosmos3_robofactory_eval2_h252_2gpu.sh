@@ -10,6 +10,7 @@ EXPECTED_NODE_TAG="node/gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn"
 GPFS_USER="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
 COSMOS_ENV="${COSMOS_ENV:-${GPFS_USER}/envs/cosmos-framework-09f23119-cu128-train}"
 SIM_ENV="${SIM_ENV:-${GPFS_USER}/envs/fastwam-b4-h254-py310-20260820}"
+SIM_BOOTSTRAP_LIB="${SIM_BOOTSTRAP_LIB:-${GPFS_USER}/data-cache-migration/h-eailabagent-20260819/fastwam_env_cache/bootstrap-py310/lib}"
 SIM_OVERLAY="${SIM_OVERLAY:-${GPFS_USER}/imagewam-eval/IMAGEWAM-N234-VG1H1-50K-RF-CLOSEDLOOP-H299-S42-R1-20260826/env/robofactory-py310-overlay}"
 SIM_DEP_OVERLAY="${SIM_DEP_OVERLAY:-${GPFS_USER}/eval-env-overlays/cosmos3-robofactory-eval-r12-py310}"
 EVAL_ASSET_ROOT="${EVAL_ASSET_ROOT:-${GPFS_USER}/imagewam-eval/IMAGEWAM-TABLE11-STATEFULSAFE-R3-CLOSEDEVAL-S40K-H298-S42-R1-20260828}"
@@ -28,7 +29,7 @@ WAN_VAE_REMOTE="${WAN_VAE_REMOTE:-eailab-hdd2:fkp-migrate/gpfs-migrations/weight
 QWEN3_VL_TOKENIZER_REMOTE="${QWEN3_VL_TOKENIZER_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/eval-assets/qwen3-vl-8b-instruct-0c351d-processor-v1}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r13}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r14}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
@@ -69,7 +70,7 @@ done
 for required_dir in \
   "${COSMOS_SOURCE}" "${DATASET_ROOT}" "${ROBOFACTORY_ROOT}" \
   "${ROBOFACTORY_RUNTIME_ROOT}" "${POLICY_LIGHTNING_ROOT}" \
-  "${SIM_OVERLAY}" "${SIM_DEP_OVERLAY}"; do
+  "${SIM_OVERLAY}" "${SIM_DEP_OVERLAY}" "${SIM_BOOTSTRAP_LIB}"; do
   [[ -d "${required_dir}" ]] || { echo "required directory missing: ${required_dir}" >&2; exit 16; }
 done
 
@@ -181,11 +182,15 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_IB_DISABLE=1
 
 SIM_PYTHONPATH="${SIM_DEP_OVERLAY}:${COSMOS_SOURCE}/experiments/robofactory/compat:${SIM_OVERLAY}:${COSMOS_SOURCE}:${ROBOFACTORY_ROOT}:${POLICY_LIGHTNING_ROOT}"
-PYTHONPATH="${SIM_PYTHONPATH}" "${SIM_PY}" - <<'PY'
+SIM_LD_LIBRARY_PATH="${SIM_BOOTSTRAP_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+LD_LIBRARY_PATH="${SIM_LD_LIBRARY_PATH}" PYTHONPATH="${SIM_PYTHONPATH}" "${SIM_PY}" - <<'PY'
 import jaxtyping
+import sqlite3
+import robofactory
 from model.noposplat.encoder import get_encoder
 
 assert callable(get_encoder)
+assert sqlite3.sqlite_version
 print(
     '{"event":"simulator_dependency_preflight_passed",'
     f'"jaxtyping":"{jaxtyping.__version__}"}}',
@@ -288,7 +293,7 @@ run_task() {
   local port="$2"
   local task="$3"
   local lane="$4"
-  CUDA_VISIBLE_DEVICES="${gpu}" PYTHONPATH="${SIM_PYTHONPATH}" \
+  CUDA_VISIBLE_DEVICES="${gpu}" LD_LIBRARY_PATH="${SIM_LD_LIBRARY_PATH}" PYTHONPATH="${SIM_PYTHONPATH}" \
     "${SIM_PY}" -u "${EVALUATOR}" \
       --mode cosmos3 \
       --task "${task}" \
@@ -308,7 +313,6 @@ run_task() {
       --request-timeout 900 \
       --device cuda:0 \
       --action-horizon 32 \
-      --continue-on-error \
       --resume \
       >"${LOG_ROOT}/eval-${lane}.log" 2>&1 &
   CHILD_PIDS+=("$!")
