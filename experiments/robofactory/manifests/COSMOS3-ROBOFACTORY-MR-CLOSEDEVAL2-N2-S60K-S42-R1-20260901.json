@@ -1,7 +1,7 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r14-h252-2g",
+  "attempt_id": "attempt-r15-h252-2g",
   "status": "relaunch_prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
@@ -127,7 +127,12 @@
       "attempt_id": "attempt-r13-h252-2g",
       "terminal_state": "stopped",
       "reason": "runtime assets, checkpoint loading, server readiness, and formal task launch passed, but all 25 recorded PlaceFood episodes were infrastructure errors: the simulator selected an old system libstdc++ for one import path, while action inference omitted the explicit multi-robot state and Gaussian contract from packed sequences; attempt r14 fixes both paths and fails fast on any remaining infrastructure error"
+    },
+    {
+      "attempt_id": "attempt-r14-h252-2g",
+      "terminal_state": "failed",
+      "reason": "runtime and foundation assets staged successfully, but the expanded simulator import preflight exposed a missing exceptiongroup package before model serving or episode creation; attempt r15 adds a pinned isolated exceptiongroup overlay"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r14-h252-2g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r15-h252-2g"
 }
