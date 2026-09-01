@@ -11,11 +11,12 @@ GPFS_USER="/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao"
 COSMOS_ENV="${COSMOS_ENV:-${GPFS_USER}/envs/cosmos-framework-09f23119-cu128-train}"
 SIM_ENV="${SIM_ENV:-${GPFS_USER}/envs/fastwam-b4-h254-py310-20260820}"
 SIM_OVERLAY="${SIM_OVERLAY:-${GPFS_USER}/imagewam-eval/IMAGEWAM-N234-VG1H1-50K-RF-CLOSEDLOOP-H299-S42-R1-20260826/env/robofactory-py310-overlay}"
-INPUT_ROOT="${INPUT_ROOT:-${GPFS_USER}/imagewam-eval/IMAGEWAM-TABLE11-STATEFULSAFE-R3-CLOSEDEVAL-S40K-H298-S42-R1-20260828/inputs}"
+EVAL_ASSET_ROOT="${EVAL_ASSET_ROOT:-${GPFS_USER}/imagewam-eval/IMAGEWAM-TABLE11-STATEFULSAFE-R3-CLOSEDEVAL-S40K-H298-S42-R1-20260828}"
+INPUT_ROOT="${INPUT_ROOT:-${EVAL_ASSET_ROOT}/inputs}"
 DATASET_ROOT="${DATASET_ROOT:-${INPUT_ROOT}/dataset}"
 PANEL_PATH="${PANEL_PATH:-${INPUT_ROOT}/table11-fixed-val100-panel.json}"
 STATS_PATH="${STATS_PATH:-${INPUT_ROOT}/checkpoint/dataset_stats.json}"
-ROBOFACTORY_ROOT="${ROBOFACTORY_ROOT:-${INPUT_ROOT}/source/robofactory}"
+ROBOFACTORY_ROOT="${ROBOFACTORY_ROOT:-${EVAL_ASSET_ROOT}/source/robofactory}"
 POLICY_LIGHTNING_ROOT="${POLICY_LIGHTNING_ROOT:-${GPFS_USER}/imagewam-formal/source/policy-lightning-c944b498-clean}"
 WAN_VAE_PATH="${WAN_VAE_PATH:-/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Wan-AI--Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
 QWEN3_VL_TOKENIZER_PATH="${QWEN3_VL_TOKENIZER_PATH:-/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/zskj-hub/models--Qwen--Qwen3-VL-8B-Instruct}"
@@ -25,7 +26,7 @@ CHECKPOINT_REMOTE="${CHECKPOINT_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosm
 NOPOSPLAT_REMOTE="${NOPOSPLAT_REMOTE:-eailab-hdd2:fkp-migrate/ailab-eailabagent-gpfs/chengjuntao/placefood_wam/Policy-Lightning/weights/noposplat.ckpt}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r1}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r2}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
