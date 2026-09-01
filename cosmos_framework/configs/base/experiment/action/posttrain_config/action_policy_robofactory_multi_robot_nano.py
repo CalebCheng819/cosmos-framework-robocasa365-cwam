@@ -8,6 +8,7 @@ Required environment variables:
 * ``ROBOFACTORY_ROOT``: native table11 HDF5 tree.
 * ``ROBOFACTORY_GAUSSIAN_CACHE_ROOT``: completed canonical Gaussian cache.
 * ``ROBOFACTORY_ACTION_STATS_PATH``: ImageWAM-compatible global z-score JSON.
+* ``WAN_VAE_PATH``: local Wan2.2 VAE file for offline H workers.
 * ``QWEN3_VL_TOKENIZER_PATH``: local Qwen processor directory for offline H workers.
 """
 
@@ -36,6 +37,7 @@ def _robofactory_multi_robot_model_config() -> dict:
     cfg["rectified_flow_training_config"]["image_loss_scale"] = 0.5
     cfg["rectified_flow_training_config"]["action_loss_weight"] = 1.0
     cfg["tokenizer"]["encode_exact_durations"] = [17, 61, 73]
+    cfg["tokenizer"]["vae_path"] = "${oc.env:WAN_VAE_PATH}"
     cfg["vlm_config"]["tokenizer"]["pretrained_model_name"] = "${oc.env:QWEN3_VL_TOKENIZER_PATH}"
     cfg["multi_robot_conditioning_enabled"] = True
     cfg["multi_robot_state_dim"] = 18
