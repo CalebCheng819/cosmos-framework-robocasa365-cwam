@@ -170,8 +170,8 @@ start_server() {
       --action-chunk-size 32 \
       --raw-action-dim 8 \
       --action-stats-path "${STATS_PATH}" \
-      --format-prompt-as-json \
-      --http-400-on-error \
+      --format-prompt-as-json True \
+      --http-400-on-error True \
       --host 127.0.0.1 \
       --port "${port}" \
       >"${LOG_ROOT}/server-${lane}.log" 2>&1 &

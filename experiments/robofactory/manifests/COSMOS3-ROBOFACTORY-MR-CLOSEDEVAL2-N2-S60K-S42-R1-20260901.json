@@ -1,8 +1,8 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r3-h252-4g",
-  "status": "running_asset_staging",
+  "attempt_id": "attempt-r4-h252-4g",
+  "status": "prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
   "cluster": "H",
@@ -12,12 +12,6 @@
     "cpus": 36,
     "memory_mib": 300000,
     "priority": 9
-  },
-  "scheduler": {
-    "job_name": "cosmos3-rf-eval2-s60k-h252-4g-r3-0901-7832246",
-    "replica": "cosmos3-rf-eval2-s60k-h252-4g-r3-0901-7832246-qjgjb",
-    "node": "gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn",
-    "replica_ip": "100.104.125.36"
   },
   "checkpoint": "iter_000060000",
   "tasks": [
@@ -42,7 +36,12 @@
       "attempt_id": "attempt-r2-h252-4g",
       "terminal_state": "failed",
       "reason": "RoboFactory root was configured below inputs instead of the sibling source directory"
+    },
+    {
+      "attempt_id": "attempt-r3-h252-4g",
+      "terminal_state": "failed",
+      "reason": "Tyro boolean server arguments were passed as valueless flags instead of explicit True values"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r3-h252-4g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r4-h252-4g"
 }
