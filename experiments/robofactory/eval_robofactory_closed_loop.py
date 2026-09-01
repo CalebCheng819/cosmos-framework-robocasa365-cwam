@@ -23,11 +23,16 @@ try:
     from .cosmos3_robofactory_policy import Cosmos3RoboFactoryPolicy
     from .imagewam_robofactory_policy import (
         ImageWAMRoboFactoryPolicy,
+        global_rgb_tensor,
         raw_agent_qpos,
     )
 except ImportError:
     from cosmos3_robofactory_policy import Cosmos3RoboFactoryPolicy
-    from imagewam_robofactory_policy import ImageWAMRoboFactoryPolicy, raw_agent_qpos
+    from imagewam_robofactory_policy import (
+        ImageWAMRoboFactoryPolicy,
+        global_rgb_tensor,
+        raw_agent_qpos,
+    )
 
 
 ROBOFACTORY_COMMIT = "3c4165a17d2af27a95043d9760339833957b2927"
@@ -56,6 +61,7 @@ ACTION_DIMENSION_NAMES = (
     "gripper_command",
 )
 ACTION_TRACE_SCHEMA = "imagewam-robofactory-action-trace-v1"
+ORACLE_INTERVENTIONS = ("none", "robot0-pose", "robot0-gripper", "robot1-action")
 RESUME_PROGRESS_SCHEMA = "imagewam-robofactory-eval-resume-progress-v1"
 RESUME_PROGRESS_FILENAME = "resume_progress.json"
 
@@ -213,6 +219,9 @@ def _resume_signature(
         "max_steps_override": args.max_steps,
         "exec_horizon": int(args.exec_horizon),
         "policy_seed_base": int(args.policy_seed),
+        "noise_mode": str(args.noise_mode),
+        "oracle_intervention": str(args.oracle_intervention),
+        "record_video": bool(args.record_video),
         "action_horizon": int(args.action_horizon),
         "num_inference_steps": int(args.num_inference_steps),
         "sigma_shift": args.sigma_shift,
@@ -419,6 +428,120 @@ def _load_expert_actions(
     return actions
 
 
+def _apply_oracle_intervention(
+    learned: Mapping[str, np.ndarray],
+    expert: Mapping[str, np.ndarray],
+    intervention: str,
+) -> tuple[dict[str, np.ndarray], dict[str, list[bool]]]:
+    """Replace only the action dimensions named by a causal Oracle arm."""
+    if intervention not in ORACLE_INTERVENTIONS:
+        raise ValueError(f"Unsupported Oracle intervention: {intervention!r}")
+    result = {
+        name: np.asarray(value, dtype=np.float32).reshape(8).copy()
+        for name, value in learned.items()
+    }
+    replaced = {name: [False] * 8 for name in result}
+    if intervention == "none":
+        return result, replaced
+    if "panda-0" not in result or "panda-0" not in expert:
+        raise KeyError("robot0 Oracle requires panda-0 learned and expert actions")
+    if intervention == "robot0-pose":
+        result["panda-0"][:7] = np.asarray(expert["panda-0"], dtype=np.float32)[:7]
+        replaced["panda-0"][:7] = [True] * 7
+    elif intervention == "robot0-gripper":
+        result["panda-0"][7] = float(np.asarray(expert["panda-0"])[7])
+        replaced["panda-0"][7] = True
+    else:
+        if "panda-1" not in result or "panda-1" not in expert:
+            raise KeyError("robot1 Oracle requires panda-1 learned and expert actions")
+        result["panda-1"][:] = np.asarray(expert["panda-1"], dtype=np.float32)
+        replaced["panda-1"][:] = [True] * 8
+    return result, replaced
+
+
+def _vector3(value: Any, *, label: str) -> np.ndarray:
+    vector = torch.as_tensor(value).detach().cpu().numpy().reshape(-1)
+    if vector.size < 3:
+        raise ValueError(f"{label} must expose at least three coordinates")
+    result = np.asarray(vector[-3:], dtype=np.float64)
+    if not np.isfinite(result).all():
+        raise ValueError(f"{label} contains non-finite coordinates")
+    return result
+
+
+def _ee_object_distances(env: Any, task_name: str) -> dict[str, float]:
+    """Measure each TCP to the task's action-relevant object center."""
+    if task_name != "PlaceFood-rf":
+        return {}
+    base = env.unwrapped
+    object_position = _vector3(base.meat.pose.p, label="meat.pose.p")
+    return {
+        f"panda-{index}": float(
+            np.linalg.norm(
+                _vector3(agent.tcp.pose.p, label=f"panda-{index}.tcp.pose.p")
+                - object_position
+            )
+        )
+        for index, agent in enumerate(base.agent.agents)
+    }
+
+
+def _chunk_overlap_error(
+    previous: np.ndarray | None, current: np.ndarray, advance: int
+) -> dict[str, Any] | None:
+    """Compare predictions for world-time actions shared by adjacent chunks."""
+    if previous is None or advance >= len(previous):
+        return None
+    width = min(len(current), len(previous) - advance)
+    if width < 1:
+        return None
+    difference = np.abs(previous[advance : advance + width] - current[:width])
+    return {
+        "overlap_actions": int(width),
+        "mean_absolute_error": float(difference.mean()),
+        "maximum_absolute_error": float(difference.max()),
+        "mean_absolute_error_by_dimension": difference.mean(axis=0).tolist(),
+        "maximum_absolute_error_by_dimension": difference.max(axis=0).tolist(),
+    }
+
+
+def _video_frame(observation: Mapping[str, Any]) -> np.ndarray:
+    image = global_rgb_tensor(observation)[0]
+    return (
+        image.add(1.0)
+        .mul(127.5)
+        .round()
+        .clamp(0, 255)
+        .to(torch.uint8)
+        .permute(1, 2, 0)
+        .cpu()
+        .numpy()
+    )
+
+
+def _expert_grasp_reference(
+    *,
+    env: Any,
+    task_name: str,
+    expert: Mapping[str, np.ndarray],
+    agent_names: Sequence[str],
+    max_steps: int,
+) -> dict[str, Any] | None:
+    """Replay expert actions once to establish an episode-specific approach radius."""
+    horizon = min(max_steps, len(next(iter(expert.values()))))
+    for step in range(horizon):
+        action = {name: expert[name][step] for name in agent_names}
+        env.step(_environment_action(action, env.action_space))
+        diagnostics = _object_diagnostics(env, task_name)
+        if diagnostics["grasped"]:
+            return {
+                "first_grasp_step": step,
+                "ee_object_distances": _ee_object_distances(env, task_name),
+                "agent_grasps": diagnostics["agent_grasps"],
+            }
+    return None
+
+
 def _flat_action_to_dict(
     action: np.ndarray, agent_names: Sequence[str]
 ) -> dict[str, np.ndarray]:
@@ -510,6 +633,10 @@ def _action_trace_record(
     chunk_index: int,
     status: str,
     error: str | None = None,
+    learned_target: Mapping[str, np.ndarray] | None = None,
+    oracle_replaced: Mapping[str, Sequence[bool]] | None = None,
+    ee_object_distances: Mapping[str, float] | None = None,
+    agent_grasps: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     agents = []
     for name in agent_names:
@@ -536,6 +663,15 @@ def _action_trace_record(
                         None if normalized is None else float(normalized[dimension])
                     ),
                     "denormalized_target": target,
+                    "learned_denormalized_target": (
+                        None
+                        if learned_target is None
+                        else float(learned_target[name][dimension])
+                    ),
+                    "oracle_replaced": bool(
+                        oracle_replaced is not None
+                        and oracle_replaced[name][dimension]
+                    ),
                     "lower_bound": lower,
                     "upper_bound": upper,
                     "pre_clip": target,
@@ -571,6 +707,7 @@ def _action_trace_record(
         "status": status,
         "mode": args.mode,
         "task_name": args.task,
+        "exec_horizon": args.exec_horizon,
         "task_index": int(episode["task_index"]),
         "panel_index": int(episode["panel_index"]),
         "trajectory": str(episode["trajectory"]),
@@ -580,6 +717,10 @@ def _action_trace_record(
         "policy_query_seed": policy_query_seed,
         "chunk_index": int(chunk_index),
         "clip_actions_before_step": bool(args.clip_actions_before_step),
+        "noise_mode": args.noise_mode,
+        "oracle_intervention": args.oracle_intervention,
+        "ee_object_distances": dict(ee_object_distances or {}),
+        "agent_grasps": dict(agent_grasps or {}),
         "error": error,
         "agents": agents,
     }
@@ -732,6 +873,21 @@ def _run_episode(
     initial_object_heights: dict[str, float] = {}
     maximum_object_heights: dict[str, float] = {}
     final_object_diagnostics: dict[str, Any] = {}
+    minimum_ee_object_distances: dict[str, float] = {}
+    first_approach_steps: dict[str, int] = {}
+    first_close_steps: dict[str, int] = {}
+    gripper_flip_counts: dict[str, int] = {}
+    previous_gripper_closed: dict[str, bool] = {}
+    current_grasp_holds: dict[str, int] = {}
+    maximum_grasp_holds: dict[str, int] = {}
+    grasp_release_counts: dict[str, int] = {}
+    previous_grasps: dict[str, bool] = {}
+    bound_violations_by_agent_dimension: dict[str, list[int]] = {}
+    chunk_overlap_records: list[dict[str, Any]] = []
+    expert_grasp_reference: dict[str, Any] | None = None
+    expert_actions: dict[str, np.ndarray] | None = None
+    video_writer: Any = None
+    video_path: Path | None = None
     trace_path = args.output_dir / "action_trace.jsonl"
     try:
         env = _build_environment(
@@ -745,13 +901,61 @@ def _run_episode(
             raise ValueError(
                 f"Environment agents {actual_agents} do not match panel {agent_names}"
             )
+        expert_actions = _load_expert_actions(
+            source, str(episode["trajectory"]), agent_names
+        )
+        max_steps = int(episode["max_episode_steps"])
+        if args.max_steps is not None:
+            max_steps = min(max_steps, int(args.max_steps))
+        expert_grasp_reference = _expert_grasp_reference(
+            env=env,
+            task_name=args.task,
+            expert=expert_actions,
+            agent_names=agent_names,
+            max_steps=max_steps,
+        )
+        _reset_environment(env, episode)
+        _restore_initial_state(env, source, str(episode["trajectory"]))
         initial_object_diagnostics = _object_diagnostics(env, args.task)
         initial_object_heights = dict(initial_object_diagnostics["object_heights"])
         maximum_object_heights = dict(initial_object_heights)
         final_object_diagnostics = initial_object_diagnostics
         grasped = bool(initial_object_diagnostics["grasped"])
+        initial_distances = _ee_object_distances(env, args.task)
+        minimum_ee_object_distances = dict(initial_distances)
+        gripper_flip_counts = {name: 0 for name in agent_names}
+        current_grasp_holds = {name: 0 for name in agent_names}
+        maximum_grasp_holds = {name: 0 for name in agent_names}
+        grasp_release_counts = {name: 0 for name in agent_names}
+        previous_grasps = {
+            name: bool(initial_object_diagnostics["agent_grasps"].get(name, False))
+            for name in agent_names
+        }
+        bound_violations_by_agent_dimension = {
+            name: [0] * 8 for name in agent_names
+        }
+        if args.record_video:
+            import imageio.v2 as imageio
 
-        def update_object_diagnostics() -> None:
+            video_path = args.output_dir / "videos" / (
+                f"task-{int(episode['task_index']):03d}-episode-"
+                f"{int(episode['episode_id']):03d}.mp4"
+            )
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            video_writer = imageio.get_writer(video_path, fps=10, quality=7)
+            video_writer.append_data(
+                _video_frame(
+                    _canonical_observation(env.unwrapped.get_obs(), agent_names)
+                )
+            )
+
+        def update_step_diagnostics(
+            *,
+            env_step: int,
+            target_action: Mapping[str, np.ndarray],
+            diagnostic: Mapping[str, Mapping[str, np.ndarray | None]],
+            observation: Mapping[str, Any],
+        ) -> None:
             nonlocal final_object_diagnostics, grasped
             final_object_diagnostics = _object_diagnostics(env, args.task)
             grasped = grasped or bool(final_object_diagnostics["grasped"])
@@ -759,19 +963,62 @@ def _run_episode(
                 maximum_object_heights[name] = max(
                     maximum_object_heights.get(name, height), height
                 )
-        max_steps = int(episode["max_episode_steps"])
-        if args.max_steps is not None:
-            max_steps = min(max_steps, int(args.max_steps))
+            distances = _ee_object_distances(env, args.task)
+            reference_distances = (
+                {}
+                if expert_grasp_reference is None
+                else expert_grasp_reference["ee_object_distances"]
+            )
+            for name, distance in distances.items():
+                minimum_ee_object_distances[name] = min(
+                    minimum_ee_object_distances.get(name, distance), distance
+                )
+                if (
+                    name not in first_approach_steps
+                    and name in reference_distances
+                    and distance <= float(reference_distances[name])
+                ):
+                    first_approach_steps[name] = env_step
+            for name in agent_names:
+                closed = float(target_action[name][7]) < 0.0
+                if name not in previous_gripper_closed:
+                    previous_gripper_closed[name] = closed
+                elif previous_gripper_closed[name] != closed:
+                    gripper_flip_counts[name] += 1
+                    previous_gripper_closed[name] = closed
+                if closed and name not in first_close_steps:
+                    first_close_steps[name] = env_step
+                now_grasped = bool(final_object_diagnostics["agent_grasps"].get(name, False))
+                if now_grasped:
+                    current_grasp_holds[name] += 1
+                    maximum_grasp_holds[name] = max(
+                        maximum_grasp_holds[name], current_grasp_holds[name]
+                    )
+                else:
+                    if previous_grasps[name]:
+                        grasp_release_counts[name] += 1
+                    current_grasp_holds[name] = 0
+                previous_grasps[name] = now_grasped
+                for dimension, value in enumerate(diagnostic[name]["target"]):
+                    if (
+                        value < diagnostic[name]["lower"][dimension]
+                        or value > diagnostic[name]["upper"][dimension]
+                    ):
+                        bound_violations_by_agent_dimension[name][dimension] += 1
+            if video_writer is not None:
+                video_writer.append_data(_video_frame(observation))
 
         if args.mode == "expert-replay":
-            expert = _load_expert_actions(source, str(episode["trajectory"]), agent_names)
-            horizon = min(len(next(iter(expert.values()))), max_steps)
+            assert expert_actions is not None
+            horizon = min(len(next(iter(expert_actions.values()))), max_steps)
             for index in range(horizon):
                 current_observation = _canonical_observation(
                     env.unwrapped.get_obs(), agent_names
                 )
                 qpos_before = raw_agent_qpos(current_observation, agent_names)
-                target_action = {name: expert[name][index] for name in agent_names}
+                target_action = {
+                    name: expert_actions[name][index] for name in agent_names
+                }
                 violations, minimum, maximum = _action_diagnostics(
                     target_action, env.action_space
                 )
@@ -809,9 +1056,15 @@ def _run_episode(
                             fsync=False,
                         )
                     raise
-                qpos_after = raw_agent_qpos(
-                    _canonical_observation(env.unwrapped.get_obs(), agent_names),
-                    agent_names,
+                current_observation = _canonical_observation(
+                    env.unwrapped.get_obs(), agent_names
+                )
+                qpos_after = raw_agent_qpos(current_observation, agent_names)
+                update_step_diagnostics(
+                    env_step=steps,
+                    target_action=target_action,
+                    diagnostic=diagnostic,
+                    observation=current_observation,
                 )
                 if not args.disable_action_trace:
                     _append_jsonl(
@@ -828,11 +1081,15 @@ def _run_episode(
                             policy_query_seed=None,
                             chunk_index=index,
                             status="executed",
+                            learned_target=target_action,
+                            ee_object_distances=_ee_object_distances(env, args.task),
+                            agent_grasps=final_object_diagnostics.get(
+                                "agent_grasps", {}
+                            ),
                         ),
                         fsync=False,
                     )
                 steps += 1
-                update_object_diagnostics()
                 success = _as_bool(info["success"], label="info.success")
                 if success:
                     termination_reason = "success"
@@ -851,6 +1108,8 @@ def _run_episode(
                 env.unwrapped.get_obs(), agent_names
             )
             policy.update_obs(current_observation, env.unwrapped.get_state_dict())
+            previous_action_chunk: np.ndarray | None = None
+            previous_execute = 0
             while steps < max_steps:
                 query_started = time.monotonic()
                 action_views = policy.get_action_with_trace()
@@ -869,14 +1128,32 @@ def _run_episode(
                         "Normalized and denormalized action chunks differ in shape: "
                         f"{normalized_chunk.shape} vs {action_chunk.shape}"
                     )
+                overlap = _chunk_overlap_error(
+                    previous_action_chunk, action_chunk, previous_execute
+                )
+                if overlap is not None:
+                    overlap["policy_query_index"] = policy_query_index
+                    chunk_overlap_records.append(overlap)
                 execute = min(args.exec_horizon, len(action_chunk), max_steps - steps)
                 if execute < 1:
                     raise ValueError("Policy returned an empty executable action chunk")
                 stop_chunk = False
                 for index in range(execute):
                     qpos_before = raw_agent_qpos(current_observation, agent_names)
-                    target_action = _flat_action_to_dict(
+                    learned_target = _flat_action_to_dict(
                         action_chunk[index], agent_names
+                    )
+                    if expert_actions is None:
+                        raise RuntimeError("Expert actions were not initialized")
+                    if steps >= len(next(iter(expert_actions.values()))):
+                        raise IndexError(
+                            f"Oracle reference ends at {len(next(iter(expert_actions.values())))} "
+                            f"before environment step {steps}"
+                        )
+                    target_action, oracle_replaced = _apply_oracle_intervention(
+                        learned_target,
+                        {name: expert_actions[name][steps] for name in agent_names},
+                        args.oracle_intervention,
                     )
                     normalized_action = _flat_action_to_dict(
                         normalized_chunk[index], agent_names
@@ -914,6 +1191,8 @@ def _run_episode(
                                     chunk_index=index,
                                     status="env_step_error",
                                     error=f"{type(error).__name__}: {error}",
+                                    learned_target=learned_target,
+                                    oracle_replaced=oracle_replaced,
                                 ),
                                 fsync=False,
                             )
@@ -922,6 +1201,12 @@ def _run_episode(
                         env.unwrapped.get_obs(), agent_names
                     )
                     qpos_after = raw_agent_qpos(current_observation, agent_names)
+                    update_step_diagnostics(
+                        env_step=steps,
+                        target_action=target_action,
+                        diagnostic=diagnostic,
+                        observation=current_observation,
+                    )
                     if not args.disable_action_trace:
                         _append_jsonl(
                             trace_path,
@@ -937,11 +1222,16 @@ def _run_episode(
                                 policy_query_seed=policy_query_seed,
                                 chunk_index=index,
                                 status="executed",
+                                learned_target=learned_target,
+                                oracle_replaced=oracle_replaced,
+                                ee_object_distances=_ee_object_distances(env, args.task),
+                                agent_grasps=final_object_diagnostics.get(
+                                    "agent_grasps", {}
+                                ),
                             ),
                             fsync=False,
                         )
                     steps += 1
-                    update_object_diagnostics()
                     success = _as_bool(info["success"], label="info.success")
                     policy.update_obs(
                         current_observation, env.unwrapped.get_state_dict()
@@ -960,6 +1250,8 @@ def _run_episode(
                         break
                 if stop_chunk:
                     break
+                previous_action_chunk = action_chunk
+                previous_execute = execute
 
         return {
             "status": "completed",
@@ -973,6 +1265,8 @@ def _run_episode(
             "episode_id": int(episode["episode_id"]),
             "environment_seed": int(episode["episode_seed"]),
             "policy_seed": episode_policy_seed,
+            "noise_mode": args.noise_mode,
+            "oracle_intervention": args.oracle_intervention,
             "success": success,
             "steps": steps,
             "policy_queries": policy_queries,
@@ -981,9 +1275,52 @@ def _run_episode(
                 float(sum(query_seconds) / len(query_seconds)) if query_seconds else None
             ),
             "action_bound_violations": bound_violations,
+            "action_bound_violations_by_agent_dimension": {
+                name: {
+                    ACTION_DIMENSION_NAMES[dimension]: count
+                    for dimension, count in enumerate(counts)
+                }
+                for name, counts in bound_violations_by_agent_dimension.items()
+            },
             "action_min": None if steps == 0 else action_minimum,
             "action_max": None if steps == 0 else action_maximum,
             "grasped": grasped,
+            "expert_grasp_reference": expert_grasp_reference,
+            "minimum_ee_object_distances": minimum_ee_object_distances,
+            "first_approach_steps": first_approach_steps,
+            "first_close_steps": first_close_steps,
+            "close_before_approach": {
+                name: (
+                    name in first_close_steps
+                    and (
+                        name not in first_approach_steps
+                        or first_close_steps[name] < first_approach_steps[name]
+                    )
+                )
+                for name in agent_names
+            },
+            "gripper_flip_counts": gripper_flip_counts,
+            "maximum_grasp_hold_steps": maximum_grasp_holds,
+            "grasp_release_counts": grasp_release_counts,
+            "chunk_overlap_records": chunk_overlap_records,
+            "chunk_overlap_mean_absolute_error": (
+                float(
+                    np.mean(
+                        [record["mean_absolute_error"] for record in chunk_overlap_records]
+                    )
+                )
+                if chunk_overlap_records
+                else None
+            ),
+            "chunk_overlap_maximum_absolute_error": (
+                max(
+                    record["maximum_absolute_error"]
+                    for record in chunk_overlap_records
+                )
+                if chunk_overlap_records
+                else None
+            ),
+            "video_path": None if video_path is None else str(video_path),
             "final_agent_grasps": final_object_diagnostics.get("agent_grasps", {}),
             "initial_object_heights": initial_object_heights,
             "maximum_object_heights": maximum_object_heights,
@@ -1005,6 +1342,8 @@ def _run_episode(
             "gpu_memory": _gpu_memory(),
         }
     finally:
+        if video_writer is not None:
+            video_writer.close()
         _fsync_existing(trace_path)
         if env is not None:
             env.close()
@@ -1054,6 +1393,19 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--exec-horizon", type=int, default=5)
     parser.add_argument("--policy-seed", type=int, default=10000)
+    parser.add_argument(
+        "--noise-mode",
+        choices=("rolling-query", "fixed-episode"),
+        default="rolling-query",
+    )
+    parser.add_argument(
+        "--oracle-intervention", choices=ORACLE_INTERVENTIONS, default="none"
+    )
+    parser.add_argument(
+        "--record-video",
+        action="store_true",
+        help="Record one MP4 per evaluated episode from the canonical global RGB view.",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--stats", type=Path)
     parser.add_argument("--flux2-src", type=Path)
@@ -1108,6 +1460,8 @@ def main() -> None:
 
     if args.exec_horizon < 1:
         raise ValueError("exec_horizon must be positive")
+    if args.mode == "expert-replay" and args.oracle_intervention != "none":
+        raise ValueError("Oracle intervention is only valid for learned-policy modes")
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=args.resume)
     args.output_dir = output_dir
@@ -1189,6 +1543,7 @@ def main() -> None:
                 task_name=args.task,
                 device=args.device,
                 seed=args.policy_seed,
+                noise_mode=args.noise_mode,
                 request_timeout=args.request_timeout,
             )
         policy_init_seconds = time.monotonic() - init_started
@@ -1216,7 +1571,14 @@ def main() -> None:
         "max_steps_override": args.max_steps,
         "exec_horizon": args.exec_horizon,
         "policy_seed_base": args.policy_seed,
-        "policy_seed_schedule": "base_plus_task_index_then_plus_query_index_v1",
+        "policy_seed_schedule": (
+            "base_plus_task_index_fixed_across_queries_v1"
+            if args.noise_mode == "fixed-episode"
+            else "base_plus_task_index_then_plus_query_index_v1"
+        ),
+        "noise_mode": args.noise_mode,
+        "oracle_intervention": args.oracle_intervention,
+        "record_video": bool(args.record_video),
         "eval_code_commit": args.eval_code_commit,
         "panel": panel_record,
         "dataset_root": str(dataset_root),
@@ -1312,6 +1674,9 @@ def main() -> None:
         ),
         "mode": args.mode,
         "task_name": args.task,
+        "exec_horizon": args.exec_horizon,
+        "noise_mode": args.noise_mode,
+        "oracle_intervention": args.oracle_intervention,
         "episodes_requested": len(selected),
         "episodes_recorded": len(results),
         "episodes_completed": len(completed),

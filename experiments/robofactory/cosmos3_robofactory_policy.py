@@ -72,6 +72,7 @@ class Cosmos3RoboFactoryPolicy:
         noposplat_checkpoint_bytes: int = NOPOSPLAT_CHECKPOINT_BYTES,
         device: str = "cuda:0",
         seed: int = 10000,
+        noise_mode: str = "rolling-query",
         request_timeout: float = 900.0,
     ) -> None:
         if task_name not in TASK_INSTRUCTIONS:
@@ -79,6 +80,9 @@ class Cosmos3RoboFactoryPolicy:
         self.server_url = server_url.rstrip("/")
         self.task_name = task_name
         self.seed = int(seed)
+        if noise_mode not in ("rolling-query", "fixed-episode"):
+            raise ValueError(f"Unsupported Cosmos3 noise mode: {noise_mode!r}")
+        self.noise_mode = noise_mode
         self.request_timeout = float(request_timeout)
         self.gaussian_teacher = OnlineNoPoSplatTeacher(
             repo_path=policy_lightning_repo,
@@ -123,7 +127,11 @@ class Cosmos3RoboFactoryPolicy:
             self.gaussian_teacher, self._observation, names
         )
         query_index = self._query_index
-        query_seed = self._episode_seed + query_index
+        query_seed = (
+            self._episode_seed
+            if self.noise_mode == "fixed-episode"
+            else self._episode_seed + query_index
+        )
         result = _request_json(
             f"{self.server_url}/predict",
             {
@@ -167,4 +175,5 @@ class Cosmos3RoboFactoryPolicy:
             "online_gaussian": self.gaussian_teacher.provenance(),
             "action_layout": "agent_major_model_to_chronological_environment",
             "state_normalization": "none_raw_qpos9_qvel9",
+            "noise_mode": self.noise_mode,
         }
