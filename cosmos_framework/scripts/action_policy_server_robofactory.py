@@ -60,6 +60,12 @@ class RoboFactoryActionServerArgs(ActionServerArgs):
     def build_setup_overrides(self) -> OmniSetupOverrides:
         setup = super().build_setup_overrides()
         setup.guardrails = False
+        # The multi-robot conditioner consumes per-request scalar metadata
+        # (agent count and horizon).  Dynamo cannot safely guard those values
+        # inside the fully compiled VFM forward, while eager inference handles
+        # the exact same model and checkpoint without changing policy math.
+        setup.use_torch_compile = False
+        setup.use_cuda_graphs = False
         return setup
 
 

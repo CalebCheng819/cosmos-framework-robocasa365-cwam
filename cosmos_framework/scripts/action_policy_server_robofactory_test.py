@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import torch
 
+from cosmos_framework.scripts.action_policy_server_robofactory import RoboFactoryActionServerArgs
 from cosmos_framework.scripts.robofactory_action_bridge import (
     ACTION_HORIZON_PER_AGENT,
     chronological_views,
@@ -19,6 +20,18 @@ from cosmos_framework.scripts.robofactory_action_bridge import (
 class _OffsetNormalizer:
     def normalize_action(self, action: torch.Tensor) -> torch.Tensor:
         return action + 1000.0
+
+
+def test_server_args_disable_compile_for_dynamic_multi_robot_metadata() -> None:
+    args = RoboFactoryActionServerArgs.model_validate(
+        {"checkpoint": {"checkpoint_path": "/checkpoint/model"}}
+    )
+
+    overrides = args.build_setup_overrides()
+
+    assert overrides.guardrails is False
+    assert overrides.use_torch_compile is False
+    assert overrides.use_cuda_graphs is False
 
 
 def test_decode_array_preserves_shape_and_values() -> None:

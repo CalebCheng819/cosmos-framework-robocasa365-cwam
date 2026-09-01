@@ -1,7 +1,7 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r15-h252-2g",
+  "attempt_id": "attempt-r16-h252-2g",
   "status": "relaunch_prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
@@ -55,7 +55,9 @@
     "action_horizon_per_agent": 32,
     "online_gaussian": true,
     "action_clipping": false,
-    "policy_seed": 10000
+    "policy_seed": 10000,
+    "torch_compile": false,
+    "cuda_graphs": false
   },
   "execution": {
     "policy_server_gpu": 0,
@@ -132,7 +134,12 @@
       "attempt_id": "attempt-r14-h252-2g",
       "terminal_state": "failed",
       "reason": "runtime and foundation assets staged successfully, but the expanded simulator import preflight exposed a missing exceptiongroup package before model serving or episode creation; attempt r15 adds a pinned isolated exceptiongroup overlay"
+    },
+    {
+      "attempt_id": "attempt-r15-h252-2g",
+      "terminal_state": "failed",
+      "reason": "all asset and dependency preflights, checkpoint loading, action-server readiness, and formal PlaceFood launch passed, but the first real action request exposed a torch.compile data-dependent guard on the per-request multi-robot agent count and horizon; no scientific episode result was produced, and attempt r16 uses eager inference for the same model and checkpoint"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r15-h252-2g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r16-h252-2g"
 }
