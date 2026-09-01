@@ -30,6 +30,7 @@ from cosmos_framework.data.generator.action.transforms import (
     find_closest_target_size,
     reflection_pad_to_target,
 )
+from cosmos_framework.inference.args import OmniSetupOverrides
 from cosmos_framework.scripts.action_policy_server_libero import (
     ActionModelService,
     ActionServerArgs,
@@ -53,10 +54,19 @@ STATE_DIM = 18
 GAUSSIAN_SHAPE = (13, 28, 40)
 
 
+class RoboFactoryActionServerArgs(ActionServerArgs):
+    """RoboFactory serving overrides that are fixed by the evaluation contract."""
+
+    def build_setup_overrides(self) -> OmniSetupOverrides:
+        setup = super().build_setup_overrides()
+        setup.guardrails = False
+        return setup
+
+
 class RoboFactoryActionModelService(ActionModelService):
     """Cosmos3 action service with the exact variable-cardinality contract."""
 
-    def __init__(self, args: ActionServerArgs) -> None:
+    def __init__(self, args: RoboFactoryActionServerArgs) -> None:
         from cosmos_framework.data.generator.action.datasets.robofactory_multi_robot_dataset import (
             load_imagewam_zscore_normalizer,
         )
@@ -204,7 +214,7 @@ class RoboFactoryActionModelService(ActionModelService):
         raise ValueError("RoboFactory closed-loop service accepts one stateful request at a time")
 
 
-def serve(args: ActionServerArgs) -> None:
+def serve(args: RoboFactoryActionServerArgs) -> None:
     service = RoboFactoryActionModelService(args)
     log.info(
         f"[robofactory-action-server] accessible=http://{get_local_ip()}:{int(args.port)}/ "
@@ -217,7 +227,7 @@ def serve(args: ActionServerArgs) -> None:
 
 def main() -> None:
     args = tyro_cli(
-        ActionServerArgs,
+        RoboFactoryActionServerArgs,
         description=__doc__,
         config=(
             tyro.conf.OmitArgPrefixes,

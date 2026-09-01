@@ -1,8 +1,8 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r5-h252-2g",
-  "status": "running_asset_staging",
+  "attempt_id": "attempt-r6-h252-2g",
+  "status": "prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
   "cluster": "H",
@@ -12,12 +12,6 @@
     "cpus": 24,
     "memory_mib": 200000,
     "priority": 9
-  },
-  "scheduler": {
-    "job_name": "cosmos3-rf-eval2-s60k-h252-2g-r5-0901-27653139",
-    "replica": "cosmos3-rf-eval2-s60k-h252-2g-r5-0901-27653139-kwl7q",
-    "node": "gpu-l-lg-cmc-h-h200-0252.host.h.pjlab.org.cn",
-    "replica_ip": "100.104.125.53"
   },
   "checkpoint": "iter_000060000",
   "tasks": [
@@ -57,7 +51,12 @@
       "attempt_id": "attempt-r4-h252-2g",
       "terminal_state": "failed",
       "reason": "Tyro rejected explicit boolean values; the fixed RoboFactory serving contract is now enforced in code instead of the CLI"
+    },
+    {
+      "attempt_id": "attempt-r5-h252-2g",
+      "terminal_state": "failed",
+      "reason": "Cosmos inference enabled content guardrails by default and the frozen environment intentionally has no nltk; RoboFactory serving now disables unrelated guardrails in code"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r5-h252-2g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r6-h252-2g"
 }
