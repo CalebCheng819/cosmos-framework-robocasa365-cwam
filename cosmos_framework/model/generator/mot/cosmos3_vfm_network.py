@@ -22,6 +22,7 @@ from cosmos_framework.model.generator.mot.context_parallel_utils import (
 )
 from cosmos_framework.model.generator.mot.domain_aware_linear import DomainAwareLinear
 from cosmos_framework.model.generator.mot.modeling_utils import TimestepEmbedder, has_noisy_tokens
+from cosmos_framework.model.generator.mot.multi_robot_condition import MultiRobotActionConditioner
 from cosmos_framework.model.generator.utils.memory import MemoryState
 
 
@@ -56,6 +57,11 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         action_relevance_num_heads=8,
         action_relevance_topk=32,
         action_relevance_initial_gate=0.01,
+        multi_robot_conditioning_enabled=False,
+        multi_robot_state_dim=18,
+        multi_robot_gaussian_channels=13,
+        multi_robot_condition_num_heads=8,
+        multi_robot_hub_ratio=0.5,
         natten_parameter_list=None,
         video_temporal_causal=False,
         # Sound generation parameters
@@ -98,12 +104,19 @@ class Cosmos3VFMNetworkConfig(PretrainedConfig):
         self.action_relevance_num_heads = action_relevance_num_heads
         self.action_relevance_topk = action_relevance_topk
         self.action_relevance_initial_gate = action_relevance_initial_gate
+        self.multi_robot_conditioning_enabled = multi_robot_conditioning_enabled
+        self.multi_robot_state_dim = multi_robot_state_dim
+        self.multi_robot_gaussian_channels = multi_robot_gaussian_channels
+        self.multi_robot_condition_num_heads = multi_robot_condition_num_heads
+        self.multi_robot_hub_ratio = multi_robot_hub_ratio
         if self.action_gen:
             assert self.vision_gen, (
                 "Action generation requires visual generation! We do NOT support action only training!"
             )
         if self.action_relevance_enabled and not self.action_gen:
             raise ValueError("action_relevance_enabled=True requires action_gen=True")
+        if self.multi_robot_conditioning_enabled and not self.action_gen:
+            raise ValueError("multi_robot_conditioning_enabled=True requires action_gen=True")
 
         # sound related parameters
         self.sound_dim = sound_dim
@@ -182,6 +195,14 @@ class Cosmos3VFMNetwork(PreTrainedModel):
                     topk=config.action_relevance_topk,
                     initial_residual_gate=config.action_relevance_initial_gate,
                 )
+            if config.multi_robot_conditioning_enabled:
+                self.multi_robot_conditioner = MultiRobotActionConditioner(
+                    hidden_size=self.hidden_size,
+                    num_heads=config.multi_robot_condition_num_heads,
+                    state_dim=config.multi_robot_state_dim,
+                    gaussian_channels=config.multi_robot_gaussian_channels,
+                    hub_ratio=config.multi_robot_hub_ratio,
+                )
 
         if config.sound_gen:
             self.sound_dim = config.sound_dim
@@ -222,6 +243,8 @@ class Cosmos3VFMNetwork(PreTrainedModel):
             torch.nn.init.trunc_normal_(self.action_modality_embed, std=std, a=-3 * std, b=3 * std)
             if self.config.action_relevance_enabled:
                 self.action_relevance.init_weights()
+            if self.config.multi_robot_conditioning_enabled:
+                self.multi_robot_conditioner.init_weights()
 
         if self.config.sound_gen:
             # sound2llm: input_size=sound_dim, output_size=hidden_size
@@ -738,6 +761,15 @@ class Cosmos3VFMNetwork(PreTrainedModel):
         packed_tokens_action = packed_tokens_action + self.action_modality_embed.view(
             1, -1
         )  # [B_action*T_action,hidden_size]
+
+        if self.config.multi_robot_conditioning_enabled:
+            if packed_seq.multi_robot_condition is None:
+                raise ValueError("Multi-robot action conditioning is enabled but batch conditions are missing")
+            packed_tokens_action = self.multi_robot_conditioner(
+                packed_tokens_action,
+                action.token_shapes,
+                packed_seq.multi_robot_condition,
+            )
 
         has_noisy_actions = has_noisy_tokens(action)
         if has_noisy_actions:

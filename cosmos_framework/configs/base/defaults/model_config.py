@@ -259,6 +259,13 @@ class OmniMoTModelConfig:
     action_relevance_sparsity_weight: float = 0.01
     action_relevance_sparsity_start_iter: int = 1000
     action_relevance_sparsity_anneal_iters: int = 4000
+    # ImageWAM-compatible RoboFactory multi-robot conditions. Actions remain
+    # agent-major [N*H,D]; no learned agent-ID embeddings are introduced.
+    multi_robot_conditioning_enabled: bool = False
+    multi_robot_state_dim: int = 18
+    multi_robot_gaussian_channels: int = 13
+    multi_robot_condition_num_heads: int = 8
+    multi_robot_hub_ratio: float = 0.5
 
     # sound configs
     sound_gen: bool = False  # whether to use sound related parameters and condition/generate sound tokens

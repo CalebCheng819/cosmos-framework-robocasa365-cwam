@@ -25,6 +25,7 @@ EMBODIMENT_TO_DOMAIN_ID: dict[str, int] = {
     "fractal": 20,
     "drawanything": 21,
     "robocasa365": 22,
+    "robofactory": 23,
 }
 
 
@@ -47,6 +48,7 @@ EMBODIMENT_TO_RAW_ACTION_DIM: dict[str, int] = {
     "fractal": 10,
     "drawanything": 3,
     "robocasa365": 10,
+    "robofactory": 8,
     # NOTE: ``libero`` (7/10/13 depending on ``rotation_space``) and ``hand_pose``
     # (variable with ``keypoint_option`` and ``rotation_format``) are absent
     # because their raw width is set per-dataset at construction time. Inference

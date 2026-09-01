@@ -1,0 +1,30 @@
+{
+  "schema_version": "research-experiment-manifest-v1",
+  "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
+  "attempt_id": "attempt-r1-h252-4g",
+  "status": "prepared",
+  "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
+  "account": "chengjuntao",
+  "cluster": "H",
+  "node": "H252",
+  "resources": {
+    "gpus": 4,
+    "cpus": 36,
+    "memory_mib": 300000,
+    "priority": 9
+  },
+  "checkpoint": "iter_000060000",
+  "tasks": [
+    "PlaceFood-rf",
+    "TwoRobotsStackCube-rf"
+  ],
+  "protocol": {
+    "episodes_per_task": 100,
+    "exec_horizon": 1,
+    "action_horizon_per_agent": 32,
+    "online_gaussian": true,
+    "action_clipping": false,
+    "policy_seed": 10000
+  },
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r1-h252-4g"
+}

@@ -49,6 +49,11 @@ def custom_collate_fn(batch):
         "raw_action_dim",
         "image_size",
         "action_processing_record",
+        "action_token_mask",
+        "agent_count",
+        "action_horizon_per_agent",
+        "agent_state",
+        "agent_gaussian",
     }
 
     # Data keys where a per-sample value of ``None`` is a meaningful signal
@@ -974,6 +979,7 @@ class PackingDataLoader(JointDataLoader):
         uniae_chunk_frames: int | Mapping[str, int] | None = None,
         uniae_pad_frames: int | None = None,
         restart_on_iter: bool = False,
+        packing_group_key: str | None = None,
     ):
         """
         Args:
@@ -995,8 +1001,12 @@ class PackingDataLoader(JointDataLoader):
                 buffers whenever ``iter(loader)`` is called. Intended for
                 fixed-seed validation so every checkpoint sees the same
                 samples; leave disabled for the training stream.
+            packing_group_key: Optional per-sample key that must have the same
+                scalar value for every sample in one packed batch. RoboFactory
+                uses ``agent_count`` so each packed batch has one robot count.
         """
         self.restart_on_iter = bool(restart_on_iter)
+        self.packing_group_key = packing_group_key
         wrapped = {dataset_name: {"dataloader": dataloader, "ratio": 1}}
         super().__init__(
             dataloaders=wrapped,
@@ -1029,6 +1039,7 @@ class PackingDataLoader(JointDataLoader):
             current_sequence_length = 0
             num_samples = 0
             output_batch: dict = {}
+            current_group_value = None
 
             skipped_samples: deque = deque()
             # PackingDataLoader wraps a single dataloader, so lookahead_limits has one entry.
@@ -1046,6 +1057,25 @@ class PackingDataLoader(JointDataLoader):
                     output = self._get_next_sample(0)
                 except StopIteration:
                     break
+
+                if self.packing_group_key is not None:
+                    if self.packing_group_key not in output:
+                        raise KeyError(
+                            f"packing_group_key={self.packing_group_key!r} is missing from dataset sample"
+                        )
+                    group_value = output[self.packing_group_key]
+                    while isinstance(group_value, (list, tuple)) and len(group_value) == 1:
+                        group_value = group_value[0]
+                    if isinstance(group_value, torch.Tensor):
+                        if group_value.numel() != 1:
+                            raise ValueError(
+                                f"packing group value must be scalar, got shape {tuple(group_value.shape)}"
+                            )
+                        group_value = group_value.item()
+                    if current_group_value is not None and group_value != current_group_value:
+                        skipped_samples.append(output)
+                        lookahead_count += 1
+                        continue
 
                 num_tokens_in_current_sample = self._compute_num_tokens_per_sample(output)
 
@@ -1068,6 +1098,8 @@ class PackingDataLoader(JointDataLoader):
 
                 current_sequence_length += num_tokens_in_current_sample
                 num_samples += 1
+                if current_group_value is None and self.packing_group_key is not None:
+                    current_group_value = group_value
                 # Allows the dataset name to be overridden by the sample itself.
                 output["dataset_name"] = output.get("dataset_name", ds_name)
                 self._update_output_batch(output_batch, output)

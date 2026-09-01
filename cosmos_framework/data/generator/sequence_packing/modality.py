@@ -104,6 +104,10 @@ class ModalityData:
     noisy_frame_indexes: list[torch.Tensor] = field(default_factory=list)
     domain_id: list[torch.Tensor] = field(default_factory=list)
     raw_action_dim: list[torch.Tensor | None] | None = field(default_factory=list)
+    # Optional per-token validity masks.  This is separate from condition_mask:
+    # condition_mask controls diffusion conditioning, while token_mask excludes
+    # padding or unavailable robot-action tokens from the objective.
+    token_mask: list[torch.Tensor] | None = None
 
     def __post_init__(self) -> None:
         assert isinstance(self.sequence_indexes, torch.Tensor), "ModalityData.sequence_indexes must be finalized"
@@ -122,6 +126,25 @@ class ModalityData:
         # raw_action_dim is optional (e.g., when action-channel masking is disabled).
         if self.raw_action_dim is not None:
             self.raw_action_dim = [d.cuda() if d is not None else None for d in self.raw_action_dim]
+        if self.token_mask is not None:
+            self.token_mask = [mask.cuda() for mask in self.token_mask]
+
+
+@dataclass
+class MultiRobotConditionData:
+    """Per-action-sample conditions for the RoboFactory multi-robot contract."""
+
+    agent_count: list[torch.Tensor] = field(default_factory=list)
+    horizon_per_agent: list[torch.Tensor] = field(default_factory=list)
+    agent_state: list[torch.Tensor] = field(default_factory=list)
+    agent_gaussian: list[torch.Tensor] | None = None
+
+    def to_cuda(self) -> None:
+        self.agent_count = [value.cuda() for value in self.agent_count]
+        self.horizon_per_agent = [value.cuda() for value in self.horizon_per_agent]
+        self.agent_state = [value.cuda() for value in self.agent_state]
+        if self.agent_gaussian is not None:
+            self.agent_gaussian = [value.cuda() for value in self.agent_gaussian]
 
 
 def prepare_attention_mask_per_sample(split_lens, attn_modes, device="cpu"):

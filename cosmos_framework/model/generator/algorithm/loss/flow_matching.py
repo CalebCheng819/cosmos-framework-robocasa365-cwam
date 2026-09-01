@@ -24,6 +24,7 @@ def compute_flow_matching_loss(
     rectified_flow: RectifiedFlow,
     tensor_kwargs_fp32: dict,
     raw_action_dim: list[torch.Tensor] | None = None,
+    token_mask: list[torch.Tensor] | None = None,
     normalize_by_active: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute flow matching loss for a modality.
@@ -67,6 +68,10 @@ def compute_flow_matching_loss(
         T_i = condition_mask[i].shape[0]
         sqerr_i = (pred[i] - target[i]) ** 2  # vision:[C,T,H,W]  action/sound:[T,D]
         noisy_mask_i = 1.0 - condition_mask[i]  # vision:[T,1,1]  action/sound:[T,1]
+        if token_mask is not None:
+            valid_i = token_mask[i].to(device=sqerr_i.device, dtype=sqerr_i.dtype)
+            valid_i = valid_i.reshape(T_i, *([1] * (condition_mask[i].ndim - 1)))
+            noisy_mask_i = noisy_mask_i * valid_i
         if raw_action_dim is not None and raw_action_dim[i] is not None:
             sqerr_i = sqerr_i[:, : raw_action_dim[i]]
         if normalize_by_active:

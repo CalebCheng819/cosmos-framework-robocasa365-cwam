@@ -19,6 +19,7 @@ from torch.nn.modules.module import _IncompatibleKeys
 from cosmos_framework.configs.base.defaults.model_config import OmniMoTModelConfig
 from cosmos_framework.data.generator.action.action_processing import ActionProcessor, get_action_processing_records
 from cosmos_framework.data.generator.sequence_packing import (
+    MultiRobotConditionData,
     PackedSequence,
     SequencePlan,
     build_sequence_plans_from_data_batch,
@@ -80,6 +81,111 @@ from cosmos_framework.utils.generator.parallelism import ParallelDims
 from cosmos_framework.utils.lazy_config import LazyDict
 from cosmos_framework.utils.lazy_config import instantiate as lazy_instantiate
 from cosmos_framework.utils.timer import Timer
+
+
+_MULTI_ROBOT_BATCH_KEYS = {
+    "agent_count",
+    "action_horizon_per_agent",
+    "agent_state",
+    "agent_gaussian",
+    "action_token_mask",
+}
+
+
+def _multi_robot_sample_values(raw: object, expected_batch_size: int) -> list[object]:
+    """Normalize legacy and dataflow collator nesting to one value per sample."""
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, torch.Tensor) and raw.ndim > 0 and raw.shape[0] == expected_batch_size:
+        values = list(raw.unbind(0))
+    else:
+        values = [raw]
+    normalized = []
+    for value in values:
+        while isinstance(value, (list, tuple)) and len(value) == 1:
+            value = value[0]
+        normalized.append(value)
+    return normalized
+
+
+def attach_multi_robot_action_contract(
+    packed_sequence: PackedSequence,
+    data_batch: Mapping[str, object],
+    action_sample_indices: list[int],
+    batch_size: int,
+) -> None:
+    """Validate and attach the explicit RoboFactory multi-robot batch contract."""
+    present = _MULTI_ROBOT_BATCH_KEYS.intersection(data_batch)
+    if not present:
+        return
+    missing = _MULTI_ROBOT_BATCH_KEYS.difference(data_batch)
+    if missing:
+        raise KeyError(f"Incomplete multi-robot batch contract; missing keys: {sorted(missing)}")
+    if packed_sequence.action is None:
+        raise ValueError("Multi-robot batch contract was supplied without packed action tokens")
+
+    dense: dict[str, list[torch.Tensor]] = {}
+    for key in sorted(_MULTI_ROBOT_BATCH_KEYS):
+        values = _multi_robot_sample_values(data_batch[key], batch_size)
+        if len(values) == batch_size:
+            values = [values[index] for index in action_sample_indices]
+        if len(values) != len(packed_sequence.action.token_shapes):
+            raise ValueError(
+                f"{key} has {len(values)} values but there are "
+                f"{len(packed_sequence.action.token_shapes)} action payloads"
+            )
+        if not all(isinstance(value, torch.Tensor) for value in values):
+            raise TypeError(f"Every {key} value must be a torch.Tensor")
+        dense[key] = values
+
+    counts: list[torch.Tensor] = []
+    horizons: list[torch.Tensor] = []
+    states: list[torch.Tensor] = []
+    gaussians: list[torch.Tensor] = []
+    masks: list[torch.Tensor] = []
+    for index, token_shape in enumerate(packed_sequence.action.token_shapes):
+        count = dense["agent_count"][index].reshape(-1)
+        horizon = dense["action_horizon_per_agent"][index].reshape(-1)
+        if count.numel() != 1 or horizon.numel() != 1:
+            raise ValueError("agent_count and action_horizon_per_agent must be scalar")
+        num_agents = int(count.item())
+        horizon_value = int(horizon.item())
+        token_count = int(token_shape[0])
+        if not 1 <= num_agents <= 4 or horizon_value <= 0 or num_agents * horizon_value != token_count:
+            raise ValueError(
+                f"Invalid agent-major action payload: N={num_agents}, H={horizon_value}, T={token_count}"
+            )
+
+        state = dense["agent_state"][index]
+        if state.ndim == 3 and state.shape[0] == 1:
+            state = state.squeeze(0)
+        gaussian = dense["agent_gaussian"][index]
+        if gaussian.ndim == 5 and gaussian.shape[0] == 1:
+            gaussian = gaussian.squeeze(0)
+        mask = dense["action_token_mask"][index]
+        if mask.ndim == 2 and mask.shape[0] == 1:
+            mask = mask.squeeze(0)
+        if tuple(state.shape) != (num_agents, 18):
+            raise ValueError(f"agent_state must be [{num_agents},18], got {tuple(state.shape)}")
+        if tuple(gaussian.shape) != (num_agents, 13, 28, 40):
+            raise ValueError(
+                f"agent_gaussian must be [{num_agents},13,28,40], got {tuple(gaussian.shape)}"
+            )
+        if mask.numel() != token_count:
+            raise ValueError(f"action_token_mask must contain {token_count} values, got {mask.numel()}")
+        counts.append(count.to(dtype=torch.long))
+        horizons.append(horizon.to(dtype=torch.long))
+        states.append(state.to(dtype=torch.float32))
+        gaussians.append(gaussian.to(dtype=torch.float32))
+        masks.append(mask.reshape(token_count).to(dtype=torch.float32))
+
+    packed_sequence.multi_robot_condition = MultiRobotConditionData(
+        agent_count=counts,
+        horizon_per_agent=horizons,
+        agent_state=states,
+        agent_gaussian=gaussians,
+    )
+    packed_sequence.action.token_mask = masks
 
 
 class OmniMoTModel(ImaginaireModel):
@@ -227,6 +333,11 @@ class OmniMoTModel(ImaginaireModel):
                 action_relevance_num_heads=self.config.action_relevance_num_heads,
                 action_relevance_topk=self.config.action_relevance_topk,
                 action_relevance_initial_gate=self.config.action_relevance_initial_gate,
+                multi_robot_conditioning_enabled=self.config.multi_robot_conditioning_enabled,
+                multi_robot_state_dim=self.config.multi_robot_state_dim,
+                multi_robot_gaussian_channels=self.config.multi_robot_gaussian_channels,
+                multi_robot_condition_num_heads=self.config.multi_robot_condition_num_heads,
+                multi_robot_hub_ratio=self.config.multi_robot_hub_ratio,
                 natten_parameter_list=self.config.natten_parameter_list,
                 video_temporal_causal=self.config.video_temporal_causal,
                 # Sound generation parameters
@@ -972,6 +1083,12 @@ class OmniMoTModel(ImaginaireModel):
             skip_text_tokens=memory_info["skip_text"],
             initial_mrope_temporal_offset=memory_info["initial_temporal_offset"],
         )
+        attach_multi_robot_action_contract(
+            packed_sequence,
+            data_batch,
+            action_sample_indices=action_sample_indices,
+            batch_size=len(sequence_plans),
+        )
 
         # Under independent_action_schedule, overwrite the vision-based action timestep the
         # packer injected with the action timestep, so the denoiser's action timestep embedding
@@ -1109,6 +1226,7 @@ class OmniMoTModel(ImaginaireModel):
         has_valid_tokens: bool,
         rectified_flow: RectifiedFlow,
         raw_action_dim: list[torch.Tensor] | None = None,
+        token_mask: list[torch.Tensor] | None = None,
         normalize_by_active: bool = False,
     ) -> torch.Tensor:
         """Compute flow matching loss for a modality.
@@ -1145,6 +1263,7 @@ class OmniMoTModel(ImaginaireModel):
             rectified_flow=rectified_flow,
             tensor_kwargs_fp32=self.tensor_kwargs_fp32,
             raw_action_dim=raw_action_dim,
+            token_mask=token_mask,
             normalize_by_active=normalize_by_active,
         )
 
@@ -1217,6 +1336,7 @@ class OmniMoTModel(ImaginaireModel):
                     has_valid_tokens=has_noisy_tokens(data_batch_packed.action),
                     rectified_flow=self.rectified_flow_action,
                     raw_action_dim=data_batch_packed.action.raw_action_dim,
+                    token_mask=data_batch_packed.action.token_mask,
                     normalize_by_active=normalize_by_active,
                 )
 

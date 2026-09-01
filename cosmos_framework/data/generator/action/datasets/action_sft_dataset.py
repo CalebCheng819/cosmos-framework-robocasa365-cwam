@@ -34,6 +34,10 @@ from cosmos_framework.data.generator.action.datasets.droid_lerobot_dataset impor
 )
 from cosmos_framework.data.generator.action.datasets.libero_lerobot_dataset import LIBEROLeRobotDataset
 from cosmos_framework.data.generator.action.datasets.robocasa365_segment_dataset import RoboCasa365SegmentDataset
+from cosmos_framework.data.generator.action.datasets.robofactory_multi_robot_dataset import (
+    RoboFactoryMultiRobotDataset,
+    load_imagewam_zscore_normalizer,
+)
 from cosmos_framework.data.generator.action.transforms import ActionTransformPipeline
 
 
@@ -533,6 +537,77 @@ def get_action_libero_sft_dataset(
         format_prompt_as_json=format_prompt_as_json,
     )
     sft = ActionSFTDataset(dataset, transform, resolution)
+    if iterable_shuffle:
+        return ActionIterableShuffleDataset(sft, seed=episode_shuffle_seed)
+    return sft
+
+
+def get_action_robofactory_multi_robot_sft_dataset(
+    *,
+    root: str,
+    gaussian_cache_root: str,
+    action_stats_path: str,
+    split: str = "train",
+    val_ratio: float = 0.1,
+    split_seed: int = 42,
+    chunk_length: int = 32,
+    image_stride: int = 2,
+    sample_stride: int = 16,
+    conditioning_fps: float = 10.0,
+    accepted_agent_counts: Sequence[int] = (1, 2, 3, 4),
+    camera_path: str = "obs/sensor_data/head_camera_global/rgb",
+    gaussian_preflight: bool = True,
+    gaussian_source_path_strip_prefix: str | None = "tasks",
+    permute_agents: bool = True,
+    permutation_seed: int = 42,
+    resolution: str | int | None = None,
+    max_action_dim: int = 64,
+    tokenizer_config: dict | None = None,
+    cfg_dropout_rate: float = 0.1,
+    append_viewpoint_info: bool = True,
+    append_duration_fps_timestamps: bool = True,
+    append_resolution_info: bool = True,
+    append_idle_frames: bool = False,
+    format_prompt_as_json: bool = True,
+    iterable_shuffle: bool = True,
+    episode_shuffle_seed: int = 42,
+) -> Dataset:
+    """Build the ImageWAM-compatible RoboFactory multi-robot action dataset.
+
+    The HDF5 backend emits native 8D actions in agent-major token order and
+    carries synchronized state/Gaussian conditions.  The shared action
+    transform applies the ImageWAM global z-score once, preserves ``action_raw``,
+    and pads only the channel dimension to ``max_action_dim``.
+    """
+    dataset = RoboFactoryMultiRobotDataset(
+        root=root,
+        split=split,
+        val_ratio=val_ratio,
+        split_seed=split_seed,
+        chunk_length=chunk_length,
+        image_stride=image_stride,
+        sample_stride=sample_stride,
+        conditioning_fps=conditioning_fps,
+        accepted_agent_counts=accepted_agent_counts,
+        camera_path=camera_path,
+        gaussian_cache_root=gaussian_cache_root,
+        gaussian_preflight=gaussian_preflight,
+        gaussian_source_path_strip_prefix=gaussian_source_path_strip_prefix,
+        permute_agents=permute_agents,
+        permutation_seed=permutation_seed,
+    )
+    transform = ActionTransformPipeline(
+        tokenizer_config=tokenizer_config,
+        cfg_dropout_rate=cfg_dropout_rate,
+        max_action_dim=max_action_dim,
+        append_viewpoint_info=append_viewpoint_info,
+        append_duration_fps_timestamps=append_duration_fps_timestamps,
+        append_resolution_info=append_resolution_info,
+        append_idle_frames=append_idle_frames,
+        format_prompt_as_json=format_prompt_as_json,
+    )
+    action_normalizer = load_imagewam_zscore_normalizer(action_stats_path)
+    sft = ActionSFTDataset(dataset, transform, resolution, action_normalizer=action_normalizer)
     if iterable_shuffle:
         return ActionIterableShuffleDataset(sft, seed=episode_shuffle_seed)
     return sft

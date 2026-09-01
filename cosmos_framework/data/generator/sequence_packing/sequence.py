@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from cosmos_framework.data.generator.sequence_packing.modality import ModalityData, ModalityDataBuilder, ModalitySpan
+from cosmos_framework.data.generator.sequence_packing.modality import (
+    ModalityData,
+    ModalityDataBuilder,
+    ModalitySpan,
+    MultiRobotConditionData,
+)
 from cosmos_framework.data.generator.sequence_packing.mrope import (
     get_3d_mrope_ids_text_tokens,
     get_3d_mrope_ids_vae_tokens,
@@ -927,6 +932,9 @@ class PackedSequence:
     action: ModalityData | None = None
     sound: ModalityData | None = None
 
+    # Optional RoboFactory conditions aligned one-to-one with action payloads.
+    multi_robot_condition: MultiRobotConditionData | None = None
+
     # Multi-control transfer: per-sample list of per-vision-item token counts.
     # For a multi-control transfer sample with N controls + 1 noisy target,
     # vision_item_split_lens[i] = [L_ctrl0, L_ctrl1, ..., L_ctrlN-1, L_noisy].
@@ -971,6 +979,8 @@ class PackedSequence:
             self.action.to_cuda()
         if self.sound is not None:
             self.sound.to_cuda()
+        if self.multi_robot_condition is not None:
+            self.multi_robot_condition.to_cuda()
 
 
 @dataclass

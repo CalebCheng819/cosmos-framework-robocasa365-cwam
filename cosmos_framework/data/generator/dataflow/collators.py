@@ -60,6 +60,11 @@ def _vfm_inner_collate(batch):
         "sound",
         "raw_action_dim",
         "image_size",
+        "action_token_mask",
+        "agent_count",
+        "action_horizon_per_agent",
+        "agent_state",
+        "agent_gaussian",
     }
 
     # Data keys where a per-sample value of ``None`` is a meaningful signal
