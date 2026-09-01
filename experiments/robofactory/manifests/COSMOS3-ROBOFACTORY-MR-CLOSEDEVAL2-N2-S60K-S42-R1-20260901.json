@@ -1,7 +1,7 @@
 {
   "schema_version": "research-experiment-manifest-v1",
   "experiment_id": "COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901",
-  "attempt_id": "attempt-r12-h252-2g",
+  "attempt_id": "attempt-r13-h252-2g",
   "status": "relaunch_prepared",
   "intent": "Evaluate the 60k Cosmos3 RoboFactory multi-robot policy in closed loop on two two-arm tasks.",
   "account": "chengjuntao",
@@ -32,6 +32,18 @@
       "files": 9,
       "bytes": 11499960
     }
+  },
+  "robofactory_runtime_assets": {
+    "root": "/mnt/shared-storage-gpfs2/ailab-eailabagent-gpfs/chengjuntao/eval-env-overlays/robofactory-assets-official-20260901",
+    "files": 1168,
+    "bytes": 17998295,
+    "target_task_preflight": [
+      "assets/scenes/table/table.glb",
+      "assets/objects/pot_annotated/mobility.urdf",
+      "assets/objects/pot_annotated/model_data.json",
+      "assets/objects/meat_annotated/textured.obj",
+      "assets/objects/meat_annotated/model_data.json"
+    ]
   },
   "tasks": [
     "PlaceFood-rf",
@@ -105,7 +117,12 @@
       "attempt_id": "attempt-r11-h252-2g",
       "terminal_state": "failed",
       "reason": "the GPFS cache, model load, and action server readiness passed, but the first PlaceFood evaluator stopped before episode creation because the simulator environment lacked jaxtyping; attempt r12 adds an isolated pinned simulator dependency overlay and an import preflight"
+    },
+    {
+      "attempt_id": "attempt-r12-h252-2g",
+      "terminal_state": "failed",
+      "reason": "the model server reached readiness, but the evaluator used the stripped source checkout as the runtime asset root; no simulator episode was created, and attempt r13 supplies and preflights the separate official RoboFactory runtime assets"
     }
   ],
-  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r12-h252-2g"
+  "output_remote": "eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r13-h252-2g"
 }

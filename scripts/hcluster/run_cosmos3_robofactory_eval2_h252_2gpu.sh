@@ -18,6 +18,7 @@ DATASET_ROOT="${DATASET_ROOT:-${INPUT_ROOT}/dataset}"
 PANEL_PATH="${PANEL_PATH:-${INPUT_ROOT}/table11-fixed-val100-panel.json}"
 STATS_PATH="${STATS_PATH:-${INPUT_ROOT}/checkpoint/dataset_stats.json}"
 ROBOFACTORY_ROOT="${ROBOFACTORY_ROOT:-${EVAL_ASSET_ROOT}/source/robofactory}"
+ROBOFACTORY_RUNTIME_ROOT="${ROBOFACTORY_RUNTIME_ROOT:-${GPFS_USER}/eval-env-overlays/robofactory-assets-official-20260901}"
 POLICY_LIGHTNING_ROOT="${POLICY_LIGHTNING_ROOT:-${GPFS_USER}/imagewam-formal/source/policy-lightning-c944b498-clean}"
 RCLONE_BIN="${RCLONE_BIN:-${GPFS_USER}/tools/rclone}"
 RCLONE_CONFIG_SOURCE="${RCLONE_CONFIG_SOURCE:-${GPFS_USER}/.fastwam_runtime/rclone.conf}"
@@ -27,7 +28,7 @@ WAN_VAE_REMOTE="${WAN_VAE_REMOTE:-eailab-hdd2:fkp-migrate/gpfs-migrations/weight
 QWEN3_VL_TOKENIZER_REMOTE="${QWEN3_VL_TOKENIZER_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/eval-assets/qwen3-vl-8b-instruct-0c351d-processor-v1}"
 EPISODES_PER_TASK="${EPISODES_PER_TASK:-100}"
 EXEC_HORIZON="${EXEC_HORIZON:-1}"
-EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r12}"
+EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-ITER-2026-09-01-COSMOS3-RF-MR-EVAL2-H252-code-r13}"
 
 [[ "${EPISODES_PER_TASK}" =~ ^[1-9][0-9]*$ ]] || {
   echo "EPISODES_PER_TASK must be positive" >&2
@@ -67,9 +68,29 @@ for required in \
 done
 for required_dir in \
   "${COSMOS_SOURCE}" "${DATASET_ROOT}" "${ROBOFACTORY_ROOT}" \
-  "${POLICY_LIGHTNING_ROOT}" "${SIM_OVERLAY}" "${SIM_DEP_OVERLAY}"; do
+  "${ROBOFACTORY_RUNTIME_ROOT}" "${POLICY_LIGHTNING_ROOT}" \
+  "${SIM_OVERLAY}" "${SIM_DEP_OVERLAY}"; do
   [[ -d "${required_dir}" ]] || { echo "required directory missing: ${required_dir}" >&2; exit 16; }
 done
+
+ROBOFACTORY_ASSET_DIR="${ROBOFACTORY_RUNTIME_ROOT}/assets"
+for required_asset in \
+  scenes/table/table.glb \
+  objects/pot_annotated/mobility.urdf \
+  objects/pot_annotated/model_data.json \
+  objects/meat_annotated/textured.obj \
+  objects/meat_annotated/model_data.json; do
+  [[ -s "${ROBOFACTORY_ASSET_DIR}/${required_asset}" ]] || {
+    echo "required RoboFactory runtime asset missing: ${required_asset}" >&2
+    exit 22
+  }
+done
+robofactory_asset_files="$(find "${ROBOFACTORY_ASSET_DIR}" -type f | wc -l)"
+[[ "${robofactory_asset_files}" -ge 1168 ]] || {
+  echo "RoboFactory runtime asset inventory is incomplete: files=${robofactory_asset_files}" >&2
+  exit 23
+}
+echo "{\"event\":\"robofactory_runtime_assets_preflight_passed\",\"asset_root\":\"${ROBOFACTORY_ASSET_DIR}\",\"files\":${robofactory_asset_files}}"
 
 mkdir -p "${LOG_ROOT}" "${RESULTS_ROOT}/cosmos3" "${RUNTIME_ROOT}"
 install -m 600 "${RCLONE_CONFIG_SOURCE}" "${RCLONE_CONFIG}"
@@ -274,6 +295,7 @@ run_task() {
       --panel "${PANEL_PATH}" \
       --dataset-root "${DATASET_ROOT}" \
       --robofactory-root "${ROBOFACTORY_ROOT}" \
+      --robofactory-runtime-root "${ROBOFACTORY_RUNTIME_ROOT}" \
       --output-dir "${RESULTS_ROOT}/cosmos3/${task}" \
       --eval-code-commit "${EVAL_CODE_VERSION}" \
       --episode-start 0 \
