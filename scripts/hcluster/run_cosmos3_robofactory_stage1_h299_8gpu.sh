@@ -39,6 +39,8 @@ WAN_VAE_REMOTE="${WAN_VAE_REMOTE:-eailab-hdd2:fkp-migrate/gpfs-migrations/weight
 QWEN3_VL_TOKENIZER_REMOTE="${QWEN3_VL_TOKENIZER_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/eval-assets/qwen3-vl-8b-instruct-0c351d-processor-v1}"
 BASELINE_EPISODES_REMOTE="${BASELINE_EPISODES_REMOTE:-eailab-hdd2:eailab/chengjuntao/cwam/cosmos3-robofactory-mr/evals/COSMOS3-ROBOFACTORY-MR-CLOSEDEVAL2-N2-S60K-S42-R1-20260901/attempts/attempt-r16-h252-2g/results/cosmos3/PlaceFood-rf/episodes.jsonl}"
 EVAL_CODE_VERSION="${EVAL_CODE_VERSION:-stage1-unset}"
+REPAIR_MODE="${REPAIR_MODE:-full}"
+PARENT_OUTPUT_REMOTE="${PARENT_OUTPUT_REMOTE:-}"
 
 if [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -ne "${EXPECTED_GPU_COUNT}" ]]; then
   echo "the formal Stage-1 job must see exactly ${EXPECTED_GPU_COUNT} GPUs" >&2
@@ -262,6 +264,72 @@ run_arm() {
       >"${LOG_ROOT}/eval-${arm}.log" 2>&1
   echo "{\"event\":\"arm_completed\",\"arm\":\"${arm}\"}"
 }
+
+# Repair-1 is a continuation of a scheduler-stopped Stage-1 attempt.  The
+# parent result tree is copied into the new attempt, then only the incomplete
+# robot0-pose prefix and the missing robot1-action oracle are evaluated.  The
+# copied prefix is deliberately kept in resume_progress.json so the evaluator
+# validates the exact panel prefix before doing any new episode.
+if [[ "${REPAIR_MODE}" == "repair1" ]]; then
+  [[ "${EXPECTED_GPU_COUNT}" -eq 4 ]] || {
+    echo "repair1 requires exactly four GPUs" >&2
+    exit 26
+  }
+  [[ -n "${PARENT_OUTPUT_REMOTE}" ]] || {
+    echo "repair1 requires PARENT_OUTPUT_REMOTE" >&2
+    exit 27
+  }
+  echo "{\"event\":\"repair1_parent_copy_started\",\"source\":\"${PARENT_OUTPUT_REMOTE}\"}"
+  "${RCLONE_BIN}" --config "${RCLONE_CONFIG}" copy \
+    "${PARENT_OUTPUT_REMOTE}/results/stage1" "${RESULTS_ROOT}" \
+    --transfers 12 --checkers 24 --retries 5 --low-level-retries 20
+  [[ -s "${RESULTS_ROOT}/o1-r0-pose/resume_progress.json" ]] || {
+    echo "repair1 parent has no resumable robot0-pose prefix" >&2
+    exit 28
+  }
+  [[ "$(jq -r '.episodes_completed' "${RESULTS_ROOT}/o1-r0-pose/resume_progress.json")" == "3" ]] || {
+    echo "repair1 requires exactly the validated three-episode robot0-pose prefix" >&2
+    exit 29
+  }
+  [[ -s "${RESULTS_ROOT}/o3-r1-action/episodes.jsonl" ]] && {
+    echo "repair1 parent unexpectedly contains robot1-action results" >&2
+    exit 30
+  }
+  # Remove only stale control/trace/video files from the interrupted episode;
+  # completed O1 videos and all other parent-arm evidence remain untouched.
+  rm -f "${RESULTS_ROOT}/o1-r0-pose/action_trace.jsonl" \
+    "${RESULTS_ROOT}/o1-r0-pose/run_manifest.json" \
+    "${RESULTS_ROOT}/o1-r0-pose/videos/task-003-episode-006.mp4"
+  mkdir -p "${RESULTS_ROOT}/o3-r1-action"
+  (
+    run_arm 1 18080 o1-r0-pose 8 1 rolling-query robot0-pose
+  ) & LANE_PIDS+=("$!")
+  (
+    run_arm 3 18081 o3-r1-action 8 1 rolling-query robot1-action
+  ) & LANE_PIDS+=("$!")
+  lane_failed=0
+  for pid in "${LANE_PIDS[@]}"; do
+    wait "${pid}" || lane_failed=1
+  done
+  [[ "${lane_failed}" -eq 0 ]] || {
+    echo "one or more repair1 lanes failed" >&2
+    exit 31
+  }
+  "${SIM_PY}" -u "${AGGREGATOR}" \
+    --results-root "${RESULTS_ROOT}" \
+    --baseline-episodes "${BASELINE_ROOT}/episodes.jsonl" \
+    --output "${RUN_ROOT}/stage1-summary.json"
+  video_count="$(find "${RESULTS_ROOT}" -type f -path '*/videos/*.mp4' -size +0c | wc -l)"
+  [[ "${video_count}" -eq 60 ]] || {
+    echo "repair1 video inventory mismatch: expected=60 actual=${video_count}" >&2
+    exit 32
+  }
+  archive_once
+  "${RCLONE_BIN}" --config "${RCLONE_CONFIG}" check "${RUN_ROOT}" "${OUTPUT_REMOTE}" \
+    --size-only --one-way --checkers 24 --retries 5 --low-level-retries 20
+  echo '{"event":"formal_stage1_repair1_completed","status":"PASS"}'
+  exit 0
+fi
 
 if [[ "${EXPECTED_GPU_COUNT}" -eq 4 ]]; then
   (
