@@ -287,7 +287,20 @@ if [[ "${REPAIR_MODE}" == "repair1" ]]; then
     echo "repair1 parent has no resumable robot0-pose prefix" >&2
     exit 28
   }
-  [[ "$(jq -r '.episodes_completed' "${RESULTS_ROOT}/o1-r0-pose/resume_progress.json")" == "3" ]] || {
+  # Keep the formal image self-contained: the H-cluster Vulkan image does not
+  # guarantee jq. Read the single validated field with the already-required
+  # simulator Python instead of introducing another runtime package dependency.
+  o1_prefix_episodes="$("${SIM_PY}" - "${RESULTS_ROOT}/o1-r0-pose/resume_progress.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+value = payload.get("episodes_completed")
+print(value if isinstance(value, int) and not isinstance(value, bool) else "")
+PY
+  )"
+  [[ "${o1_prefix_episodes}" == "3" ]] || {
     echo "repair1 requires exactly the validated three-episode robot0-pose prefix" >&2
     exit 29
   }
